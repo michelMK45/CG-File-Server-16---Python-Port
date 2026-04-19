@@ -12,75 +12,104 @@ if TYPE_CHECKING:
     from .app import Server16App
 
 
+def _ensure_pygame_mixer() -> None:
+    """Initialize pygame mixer once, shared across all players."""
+    import pygame
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+
+
 class MciAudioPlayer:
-    _counter = 0
+    """
+    Drop-in replacement for the original MCI-based player.
+    Uses pygame.mixer so MP3 playback works without Windows MCI codecs,
+    matching the NAudio behaviour of the original C# CGFS16.
+    """
+
+    # pygame mixer only supports one music stream, so we track which player
+    # currently "owns" the music channel.
+    _owner: "MciAudioPlayer | None" = None
 
     def __init__(self) -> None:
-        import ctypes
-
-        self._ctypes = ctypes
-        self._winmm = ctypes.WinDLL("winmm")
-        MciAudioPlayer._counter += 1
-        self.alias = f"server16_audio_{MciAudioPlayer._counter}"
+        import pygame
+        self._pygame = pygame
+        _ensure_pygame_mixer()
         self._open = False
+        self._paused = False
+        self._volume: float = 1.0
 
-    def _send(self, command: str) -> str:
-        buffer = self._ctypes.create_unicode_buffer(255)
-        result = self._winmm.mciSendStringW(command, buffer, len(buffer), 0)
-        if result != 0:
-            raise RuntimeError(f"MCI command failed ({result}): {command}")
-        return buffer.value
+    # ------------------------------------------------------------------
+    # Public API (same interface as the old MCI version)
+    # ------------------------------------------------------------------
 
     def open(self, path: Path) -> None:
         self.close()
-        self._send(f'open "{path}" type mpegvideo alias {self.alias}')
+        # load_music streams the file — works for MP3 without extra codecs
+        self._pygame.mixer.music.load(str(path))
+        MciAudioPlayer._owner = self
         self._open = True
+        self._paused = False
 
     def play(self) -> None:
-        if self._open:
-            self._send(f"play {self.alias} from 0")
+        if self._open and self._is_owner():
+            self._pygame.mixer.music.play(start=0.0)
+            self._paused = False
 
     def pause(self) -> None:
-        if self._open:
-            self._send(f"pause {self.alias}")
+        if self._open and self._is_owner() and not self._paused:
+            self._pygame.mixer.music.pause()
+            self._paused = True
 
     def resume(self) -> None:
-        if self._open:
-            self._send(f"resume {self.alias}")
+        if self._open and self._is_owner() and self._paused:
+            self._pygame.mixer.music.unpause()
+            self._paused = False
 
     def stop(self) -> None:
-        if self._open:
+        if self._open and self._is_owner():
             try:
-                self._send(f"stop {self.alias}")
+                self._pygame.mixer.music.stop()
             except Exception:
                 pass
 
     def close(self) -> None:
         if self._open:
-            try:
-                self._send(f"close {self.alias}")
-            except Exception:
-                pass
+            if self._is_owner():
+                try:
+                    self._pygame.mixer.music.stop()
+                    self._pygame.mixer.music.unload()
+                except Exception:
+                    pass
+                MciAudioPlayer._owner = None
             self._open = False
+            self._paused = False
 
     def set_volume(self, volume: float) -> None:
-        if self._open:
-            level = max(0, min(1000, int(volume * 1000)))
-            self._send(f"setaudio {self.alias} volume to {level}")
+        self._volume = max(0.0, min(1.0, volume))
+        if self._open and self._is_owner():
+            self._pygame.mixer.music.set_volume(self._volume)
 
     def mode(self) -> str:
-        if not self._open:
+        if not self._open or not self._is_owner():
             return "closed"
-        try:
-            return self._send(f"status {self.alias} mode").strip().lower()
-        except Exception:
-            return "closed"
+        if self._paused:
+            return "paused"
+        if self._pygame.mixer.music.get_busy():
+            return "playing"
+        return "stopped"
 
     def is_playing(self) -> bool:
         return self.mode() == "playing"
 
     def is_paused(self) -> bool:
         return self.mode() == "paused"
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _is_owner(self) -> bool:
+        return MciAudioPlayer._owner is self
 
 
 class ChantsRuntime:
