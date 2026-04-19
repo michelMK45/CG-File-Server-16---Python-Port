@@ -22,7 +22,6 @@ The goal is to preserve and evolve the FIFA 16 Server 16 experience in a modern 
 
 ## Screenshots
 
-Place screenshots in `docs/images/` and update the links below.
 
 Main overlay:
 
