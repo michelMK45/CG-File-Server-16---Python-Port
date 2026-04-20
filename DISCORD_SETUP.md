@@ -61,7 +61,16 @@ pip install pypresence
 
 ### 2. Enable Discord RPC
 
-Edit `runtime/settings.json` and set:
+Discord RPC must be enabled in **both** configuration files.
+
+In `FSW/settings.ini`, ensure this is set under `[Modules]`:
+
+```ini
+[Modules]
+discordRP=1
+```
+
+Then edit `runtime/settings.json` and set:
 
 ```json
 {
