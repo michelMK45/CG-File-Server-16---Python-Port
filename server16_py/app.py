@@ -24,6 +24,8 @@ from .match_string_patcher import patch_match_string
 from .assignment_runtime import AssignmentRuntime
 from .camera_runtime import CameraPreset, CameraRuntime
 from .chants_runtime import ChantsRuntime, MciAudioPlayer
+from .discord_rpc_runtime import DiscordRPCRuntime
+from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .ini_file import SessionIniFile
 from .memory_access import Memory, MemoryAccessError
@@ -79,6 +81,7 @@ class Server16App(tk.Tk):
         self.lastpagename = ""
         self.curstad = ""
         self.StadName = ""
+        self.ScoreboardStadName = ""  # Display name from scoreboardstdname setting
         self.stadmovie = False
         self.CCount = "0"
         self.injID = "176"
@@ -199,6 +202,16 @@ class Server16App(tk.Tk):
         self.chants_runtime = ChantsRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
+        # Initialize Discord RPC (loads from settings.json)
+        discord_rpc_config = self.settings.data.get("discord_rpc", {})
+        client_id = discord_rpc_config.get("client_id", "1495719449700077630")
+        self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)
+        self._discord_rpc_enabled = discord_rpc_config.get("enabled", False)
+        self._discord_rpc_last_presence = None
+        if self._discord_rpc_enabled:
+            self.discord_rpc.connect()
+        # Initialize team database (will be loaded when FIFA EXE is selected)
+        self.team_db: FifaDatabase | None = None
         self.user32 = ctypes.WinDLL("user32", use_last_error=True)
         self.user32.GetAsyncKeyState.argtypes = [wintypes.INT]
         self.user32.GetAsyncKeyState.restype = wintypes.SHORT
@@ -247,6 +260,11 @@ class Server16App(tk.Tk):
         self._overlay_job = self.after(80, self.overlay_loop)
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
+        # Log Discord RPC initialization status
+        if self._discord_rpc_enabled:
+            self.log("Discord RPC initialized (enabled in settings)")
+        else:
+            self.log("Discord RPC initialized (disabled in settings)")
 
     def _resolve_base_dir(self) -> Path:
         if getattr(sys, "frozen", False):
@@ -1006,8 +1024,22 @@ class Server16App(tk.Tk):
         card.grid_propagate(False)
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
-        for idx, name in enumerate(["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong"]):
-            var = tk.BooleanVar(value=False)
+        module_names = [
+            "Stadium",
+            "TvLogo",
+            "ScoreBoard",
+            "Movies",
+            "Autorun",
+            "StadiumNet",
+            "Chants",
+            "StadiumName",
+            "AwayChants",
+            "AwayClubSong",
+            "Discord RPC",
+        ]
+        for idx, name in enumerate(module_names):
+            initial = self._discord_rpc_enabled if name == "Discord RPC" else False
+            var = tk.BooleanVar(value=initial)
             self.module_vars[name] = var
             check = ttk.Checkbutton(
                 modules,
@@ -1018,6 +1050,47 @@ class Server16App(tk.Tk):
             )
             check.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
             self.module_checks[name] = check
+
+    def _toggle_discord_rpc(self) -> None:
+        """Toggle Discord RPC on/off and save to settings."""
+        new_state = self.module_vars["Discord RPC"].get()
+        
+        # Update internal state first
+        self._discord_rpc_enabled = new_state
+        
+        # Update settings.json
+        discord_config = self.settings.data.get("discord_rpc", {})
+        discord_config["enabled"] = new_state
+        self.settings.data["discord_rpc"] = discord_config
+        self.settings.save()
+        self.module_states["Discord RPC"] = new_state
+        self.settings_ini.write("discordRP", "1" if new_state else "0", "Modules")
+        self.settings_ini.save()
+        
+        # Connect or disconnect based on new state
+        try:
+            if new_state:
+                # Enable Discord RPC
+                success = self.discord_rpc.connect()
+                if success:
+                    self.log("Discord RPC enabled and connected")
+                else:
+                    self.log("Discord RPC enabled but failed to connect (Discord may not be running)")
+            else:
+                # Disable Discord RPC - disconnect and clear presence
+                self.discord_rpc.disconnect()
+                self.log("Discord RPC disabled and presence cleared")
+        except Exception as exc:
+            self.log("Error toggling Discord RPC", exc, exc_info=sys.exc_info())
+            # Revert checkbox if there was an error
+            self._discord_rpc_enabled = not new_state
+            self.module_states["Discord RPC"] = not new_state
+            self.module_vars["Discord RPC"].set(not new_state)
+            discord_config["enabled"] = not new_state
+            self.settings.data["discord_rpc"] = discord_config
+            self.settings.save()
+            self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
+            self.settings_ini.save()
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "CHANTS CONTROL", "Crowd audio, club anthem and detailed playback state")
@@ -1483,6 +1556,7 @@ class Server16App(tk.Tk):
         self.settings_ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
         self._load_module_states()
         self._update_audio_overview()
+        self._load_team_database()
 
     def _first_existing(self, *paths: Path) -> Path:
         for path in paths:
@@ -1493,10 +1567,33 @@ class Server16App(tk.Tk):
     def _load_module_states(self) -> None:
         module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong"]
         self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
-        loaded = ", ".join(f"{name}={'1' if enabled else '0'}" for name, enabled in self.module_states.items())
+        previous_rpc_state = self._discord_rpc_enabled
+        discord_ini_value = self.settings_ini.read("discordRP", "Modules")
+        if discord_ini_value in {"0", "1"}:
+            self._discord_rpc_enabled = discord_ini_value == "1"
+        else:
+            self.settings_ini.write("discordRP", "1" if self._discord_rpc_enabled else "0", "Modules")
+            self.settings_ini.save()
+        self.module_states["Discord RPC"] = self._discord_rpc_enabled
+        loaded = ", ".join(
+            f"{name}={'1' if enabled else '0'}"
+            for name, enabled in self.module_states.items()
+        )
         self.log(f"Modules loaded from {self.exedir / 'FSW' / 'settings.ini'}: {loaded}")
 
+        if self._discord_rpc_enabled:
+            if not self.discord_rpc.is_connected():
+                self.discord_rpc.connect()
+        elif previous_rpc_state or self.discord_rpc.is_connected():
+            self.discord_rpc.disconnect()
+
+        discord_var = self.module_vars.get("Discord RPC")
+        if discord_var is not None:
+            discord_var.set(self._discord_rpc_enabled)
+
     def module_enabled(self, name: str) -> bool:
+        if name == "Discord RPC":
+            return self._discord_rpc_enabled
         enabled = self.settings_ini.read(name, "Modules") == "1"
         self.module_states[name] = enabled
         return enabled
@@ -1529,6 +1626,7 @@ class Server16App(tk.Tk):
             return
         self.settings.fifa_exe = filename
         self.setuppaths()
+        self._load_team_database()
         self.apply_bootstrap_files()
         self.refresh_modules()
         self.log(f"Selected FIFA executable: {filename}")
@@ -1543,6 +1641,62 @@ class Server16App(tk.Tk):
             if candidate.exists():
                 return candidate
         return None
+
+    def _load_team_database(self) -> None:
+        """Load FIFA team database for the selected installation"""
+        if not self.fifaEXE or self.fifaEXE == "default":
+            self.team_db = None
+            self.discord_rpc.set_team_name_resolver(None)
+            return
+        
+        try:
+            fifa_root = Path(self.fifaEXE).parent
+            self.team_db = FifaDatabase(fifa_root)
+            if self.team_db.connect():
+                self.team_db.load_all_teams()
+                # Connect resolver to Discord RPC
+                self.discord_rpc.set_team_name_resolver(self.team_db.get_team_name)
+                self.log(f" Team database loaded for {fifa_root.name}")
+            else:
+                reason = self.team_db.last_error if self.team_db else "unknown reason"
+                self.log(f"️  Could not connect to team database: {reason}")
+                self.team_db = None
+        except Exception as e:
+            self.log(f"❌ Error loading team database: {e}")
+            self.team_db = None
+
+    def _resolve_team_name(self, team_id: str) -> str | None:
+        """Resolve a team id to its display name using the loaded team database."""
+        if not team_id or team_id in {"-", "0"} or self.team_db is None:
+            return None
+        try:
+            return self.team_db.get_team_name(team_id)
+        except Exception:
+            return None
+
+    def _resolve_stadium_name(self, stadium_id: str) -> str | None:
+        """Resolve a stadium id to its display name using the loaded database."""
+        if not stadium_id or stadium_id in {"-", "0"} or self.team_db is None:
+            return None
+        try:
+            return self.team_db.get_stadium_name(stadium_id)
+        except Exception:
+            return None
+
+    def _has_active_custom_stadium_assignment(self) -> bool:
+        """Return True when current context resolves to a custom stadium assignment in settings.ini."""
+        if not hasattr(self, "settings_ini") or self.settings_ini is None:
+            return False
+        try:
+            if self.TOURROUNDID and self.settings_ini.key_exists(self.TOURROUNDID, "comp"):
+                return True
+            if self.TOURNAME and self.settings_ini.key_exists(self.TOURNAME, "comp"):
+                return True
+            if self.HID and self.settings_ini.key_exists(self.HID, "stadium"):
+                return True
+        except Exception:
+            return False
+        return False
 
     def _is_target_process_running(self) -> bool:
         if not self.MP:
@@ -1825,7 +1979,10 @@ class Server16App(tk.Tk):
     def refresh_modules(self) -> None:
         self._load_module_states()
         for name, var in self.module_vars.items():
-            var.set(self.module_enabled(name))
+            if name == "Discord RPC":
+                var.set(self._discord_rpc_enabled)
+            else:
+                var.set(self.module_enabled(name))
         self._update_audio_overview()
 
     def toggle_module(self, module: str) -> None:
@@ -1885,6 +2042,9 @@ class Server16App(tk.Tk):
                 no_signature = self._last_runtime_signature is None
                 if (missing_ids or no_signature) and self._page_can_have_match_context(page_name):
                     self.refresh_live_context(page_name)
+            # Update Discord RPC presence
+            if self._discord_rpc_enabled:
+                self._update_discord_presence()
         except Exception as exc:
             self.log("Stats loop error", exc, exc_info=sys.exc_info())
         if not self._closing:
@@ -2098,8 +2258,10 @@ class Server16App(tk.Tk):
         self._set_display("round", self.TOURROUNDID or "-")
         self._set_display("derby", self.derby or "-")
         self._set_display("stadid", self.STADID or "-")
-        self._set_display("home_name", f"Team A ({self.HID})" if self.HID else "TEAM A")
-        self._set_display("away_name", f"Team B ({self.AID})" if self.AID else "TEAM B")
+        home_name = self._resolve_team_name(self.HID or "")
+        away_name = self._resolve_team_name(self.AID or "")
+        self._set_display("home_name", home_name or (f"Team A ({self.HID})" if self.HID else "TEAM A"))
+        self._set_display("away_name", away_name or (f"Team B ({self.AID})" if self.AID else "TEAM B"))
         self._update_live_match_stats(page_name)
         # STADID is intentionally excluded from the signature: it reflects the
         # stadium currently loaded in FIFA memory and fluctuates while the game
@@ -2198,6 +2360,63 @@ class Server16App(tk.Tk):
         if "TV/bumper" in page_name:
             self._set_display("audio_last_action", "TV bumper active")
 
+    def _update_discord_presence(self) -> None:
+        """Update Discord Rich Presence with current match state."""
+        # Only update if Discord RPC is enabled
+        if not self._discord_rpc_enabled:
+            return
+        
+        try:
+            if not self.discord_rpc.is_connected():
+                # Try to reconnect if not connected
+                self.discord_rpc.connect()
+            
+            page_name = self.labels.get("page", tk.Label()).cget("text") if "page" in self.labels else self.lastpagename
+            
+            # Get current match state
+            score_home = self.labels.get("home_goals", tk.Label()).cget("text") if "home_goals" in self.labels else "0"
+            score_away = self.labels.get("away_goals", tk.Label()).cget("text") if "away_goals" in self.labels else "0"
+            # Read match time directly from memory to avoid stale UI label values.
+            match_time = "00:00"
+            raw_time = self._try_read_optional_int(self.offsets.GAMESTATSBASE, self.offsets.GAMERANTIME)
+            if raw_time is not None:
+                total_seconds = raw_time // 100 if raw_time > 6000 else raw_time
+                minutes, seconds = divmod(max(0, total_seconds), 60)
+                match_time = f"{minutes:02d}:{seconds:02d}"
+            elif "timer" in self.labels:
+                match_time = self.labels.get("timer", tk.Label()).cget("text")
+            game_state = self.labels.get("game_state", tk.Label()).cget("text") if "game_state" in self.labels else "Idle"
+            custom_stadium_display = ""
+            if self._has_active_custom_stadium_assignment():
+                custom_stadium_display = (
+                    self.ScoreboardStadName
+                    or self.curstad
+                    or getattr(self, "StadName", "")
+                )
+            stadium_display = custom_stadium_display or self._resolve_stadium_name(self.STADID) or ""
+            
+            # Build presence using helper
+            presence = self.discord_rpc.build_match_presence(
+                home_team=self.HID or "",
+                away_team=self.AID or "",
+                home_score=int(score_home) if score_home.isdigit() else 0,
+                away_score=int(score_away) if score_away.isdigit() else 0,
+                match_time=match_time,
+                tournament=self.TOURNAME or "",
+                round_name=self.TOURROUNDID or "",
+                stadium=stadium_display,
+                game_state=game_state,
+            )
+            
+            # Only update if presence changed (reduce API calls)
+            if presence != self._discord_rpc_last_presence:
+                self.discord_rpc.update_presence(**presence)
+                self._discord_rpc_last_presence = presence
+                # Log Discord RPC updates for debugging
+                self.log(f"Discord RPC updated: {presence.get('state', 'N/A')}")
+        except Exception as exc:
+            self.log("Discord RPC update error", exc, exc_info=sys.exc_info())
+
     def _log_pointer_debug(self) -> None:
         traces = [
             ("HT-HID", self.offsets.ORIHTIDBASE, self.offsets.HT),
@@ -2223,6 +2442,9 @@ class Server16App(tk.Tk):
             self.apply_stadium_runtime()
         else:
             self._set_display("stadium", "Stadium Module Disable")
+            # Clear stadium from previous match when module is disabled
+            self.curstad = ""
+            self.ScoreboardStadName = ""
         self.apply_scoreboard_runtime()
         self.apply_movie_runtime()
         if not self._stadium_task_running:
@@ -2347,6 +2569,11 @@ class Server16App(tk.Tk):
         self._closing = True
         self._chants_stop.set()
         self._reset_chants_state()
+        # Disconnect Discord RPC and clear presence
+        try:
+            self.discord_rpc.disconnect()
+        except Exception:
+            pass
         try:
             if self._poll_job is not None:
                 self.after_cancel(self._poll_job)

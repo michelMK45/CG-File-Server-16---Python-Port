@@ -24,6 +24,9 @@ class StadiumRuntime:
         app = self.app
         if app.settings_ini.key_exists(app.TOURROUNDID, "exclude") or app.settings_ini.key_exists(app.TOURNAME, "exclude"):
             app.log(f"Stadium excluded for TOUR={app.TOURNAME} ROUND={app.TOURROUNDID}")
+            # Clear stadium from previous match when this tournament/round is excluded
+            app.curstad = ""
+            app.ScoreboardStadName = ""
             return
         section_id = None
         section_name = None
@@ -99,6 +102,7 @@ class StadiumRuntime:
         app._set_progress(25, "Restoring default stadium")
         copy(app.exedir / "FSW" / "stadium", app.exedir / "data" / "sceneassets")
         app.curstad = ""
+        app.ScoreboardStadName = ""
         app.stadmovie = False
         app._set_display("stadium", "Stadium Module Disable")
         app._update_audio_overview()
@@ -301,18 +305,15 @@ class StadiumRuntime:
                 )
                 app.memory.write_int(app.offsets.ORISTADIDBASE, fallback_offsets, payload["injid"])
             stad_name = payload["stad_name"]
-            # Write stadium name to memory — same logic as the original legacy C# code.
-            # Format in ini: [scoreboardstdname] FolderName=Display Name
-            # Both slots (176 and 261) use the same scoreboardstdname key.
+            # Extract display name for scoreboardstdname (used in Discord and UI)
+            scoreboard_display_name = ""
+            if app.settings_ini.key_exists(stad_name, "scoreboardstdname"):
+                scoreboard_display_name = app.settings_ini.read(stad_name, "scoreboardstdname").split(",")[0].strip()
+
+            # Write stadium name to memory to both slots for consistency.
             std_offsets_176 = app.offsets.STDNAMEOFFSET176
             std_offsets_261 = app.offsets.STDNAMEOFFSET261
-            if app.settings_ini.key_exists(stad_name, "scoreboardstdname"):
-                raw_std = app.settings_ini.read(stad_name, "scoreboardstdname")
-                # Split by comma and take first part, matching legacy Split(',')[0]
-                display_name = raw_std.split(",")[0].strip()
-                std_name = "_" + display_name if display_name else "_" + stad_name
-            else:
-                std_name = "_" + stad_name
+            std_name = "_" + (scoreboard_display_name if scoreboard_display_name else stad_name)
             try:
                 app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, std_offsets_176, std_name)
                 app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, std_offsets_261, std_name)
@@ -323,6 +324,7 @@ class StadiumRuntime:
             app.injID = payload["injid"]
             app.StadName = stad_name
             app.curstad = stad_name
+            app.ScoreboardStadName = scoreboard_display_name  # Save display name for Discord RPC
             app.stadmovie = bool(payload["stadmovie"])
             app._set_display("stadium", stad_name)
             app._set_display("audio_last_action", f"Stadium {stad_name}")
