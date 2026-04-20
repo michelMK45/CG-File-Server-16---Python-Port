@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import unicodedata
 from pathlib import Path
 from tkinter import ttk
 
@@ -401,6 +402,11 @@ class StadiumDialog(BaseDialog):
                 return code
         return "Other"
 
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
+
     def _build_country_group_values(self, stadium_names: list[str]) -> list[str]:
         counts: dict[str, int] = {}
         for name in stadium_names:
@@ -444,7 +450,7 @@ class StadiumDialog(BaseDialog):
             return
         previous_selection = self._selected_stadium_names()
         selected_name = previous_selection[0] if previous_selection else self.selectedstadium.get() or "None"
-        query = self.search_var.get().strip().lower()
+        query = self._normalize_text(self.search_var.get().strip())
         selected_group = self._selected_country_group()
         filtered = []
         for name in self._all_stadiums:
@@ -454,7 +460,7 @@ class StadiumDialog(BaseDialog):
                 continue
             if selected_group != "All Countries" and self._country_code_for_stadium(name) != selected_group:
                 continue
-            if query and query not in name.lower():
+            if query and query not in self._normalize_text(name):
                 continue
             filtered.append(name)
         if not filtered:

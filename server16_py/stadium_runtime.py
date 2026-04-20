@@ -16,6 +16,15 @@ class StadiumRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
 
+    @staticmethod
+    def _parse_assignment(raw_value: str) -> tuple[list[str], str, str, str]:
+        parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+        if len(parts) < 4:
+            return [], "", "", ""
+        police, pitch, net = parts[-3:]
+        stadiums = [name for name in parts[:-3] if name and name != "None"]
+        return stadiums, police, pitch, net
+
     def apply_stadium_runtime(self) -> None:
         app = self.app
         if app.settings_ini.key_exists(app.TOURROUNDID, "exclude") or app.settings_ini.key_exists(app.TOURNAME, "exclude"):
@@ -31,9 +40,10 @@ class StadiumRuntime:
             section_id, section_name = app.HID, "stadium"
         if section_id:
             raw_value = app.settings_ini.read(section_id, section_name)
-            desired_stadium = raw_value.split(",")[0]
+            valid_stadiums, _police, _pitch, _net = self._parse_assignment(raw_value)
+            desired_stadium = valid_stadiums[0] if valid_stadiums else raw_value.split(",")[0]
             stadium_signature = (app._kickoff_generation, section_name, section_id, raw_value, app.HID, app.TOURNAME, app.TOURROUNDID)
-            if stadium_signature == app._last_stadium_applied_signature and app.curstad == desired_stadium:
+            if stadium_signature == app._last_stadium_applied_signature and app.curstad in valid_stadiums:
                 app._set_progress(100, f"Stadium already loaded: {desired_stadium}")
                 return
             if app._stadium_task_running:
@@ -81,12 +91,10 @@ class StadiumRuntime:
         app = self.app
         if not app.settings_ini.key_exists(hid, section):
             raise RuntimeError(f"Missing stadium assignment [{section}] {hid}")
-        parts = app.settings_ini.read(hid, section).split(",")
-        if len(parts) < 4:
-            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {parts}")
-        police, pitch, net = parts[-3:]
-        stadiums = parts[:-3]
-        valid_stadiums = [name for name in stadiums if name and name != "None"]
+        raw_value = app.settings_ini.read(hid, section)
+        valid_stadiums, police, pitch, net = self._parse_assignment(raw_value)
+        if len(valid_stadiums) == 0 and not all([police, pitch, net]):
+            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {raw_value}")
         if not valid_stadiums:
             raise RuntimeError(f"No valid stadium names in assignment [{section}] {hid}")
         stad_name = random.choice(valid_stadiums)
