@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tkinter as tk
+import unicodedata
 from pathlib import Path
 from tkinter import ttk
 
@@ -210,7 +211,7 @@ class StadiumDialog(BaseDialog):
         self._all_stadiums = ["None"]
         self._country_group_labels = {"All Countries": "All Countries"}
         if self.stadium_source.exists():
-            self._all_stadiums.extend(directory.name for directory in sorted(p for p in self.stadium_source.iterdir() if p.is_dir()))
+            self._all_stadiums.extend(self._discover_stadium_names())
         self._country_group_values = self._build_country_group_values(self._all_stadiums)
         self.country_group_var.set(self._country_group_values[0] if self._country_group_values else "All Countries")
         self.grid_columnconfigure(0, weight=5)
@@ -369,6 +370,18 @@ class StadiumDialog(BaseDialog):
         self._on_net_changed()
         self._on_police_changed()
 
+    def _discover_stadium_names(self) -> list[str]:
+        discovered: dict[str, Path] = {}
+        for item in sorted(self.stadium_source.iterdir(), key=lambda path: (not path.is_dir(), path.name.lower())):
+            if item.is_dir():
+                discovered.setdefault(item.name, item)
+                continue
+            if item.is_file() and item.suffix.lower() == ".rar":
+                stem = item.stem.strip()
+                if stem:
+                    discovered.setdefault(stem, item)
+        return sorted(discovered, key=str.casefold)
+
     def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None) -> None:
         self._dark_label(parent, label, muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 12, 0))
         combo = ttk.Combobox(parent, state="readonly", textvariable=variable, values=values or ["0"])
@@ -400,6 +413,11 @@ class StadiumDialog(BaseDialog):
             if len(code) == 3 and code.isalpha():
                 return code
         return "Other"
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
 
     def _build_country_group_values(self, stadium_names: list[str]) -> list[str]:
         counts: dict[str, int] = {}
@@ -444,7 +462,7 @@ class StadiumDialog(BaseDialog):
             return
         previous_selection = self._selected_stadium_names()
         selected_name = previous_selection[0] if previous_selection else self.selectedstadium.get() or "None"
-        query = self.search_var.get().strip().lower()
+        query = self._normalize_text(self.search_var.get().strip())
         selected_group = self._selected_country_group()
         filtered = []
         for name in self._all_stadiums:
@@ -454,7 +472,7 @@ class StadiumDialog(BaseDialog):
                 continue
             if selected_group != "All Countries" and self._country_code_for_stadium(name) != selected_group:
                 continue
-            if query and query not in name.lower():
+            if query and query not in self._normalize_text(name):
                 continue
             filtered.append(name)
         if not filtered:
@@ -533,11 +551,15 @@ class StadiumDialog(BaseDialog):
         stadium_name = (stadium_name or "").strip()
         if not stadium_name or stadium_name == "None":
             return None
-        preview_dir = self.stadium_source / stadium_name / "render" / "thumbnail" / "stadium"
+        preview_dir = self.stadium_source / "render" / "thumbnail" / "stadium"
         if not preview_dir.exists():
             return None
-        for candidate in sorted(preview_dir.glob("stadium.*")):
-            if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".jepg"}:
+        for candidate in sorted(preview_dir.iterdir()):
+            if not candidate.is_file():
+                continue
+            if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".jepg"}:
+                continue
+            if candidate.stem.casefold() == stadium_name.casefold():
                 return candidate
         return None
 

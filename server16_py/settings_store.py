@@ -5,10 +5,16 @@ from pathlib import Path
 
 
 class SettingsStore:
+    DEFAULTS = {
+        "FIFAEXE": "default",
+        "CAMERAPACKAGE": "",
+        "SHOW_STADIUM_LOADING_NOTIFICATION": True,
+    }
+
     def __init__(self, path: Path) -> None:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.data = {"FIFAEXE": "default", "CAMERAPACKAGE": ""}
+        self.data = dict(self.DEFAULTS)
         self.load()
 
     def load(self) -> None:
@@ -16,9 +22,12 @@ class SettingsStore:
             self.save()
             return
         try:
-            self.data = json.loads(self.path.read_text(encoding="utf-8"))
+            loaded = json.loads(self.path.read_text(encoding="utf-8"))
+            if not isinstance(loaded, dict):
+                raise ValueError("Settings file must contain an object")
+            self.data = {**self.DEFAULTS, **loaded}
         except Exception:
-            self.data = {"FIFAEXE": "default", "CAMERAPACKAGE": ""}
+            self.data = dict(self.DEFAULTS)
 
     def save(self) -> None:
         self.path.write_text(json.dumps(self.data, indent=2), encoding="utf-8")
@@ -39,4 +48,13 @@ class SettingsStore:
     @camera_package.setter
     def camera_package(self, value: str) -> None:
         self.data["CAMERAPACKAGE"] = value
+        self.save()
+
+    @property
+    def show_stadium_loading_notification(self) -> bool:
+        return bool(self.data.get("SHOW_STADIUM_LOADING_NOTIFICATION", True))
+
+    @show_stadium_loading_notification.setter
+    def show_stadium_loading_notification(self, value: bool) -> None:
+        self.data["SHOW_STADIUM_LOADING_NOTIFICATION"] = bool(value)
         self.save()

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import unicodedata
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -57,12 +58,13 @@ class SettingsSectionFrame(tk.Frame):
     NET_DEFAULTS = {"down": "1086199011", "high": "1087199011", "rig": "4", "shape": "0"}
     STADIUM_NAME_DEFAULTS = {"name": "", "active": "1"}
     CHANTS_DEFAULTS = {
-        "default": "0.12",
-        "winning": "0.15",
-        "lose1": "0.10",
-        "lose2": "0.05",
-        "lose3": "0.15",
-        "goal": "0.13",
+        "folder": "",
+        "default": "0.30",
+        "winning": "0.35",
+        "lose1": "0.25",
+        "lose2": "0.30",
+        "lose3": "0.30",
+        "clubsong": "0.18",
     }
 
     def __init__(self, parent: tk.Misc, app, spec: SectionSpec) -> None:
@@ -239,18 +241,25 @@ class SettingsSectionFrame(tk.Frame):
         self._add_combo_row(self.body, 1, "Active", self.active_var, ["0", "1"])
 
     def _build_chants_editor(self) -> None:
+        self.chants_folder_var = tk.StringVar(value=self.CHANTS_DEFAULTS["folder"])
         self.default_var = tk.StringVar(value=self.CHANTS_DEFAULTS["default"])
         self.winning_var = tk.StringVar(value=self.CHANTS_DEFAULTS["winning"])
         self.lose1_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose1"])
         self.lose2_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose2"])
         self.lose3_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose3"])
-        self.goal_var = tk.StringVar(value=self.CHANTS_DEFAULTS["goal"])
-        self._add_entry_row(self.body, 0, "Default", self.default_var)
-        self._add_entry_row(self.body, 1, "Winning", self.winning_var)
-        self._add_entry_row(self.body, 2, "Lose 1", self.lose1_var)
-        self._add_entry_row(self.body, 3, "Lose 2", self.lose2_var)
-        self._add_entry_row(self.body, 4, "Lose 3", self.lose3_var)
-        self._add_entry_row(self.body, 5, "Goal", self.goal_var)
+        self.clubsong_var = tk.StringVar(value=self.CHANTS_DEFAULTS["clubsong"])
+        self._add_combo_row(self.body, 0, "Chants Folder", self.chants_folder_var, self._available_choices())
+        self._add_entry_row(self.body, 1, "Default", self.default_var)
+        self._add_entry_row(self.body, 2, "Winning", self.winning_var)
+        self._add_entry_row(self.body, 3, "Lose 1", self.lose1_var)
+        self._add_entry_row(self.body, 4, "Lose 2", self.lose2_var)
+        self._add_entry_row(self.body, 5, "Lose 3", self.lose3_var)
+        self._add_entry_row(self.body, 6, "Club Song", self.clubsong_var)
+
+    @staticmethod
+    def _normalize_text(value: str) -> str:
+        normalized = unicodedata.normalize("NFKD", value or "")
+        return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
 
     def _add_entry_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, readonly: bool = False):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
@@ -319,9 +328,13 @@ class SettingsSectionFrame(tk.Frame):
         current_selection = self.selected_key if preserve else None
         self.app.settings_ini.reload()
         items = self.app.settings_ini.items(self.spec.section)
-        query = self.search_var.get().strip().lower()
+        query = self._normalize_text(self.search_var.get().strip())
         if query:
-            items = [(key, value) for key, value in items if query in key.lower() or query in value.lower()]
+            items = [
+                (key, value)
+                for key, value in items
+                if query in self._normalize_text(key) or query in self._normalize_text(value)
+            ]
         self.entries_list.delete(0, "end")
         self._display_keys = []
         for key, value in items:
@@ -366,12 +379,14 @@ class SettingsSectionFrame(tk.Frame):
             self.display_name_var.set("")
             self.active_var.set(self.STADIUM_NAME_DEFAULTS["active"])
         elif self.spec.kind == "chants":
+            choices = self._available_choices()
+            self.chants_folder_var.set(choices[0] if choices else self.CHANTS_DEFAULTS["folder"])
             self.default_var.set(self.CHANTS_DEFAULTS["default"])
             self.winning_var.set(self.CHANTS_DEFAULTS["winning"])
             self.lose1_var.set(self.CHANTS_DEFAULTS["lose1"])
             self.lose2_var.set(self.CHANTS_DEFAULTS["lose2"])
             self.lose3_var.set(self.CHANTS_DEFAULTS["lose3"])
-            self.goal_var.set(self.CHANTS_DEFAULTS["goal"])
+            self.clubsong_var.set(self.CHANTS_DEFAULTS["clubsong"])
         elif self.spec.kind == "exclude":
             self.exclude_var.set("excluded from stadium server")
         self.status_var.set("Novo item pronto. Salvar grava imediatamente no settings.ini.")
@@ -435,14 +450,15 @@ class SettingsSectionFrame(tk.Frame):
 
     def _load_chants_value(self, value: str) -> None:
         parts = [part.strip() for part in value.split(",")]
-        while len(parts) < 6:
+        while len(parts) < 7:
             parts.append("")
-        self.default_var.set(parts[0] or self.CHANTS_DEFAULTS["default"])
-        self.winning_var.set(parts[1] or self.CHANTS_DEFAULTS["winning"])
-        self.lose1_var.set(parts[2] or self.CHANTS_DEFAULTS["lose1"])
-        self.lose2_var.set(parts[3] or self.CHANTS_DEFAULTS["lose2"])
-        self.lose3_var.set(parts[4] or self.CHANTS_DEFAULTS["lose3"])
-        self.goal_var.set(parts[5] or self.CHANTS_DEFAULTS["goal"])
+        self.chants_folder_var.set(parts[0] or self.CHANTS_DEFAULTS["folder"])
+        self.default_var.set(parts[1] or self.CHANTS_DEFAULTS["default"])
+        self.winning_var.set(parts[2] or self.CHANTS_DEFAULTS["winning"])
+        self.lose1_var.set(parts[3] or self.CHANTS_DEFAULTS["lose1"])
+        self.lose2_var.set(parts[4] or self.CHANTS_DEFAULTS["lose2"])
+        self.lose3_var.set(parts[5] or self.CHANTS_DEFAULTS["lose3"])
+        self.clubsong_var.set(parts[6] or self.CHANTS_DEFAULTS["clubsong"])
 
     def _compose_value(self) -> str:
         if self.spec.kind == "simple":
@@ -467,12 +483,13 @@ class SettingsSectionFrame(tk.Frame):
         if self.spec.kind == "chants":
             return ",".join(
                 [
+                    self.chants_folder_var.get().strip(),
                     self.default_var.get().strip(),
                     self.winning_var.get().strip(),
                     self.lose1_var.get().strip(),
                     self.lose2_var.get().strip(),
                     self.lose3_var.get().strip(),
-                    self.goal_var.get().strip(),
+                    self.clubsong_var.get().strip(),
                 ]
             )
         if self.spec.kind == "exclude":

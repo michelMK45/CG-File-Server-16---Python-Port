@@ -110,6 +110,7 @@ class Server16App(tk.Tk):
         self._worker_poll_job = None
         self._stadium_task_running = False
         self._stadium_task_signature = None
+        self._stadium_task_request_key = None
         self._last_stadium_applied_signature = None
         self.labels = {}
         self.info_labels = {}
@@ -144,6 +145,7 @@ class Server16App(tk.Tk):
         self._stadium_loading_hwnd = 0
         self._stadium_loading_visible = False
         self._stadium_loading_restore_fullscreen = False
+        self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.status_pill = None
         self.dashboard_canvas = None
         self.dashboard_scrollbar = None
@@ -591,6 +593,10 @@ class Server16App(tk.Tk):
     def _show_stadium_loading_modal(self, stadium_name: str, detail: str = "Preparing stadium assets", progress: float = 0.0) -> None:
         if self.stadium_loading_modal is None:
             return
+        if not self.show_stadium_loading_var.get():
+            self._stadium_loading_visible = False
+            self._stadium_loading_restore_fullscreen = False
+            return
         self.stadium_loading_modal.configure(cursor="arrow")
         self._update_stadium_loading_preview(stadium_name)
         if self.stadium_loading_name is not None:
@@ -639,6 +645,8 @@ class Server16App(tk.Tk):
             self.stadium_loading_detail.configure(text=detail)
         if self.stadium_loading_progress_text is not None:
             self.stadium_loading_progress_text.configure(text=f"{int(max(0, min(100, value)))}%")
+        if not self.show_stadium_loading_var.get():
+            return
         if self._stadium_loading_visible:
             self._position_stadium_loading_modal()
             self.stadium_loading_modal.update_idletasks()
@@ -762,11 +770,15 @@ class Server16App(tk.Tk):
             if root in seen:
                 continue
             seen.add(root)
-            preview_dir = root / stadium_name / "render" / "thumbnail" / "stadium"
+            preview_dir = root / "render" / "thumbnail" / "stadium"
             if not preview_dir.exists():
                 continue
-            for candidate in sorted(preview_dir.glob("stadium.*")):
-                if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".jepg"}:
+            for candidate in sorted(preview_dir.iterdir()):
+                if not candidate.is_file():
+                    continue
+                if candidate.suffix.lower() not in {".png", ".jpg", ".jpeg", ".jepg"}:
+                    continue
+                if candidate.stem.casefold() == stadium_name.casefold():
                     return candidate
         return None
 
@@ -986,7 +998,7 @@ class Server16App(tk.Tk):
     def _build_stadium_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "STADIUM BAY", "Preview and loaded stadium details")
         card.grid(row=row, column=0, sticky="nsew", pady=(0, 12))
-        card.configure(height=424)
+        card.configure(height=464)
         card.grid_propagate(False)
         preview_frame = tk.Frame(card, bg=self.card)
         preview_frame.pack(fill="x", padx=10, pady=(4, 8))
@@ -1010,6 +1022,14 @@ class Server16App(tk.Tk):
         body.grid_columnconfigure(0, weight=1)
         self._build_stat(body, 0, 0, "Current Stadium", "stadium", "-", value_wraplength=300, block_height=64)
         self._build_stat(body, 1, 0, "Stadium ID", "stadid", "-")
+        notification_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text="Show loading notification",
+            variable=self.show_stadium_loading_var,
+            command=self._toggle_stadium_loading_visibility,
+        )
+        notification_switch.pack(anchor="w", padx=12, pady=(0, 10))
         ttk.Button(card, text="Assign Stadium", command=self.assign_stadium).pack(fill="x", padx=12, pady=(0, 10))
         ttk.Button(card, text="Edit Stadium Settings", command=self.open_stadium_settings_editor).pack(fill="x", padx=12, pady=(0, 10))
         self.progress_text = tk.Label(card, text="Idle", bg=self.card, fg=self.muted, font=("Bahnschrift", 9))
@@ -1019,6 +1039,12 @@ class Server16App(tk.Tk):
         self.progress_bar.pack(fill="x", padx=12, pady=(0, 12))
         self._set_progress(0, "Idle")
         self._update_stadium_preview(self.labels["stadium"].cget("text"))
+
+    def _toggle_stadium_loading_visibility(self) -> None:
+        self.settings.show_stadium_loading_notification = self.show_stadium_loading_var.get()
+        if self.show_stadium_loading_var.get():
+            return
+        self._hide_stadium_loading_modal()
 
     def _build_modules_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "MODULES", "Loaded from settings.ini at startup")
@@ -1519,6 +1545,7 @@ class Server16App(tk.Tk):
                 _, message = event
                 self._stadium_task_running = False
                 self._stadium_task_signature = None
+                self._stadium_task_request_key = None
                 self._set_process_status("Stadium Error", self.error)
                 self._hide_stadium_loading_modal()
                 self.log(message)
