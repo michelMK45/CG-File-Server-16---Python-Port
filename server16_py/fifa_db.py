@@ -1,4 +1,4 @@
-"""FIFA 16 Team Database Reader - Uses FifaLibrary14.dll to read t3db databases directly"""
+"""FIFA 16 Database Reader - Uses FifaLibrary14.dll to read t3db databases directly"""
 
 from __future__ import annotations
 

@@ -1050,8 +1050,11 @@ class Server16App(tk.Tk):
         self.settings.data["discord_rpc"] = discord_config
         self.settings.save()
         self.module_states["Discord RPC"] = new_state
-        self.settings_ini.write("discordRP", "1" if new_state else "0", "Modules")
-        self.settings_ini.save()
+        if self._has_selected_fifa_exe():
+            self.settings_ini.write("discordRP", "1" if new_state else "0", "Modules")
+            self.settings_ini.save()
+        else:
+            self.log("Discord RPC state kept only in runtime/settings.json until FIFA EXE is selected")
         
         # Connect or disconnect based on new state
         try:
@@ -1075,8 +1078,9 @@ class Server16App(tk.Tk):
             discord_config["enabled"] = not new_state
             self.settings.data["discord_rpc"] = discord_config
             self.settings.save()
-            self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
-            self.settings_ini.save()
+            if self._has_selected_fifa_exe():
+                self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
+                self.settings_ini.save()
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "CHANTS CONTROL", "Crowd audio, club anthem and detailed playback state")
@@ -1521,7 +1525,7 @@ class Server16App(tk.Tk):
         if self._stadium_task_running or not self._worker_queue.empty():
             self._schedule_worker_poll()
 
-    def setuppaths(self) -> None:
+    def setuppaths(self, load_team_database: bool = True) -> None:
         self.fifaEXE = self.settings.fifa_exe
         self.MP = Path(self.fifaEXE).stem if self.fifaEXE != "default" else ""
         self.exedir = Path(self.fifaEXE).parent if self.fifaEXE != "default" else self.base_dir
@@ -1542,7 +1546,8 @@ class Server16App(tk.Tk):
         self.settings_ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
         self._load_module_states()
         self._update_audio_overview()
-        self._load_team_database()
+        if load_team_database:
+            self._load_team_database()
 
     def _first_existing(self, *paths: Path) -> Path:
         for path in paths:
@@ -1557,9 +1562,11 @@ class Server16App(tk.Tk):
         discord_ini_value = self.settings_ini.read("discordRP", "Modules")
         if discord_ini_value in {"0", "1"}:
             self._discord_rpc_enabled = discord_ini_value == "1"
-        else:
+        elif self._has_selected_fifa_exe():
             self.settings_ini.write("discordRP", "1" if self._discord_rpc_enabled else "0", "Modules")
             self.settings_ini.save()
+        else:
+            self.log("Skipping Modules bootstrap in settings.ini until FIFA EXE is selected")
         self.module_states["Discord RPC"] = self._discord_rpc_enabled
         loaded = ", ".join(
             f"{name}={'1' if enabled else '0'}"
@@ -1583,6 +1590,9 @@ class Server16App(tk.Tk):
         enabled = self.settings_ini.read(name, "Modules") == "1"
         self.module_states[name] = enabled
         return enabled
+
+    def _has_selected_fifa_exe(self) -> bool:
+        return bool(self.fifaEXE and self.fifaEXE != "default")
 
     def _open_settings_editor(self, editor_key: str, title: str, specs, initial_section: str | None = None) -> None:
         existing = self._settings_editors.get(editor_key)
@@ -1609,12 +1619,30 @@ class Server16App(tk.Tk):
         filename = filedialog.askopenfilename(filetypes=[("Executable", "*.exe")], title="Select FIFA 16 EXE")
         if not filename:
             return
-        self.settings.fifa_exe = filename
-        self.setuppaths()
-        self._load_team_database()
-        self.apply_bootstrap_files()
-        self.refresh_modules()
-        self.log(f"Selected FIFA executable: {filename}")
+        window = self._window()
+        window.configure(cursor="watch")
+        window.update_idletasks()
+        try:
+            self._set_process_status("Loading FIFA Data", self.accent)
+            self._set_progress(8, "Saving selected executable")
+            self.settings.fifa_exe = filename
+            self._set_progress(24, "Configuring runtime paths")
+            self.setuppaths(load_team_database=False)
+            self._load_team_database(lambda value, text: self._set_progress(value, text))
+            self._set_progress(82, "Applying bootstrap files")
+            self.apply_bootstrap_files()
+            self._set_progress(94, "Refreshing modules")
+            self.refresh_modules()
+            self._set_progress(100, "FIFA data ready")
+            self._set_process_status("FIFA Ready", self.success)
+            self.log(f"Selected FIFA executable: {filename}")
+        except Exception as exc:
+            self._set_process_status("FIFA Load Error", self.error)
+            self.log("Failed while loading FIFA data after selecting executable", exc, exc_info=sys.exc_info())
+            messagebox.showerror("FIFA 16", "Could not finish loading FIFA data. Check logs for details.")
+        finally:
+            window.configure(cursor="")
+            window.update_idletasks()
 
     def _auto_detect_fifa_exe(self) -> Path | None:
         for name in ("fifa16.exe", "FIFA16.exe", "FIFA 16.exe", "fifa 16.exe"):
@@ -1627,7 +1655,7 @@ class Server16App(tk.Tk):
                 return candidate
         return None
 
-    def _load_team_database(self) -> None:
+    def _load_team_database(self, progress_callback=None) -> None:
         """Load FIFA team database for the selected installation"""
         if not self.fifaEXE or self.fifaEXE == "default":
             self.team_db = None
@@ -1637,18 +1665,28 @@ class Server16App(tk.Tk):
         try:
             fifa_root = Path(self.fifaEXE).parent
             self.team_db = FifaDatabase(fifa_root)
+            if progress_callback is not None:
+                progress_callback(50, "Connecting to FIFA database")
             if self.team_db.connect():
-                self.team_db.load_all_teams()
+                if progress_callback is not None:
+                    progress_callback(72, "Loading teams and stadiums")
+                team_count = self.team_db.load_all_teams()
                 # Connect resolver to Discord RPC
                 self.discord_rpc.set_team_name_resolver(self.team_db.get_team_name)
-                self.log(f" Team database loaded for {fifa_root.name}")
+                self.log(f" Team database loaded for {fifa_root.name} ({team_count} teams)")
+                if progress_callback is not None:
+                    progress_callback(78, "Team database ready")
             else:
                 reason = self.team_db.last_error if self.team_db else "unknown reason"
                 self.log(f"️  Could not connect to team database: {reason}")
                 self.team_db = None
+                if progress_callback is not None:
+                    progress_callback(78, "Database unavailable, continuing")
         except Exception as e:
             self.log(f"❌ Error loading team database: {e}")
             self.team_db = None
+            if progress_callback is not None:
+                progress_callback(78, "Database load failed, continuing")
 
     def _resolve_team_name(self, team_id: str) -> str | None:
         """Resolve a team id to its display name using the loaded team database."""

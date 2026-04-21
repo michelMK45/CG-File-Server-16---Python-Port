@@ -480,6 +480,9 @@ class SettingsSectionFrame(tk.Frame):
         return ""
 
     def save_entry(self) -> None:
+        if not self.app._has_selected_fifa_exe():
+            messagebox.showwarning("Settings", "Selecione o executavel do FIFA 16 antes de salvar no settings.ini.")
+            return
         key = self.key_var.get().strip()
         if not key:
             messagebox.showwarning("Settings", "Informe a chave da entrada.")
@@ -502,6 +505,9 @@ class SettingsSectionFrame(tk.Frame):
         self._apply_runtime()
 
     def delete_entry(self) -> None:
+        if not self.app._has_selected_fifa_exe():
+            messagebox.showwarning("Settings", "Selecione o executavel do FIFA 16 antes de editar o settings.ini.")
+            return
         key = self.key_var.get().strip() or self.selected_key
         if not key:
             return
