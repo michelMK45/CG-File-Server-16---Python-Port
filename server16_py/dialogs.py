@@ -118,6 +118,7 @@ class ScoreboardDialog(BaseDialog):
             textvariable=self.scope,
             values=tuple(label for _, label in SCOREBOARD_SCOPE_OPTIONS),
             width=40,
+            style="Server16.TCombobox",
         ).grid(
             row=0, column=0, columnspan=2, padx=12, pady=12, sticky="ew"
         )
@@ -138,7 +139,7 @@ class ScoreboardDialog(BaseDialog):
         ).grid(row=3, column=0, columnspan=2, padx=12, pady=12, sticky="ew")
 
     def _build_listbox(self, row: int, column: int, base: Path, default: str, target: tk.StringVar) -> None:
-        listbox = tk.Listbox(self, exportselection=False, width=28, height=16)
+        listbox = self._dark_listbox(self, exportselection=False, width=28, height=16)
         listbox.grid(row=row, column=column, padx=12, pady=8)
         listbox.insert("end", default)
         if base.exists():
@@ -162,8 +163,9 @@ class MovieDialog(BaseDialog):
             textvariable=self.scope,
             values=tuple(label for _, label in MOVIE_SCOPE_OPTIONS),
             width=32,
+            style="Server16.TCombobox",
         ).pack(fill="x", padx=12, pady=12)
-        listbox = tk.Listbox(self, exportselection=False, width=36, height=16)
+        listbox = self._dark_listbox(self, exportselection=False, width=36, height=16)
         listbox.pack(padx=12, pady=8)
         listbox.insert("end", "None")
         movie_dir = exedir / "MoviesGBD"
@@ -249,6 +251,7 @@ class StadiumDialog(BaseDialog):
             state="readonly",
             textvariable=self.scope,
             values=tuple(label for _, label in STADIUM_SCOPE_OPTIONS),
+            style="Server16.TCombobox",
         )
         scope_combo.grid(row=1, column=0, sticky="ew", pady=(6, 12))
 
@@ -256,7 +259,7 @@ class StadiumDialog(BaseDialog):
         self.selection_hint.grid(row=2, column=0, sticky="w", pady=(0, 8))
 
         self._dark_label(left_body, "Search Stadium", muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=3, column=0, sticky="w")
-        search_entry = ttk.Entry(left_body, textvariable=self.search_var)
+        search_entry = ttk.Entry(left_body, textvariable=self.search_var, style="Server16.TEntry")
         search_entry.grid(row=4, column=0, sticky="ew", pady=(6, 10))
         search_entry.bind("<KeyRelease>", self._on_search_changed)
         search_entry.bind("<Return>", self._on_search_changed)
@@ -267,6 +270,7 @@ class StadiumDialog(BaseDialog):
             state="readonly",
             textvariable=self.country_group_var,
             values=self._country_group_values,
+            style="Server16.TCombobox",
         )
         self.country_group_combo.grid(row=6, column=0, sticky="ew", pady=(6, 10))
 
@@ -276,7 +280,12 @@ class StadiumDialog(BaseDialog):
         stadium_list_wrap.grid_rowconfigure(0, weight=1)
 
         self.stadiums = self._dark_listbox(stadium_list_wrap, exportselection=False, height=22, selectmode="browse", font=("Consolas", 10))
-        stadium_scroll = ttk.Scrollbar(stadium_list_wrap, orient="vertical", command=self.stadiums.yview)
+        stadium_scroll = ttk.Scrollbar(
+            stadium_list_wrap,
+            orient="vertical",
+            command=self.stadiums.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
         self.stadiums.configure(yscrollcommand=stadium_scroll.set)
         self.stadiums.grid(row=0, column=0, sticky="nsew")
         stadium_scroll.grid(row=0, column=1, sticky="ns", padx=(8, 0))
@@ -295,7 +304,12 @@ class StadiumDialog(BaseDialog):
         right_wrap.grid_rowconfigure(0, weight=1)
 
         right_canvas = tk.Canvas(right_wrap, bg=self.card, highlightthickness=0, bd=0)
-        right_scroll = ttk.Scrollbar(right_wrap, orient="vertical", command=right_canvas.yview)
+        right_scroll = ttk.Scrollbar(
+            right_wrap,
+            orient="vertical",
+            command=right_canvas.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
         right_body = tk.Frame(right_canvas, bg=self.card)
         right_body.grid_columnconfigure(0, weight=1)
         right_body.grid_rowconfigure(1, weight=1)
@@ -384,7 +398,7 @@ class StadiumDialog(BaseDialog):
 
     def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None) -> None:
         self._dark_label(parent, label, muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 12, 0))
-        combo = ttk.Combobox(parent, state="readonly", textvariable=variable, values=values or ["0"])
+        combo = ttk.Combobox(parent, state="readonly", textvariable=variable, values=values or ["0"], style="Server16.TCombobox")
         combo.grid(row=row + 1, column=0, sticky="ew", pady=(6, 0))
         if callback is not None:
             combo.bind("<<ComboboxSelected>>", callback)

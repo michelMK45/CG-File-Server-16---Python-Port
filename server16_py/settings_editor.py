@@ -269,6 +269,8 @@ class SettingsSectionFrame(tk.Frame):
             bg=self.app.panel_alt,
             fg=self.app.fg,
             insertbackground=self.app.fg,
+            readonlybackground=self.app.panel_alt,
+            disabledforeground=self.app.muted,
             relief="flat",
             font=("Consolas", 11),
         )
@@ -280,7 +282,7 @@ class SettingsSectionFrame(tk.Frame):
 
     def _add_combo_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, values: list[str]):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10))
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
         combo.grid(row=row, column=1, sticky="ew", pady=4)
         parent.grid_columnconfigure(1, weight=1)
         return combo
