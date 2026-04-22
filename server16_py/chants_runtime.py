@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import itertools
 import sys
 import threading
 import time
@@ -13,98 +14,169 @@ if TYPE_CHECKING:
     from .app import Server16App
 
 
+def _ensure_pygame_mixer() -> None:
+    """Initialize pygame mixer once, shared across all players."""
+    import pygame
+
+    if not pygame.mixer.get_init():
+        pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=2048)
+
+
 class MciAudioPlayer:
     """
-    Windows-native player for chants playback.
-    Keeping the audio inside this process makes the app show up correctly in
-    the Windows volume mixer so its level can be adjusted independently.
+    Player that prefers the native Windows MCI backend so chants show up as
+    their own app session in the Windows volume mixer, while still falling
+    back to pygame if the native path is unavailable.
     """
 
-    _counter = 0
+    _alias_counter = itertools.count(1)
+    _owner: "MciAudioPlayer | None" = None
 
     def __init__(self) -> None:
-        self._winmm = ctypes.WinDLL("winmm")
-        self._winmm.mciSendStringW.argtypes = [
-            ctypes.c_wchar_p,
-            ctypes.c_wchar_p,
-            ctypes.c_uint,
-            ctypes.c_void_p,
-        ]
-        self._winmm.mciSendStringW.restype = ctypes.c_uint
-        MciAudioPlayer._counter += 1
-        self.alias = f"server16_audio_{MciAudioPlayer._counter}"
+        self._backend = "mci"
+        self._pygame = None
+        self._winmm = None
+        self.alias = f"server16_audio_{next(self._alias_counter)}"
+        try:
+            self._winmm = ctypes.WinDLL("winmm")
+            self._winmm.mciSendStringW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p, ctypes.c_uint, ctypes.c_void_p]
+            self._winmm.mciSendStringW.restype = ctypes.c_uint
+        except Exception:
+            self._backend = "pygame"
+            import pygame
+
+            self._pygame = pygame
+            _ensure_pygame_mixer()
         self._open = False
         self._paused = False
         self._volume: float = 1.0
 
-    def _send(self, command: str) -> str:
-        buffer = ctypes.create_unicode_buffer(260)
+    def _send_mci(self, command: str) -> str:
+        if self._winmm is None:
+            raise RuntimeError("MCI backend is not available")
+        buffer = ctypes.create_unicode_buffer(255)
         result = self._winmm.mciSendStringW(command, buffer, len(buffer), None)
         if result != 0:
             raise RuntimeError(f"MCI command failed ({result}): {command}")
-        return buffer.value
+        return buffer.value.strip()
 
     def open(self, path: Path) -> None:
         self.close()
-        self._send(f'open "{path}" type mpegvideo alias {self.alias}')
+        if self._backend == "pygame":
+            self._pygame.mixer.music.load(str(path))
+            MciAudioPlayer._owner = self
+        else:
+            escaped = str(path).replace('"', '""')
+            self._send_mci(f'open "{escaped}" type mpegvideo alias {self.alias}')
         self._open = True
         self._paused = False
         self.set_volume(self._volume)
 
     def play(self) -> None:
-        if self._open:
-            self._send(f"play {self.alias} from 0")
-            self._paused = False
+        if not self._open:
+            return
+        if self._backend == "pygame":
+            if not self._is_owner():
+                return
+            self._pygame.mixer.music.play(start=0.0)
+        else:
+            self._send_mci(f"play {self.alias} from 0")
+        self._paused = False
 
     def pause(self) -> None:
-        if self._open and not self._paused:
-            self._send(f"pause {self.alias}")
-            self._paused = True
+        if not self._open or self._paused:
+            return
+        if self._backend == "pygame":
+            if not self._is_owner():
+                return
+            self._pygame.mixer.music.pause()
+        else:
+            self._send_mci(f"pause {self.alias}")
+        self._paused = True
 
     def resume(self) -> None:
-        if self._open and self._paused:
-            self._send(f"resume {self.alias}")
-            self._paused = False
+        if not self._open or not self._paused:
+            return
+        if self._backend == "pygame":
+            if not self._is_owner():
+                return
+            self._pygame.mixer.music.unpause()
+        else:
+            self._send_mci(f"resume {self.alias}")
+        self._paused = False
 
     def stop(self) -> None:
-        if self._open:
-            try:
-                self._send(f"stop {self.alias}")
-            except Exception:
-                pass
+        if not self._open:
+            return
+        try:
+            if self._backend == "pygame":
+                if not self._is_owner():
+                    return
+                self._pygame.mixer.music.stop()
+            else:
+                self._send_mci(f"stop {self.alias}")
+        except Exception:
+            pass
 
     def close(self) -> None:
-        if self._open:
+        if not self._open:
+            return
+        if self._backend == "pygame":
+            if self._is_owner():
+                try:
+                    self._pygame.mixer.music.stop()
+                    self._pygame.mixer.music.unload()
+                except Exception:
+                    pass
+                MciAudioPlayer._owner = None
+        else:
             try:
-                self._send(f"close {self.alias}")
+                self._send_mci(f"close {self.alias}")
             except Exception:
                 pass
-            self._open = False
-            self._paused = False
+        self._open = False
+        self._paused = False
 
     def set_volume(self, volume: float) -> None:
         self._volume = max(0.0, min(1.0, volume))
-        if self._open:
-            level = max(0, min(1000, int(self._volume * 1000)))
-            self._send(f"setaudio {self.alias} volume to {level}")
+        if not self._open:
+            return
+        if self._backend == "pygame":
+            if not self._is_owner():
+                return
+            self._pygame.mixer.music.set_volume(self._volume)
+        else:
+            try:
+                self._send_mci(f"setaudio {self.alias} volume to {int(self._volume * 1000)}")
+            except Exception:
+                pass
 
     def mode(self) -> str:
         if not self._open:
             return "closed"
+        if self._backend == "pygame":
+            if not self._is_owner():
+                return "closed"
+            if self._paused:
+                return "paused"
+            if self._pygame.mixer.music.get_busy():
+                return "playing"
+            return "stopped"
+        if self._paused:
+            return "paused"
         try:
-            mode = self._send(f"status {self.alias} mode").strip().lower()
+            return self._send_mci(f"status {self.alias} mode").lower()
         except Exception:
-            return "closed"
-        return mode or "stopped"
+            return "stopped"
 
     def is_playing(self) -> bool:
         return self.mode() == "playing"
 
     def is_paused(self) -> bool:
-        try:
-            return self.mode() == "paused"
-        except Exception:
-            return False
+        return self.mode() == "paused"
+
+    def _is_owner(self) -> bool:
+        return MciAudioPlayer._owner is self
 
 
 class ChantsRuntime:
@@ -165,6 +237,7 @@ class ChantsRuntime:
             return
         app.chants_thread_started = True
         app._chants_stop.clear()
+        app._set_display_async("audio_status", "Starting chants monitor")
         threading.Thread(target=self.chants_runtime_loop, daemon=True).start()
         app.log("Chants monitor started")
 
@@ -183,6 +256,7 @@ class ChantsRuntime:
                 pass
             app._chants_player = None
         app._last_chants_score_snapshot = None
+        app._set_display_async("audio_status", "Waiting for FIFA / kickoff")
         app._set_display_async("audio_current", "No active track")
         app._set_display_async("audio_crowd_mode", "Idle")
         app._set_display_async("audio_crowd_volume", "-")
@@ -245,10 +319,12 @@ class ChantsRuntime:
             try:
                 if not app.module_enabled("Chants"):
                     self.reset_chants_state()
+                    app._set_display_async("audio_status", "Chants disabled")
                     time.sleep(0.5)
                     continue
                 if not app.MP or not chants_memory.attack(app.MP) or not chants_memory.is_open():
                     self.reset_chants_state()
+                    app._set_display_async("audio_status", "Waiting for FIFA process")
                     time.sleep(0.5)
                     continue
                 hid = (app.HID or "").split()[0].strip()
@@ -257,6 +333,7 @@ class ChantsRuntime:
                 away_chants = app.settings_ini.read(aid, "chantsid") if aid and app.settings_ini.key_exists(aid, "chantsid") else ""
                 if not app._is_game_running_with(chants_memory):
                     non_running_reads += 1
+                    app._set_display_async("audio_status", "Waiting for live match")
                     if non_running_reads >= 3:
                         app.matchstarted = False
                         if app._chants_player is not None and app._chants_player.is_playing():
@@ -270,6 +347,7 @@ class ChantsRuntime:
                     continue
                 non_running_reads = 0
                 app.matchstarted = True
+                app._set_display_async("audio_status", "Live match monitor")
                 if app._chants_paused and app._chants_player is not None and app._chants_player.is_paused():
                     app._chants_player.resume()
                     self.fade_player(app._chants_player, 0, max(app._chants_target_volume, 0.04), 300)
@@ -305,6 +383,8 @@ class ChantsRuntime:
                 if time.time() < cooldown_until or not home_chants:
                     app._set_display_async("audio_crowd_mode", "Cooldown" if time.time() < cooldown_until else "Awaiting home chants")
                     app._set_display_async("audio_next", "Wait until crowd can restart")
+                    if not home_chants:
+                        app._set_display_async("audio_status", "Missing home chants configuration")
                     time.sleep(0.5)
                     continue
                 if app._chants_player is not None and app._chants_player.mode() == "stopped":
@@ -334,6 +414,7 @@ class ChantsRuntime:
                     continue
                 parts = self._parse_chants_config(home_chants)
                 if len(parts) < 6:
+                    app._set_display_async("audio_status", "Invalid chants configuration")
                     app._set_display_async("audio_crowd_mode", "Invalid config")
                     app._set_display_async("audio_next", "Fix chantsid config")
                     time.sleep(0.5)
@@ -349,11 +430,13 @@ class ChantsRuntime:
                     volume_index = 5
                 chants_dir = chants_root / subdir
                 if not chants_dir.exists():
+                    app._set_display_async("audio_status", f"Missing chants folder: {subdir}")
                     app._set_display_async("audio_next", f"Missing folder {subdir}")
                     time.sleep(0.5)
                     continue
                 track = self._pick_random_track(chants_dir)
                 if track is None:
+                    app._set_display_async("audio_status", f"No chants found in {subdir}")
                     app._set_display_async("audio_next", f"No tracks in {subdir}")
                     time.sleep(0.5)
                     continue
@@ -366,6 +449,7 @@ class ChantsRuntime:
                 app._chants_player.set_volume(0)
                 app._chants_player.play()
                 self.fade_player(app._chants_player, 0, volume, 300)
+                app._set_display_async("audio_status", "Playing chants")
                 app._set_display_async("audio_current", track.stem)
                 app._set_display_async("audio_last_action", f"Chants {subdir}")
                 app._set_display_async("audio_clubsong", hid if hid else "-")
@@ -374,6 +458,7 @@ class ChantsRuntime:
                 app._set_display_async("audio_source", "Home crowd")
                 app._set_display_async("audio_next", "Random crowd loop while match runs")
             except Exception as exc:
+                app._set_display_async("audio_status", "Chants error")
                 app.log("Chants monitor error", exc, exc_info=sys.exc_info())
             time.sleep(0.5)
         chants_memory.close()

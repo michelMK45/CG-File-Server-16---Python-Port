@@ -135,6 +135,7 @@ class Server16App(tk.Tk):
         self.progress_text = None
         self.progress_value = None
         self.stadium_loading_modal = None
+        self.stadium_loading_preview_frame = None
         self.stadium_loading_title = None
         self.stadium_loading_info = None
         self.stadium_loading_name = None
@@ -145,6 +146,7 @@ class Server16App(tk.Tk):
         self._stadium_loading_hwnd = 0
         self._stadium_loading_visible = False
         self._stadium_loading_restore_fullscreen = False
+        self._startup_warm_job = None
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.status_pill = None
         self.dashboard_canvas = None
@@ -248,9 +250,7 @@ class Server16App(tk.Tk):
         self._build_ui()
         self._install_exception_hook()
         self._build_stadium_loading_modal()
-        self.setuppaths()
-        self.refresh_camera_catalog()
-        self.apply_bootstrap_files()
+        self.setuppaths(load_team_database=False)
         self.refresh_modules()
         self.log("Application started")
         self._poll_job = self.after(500, self.poll_process)
@@ -258,6 +258,7 @@ class Server16App(tk.Tk):
         self._overlay_job = self.after(80, self.overlay_loop)
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
+        self._startup_warm_job = self.after(20, self._finish_initial_startup)
         # Log Discord RPC initialization status
         if self._discord_rpc_enabled:
             self.log("Discord RPC initialized (enabled in settings)")
@@ -642,18 +643,19 @@ class Server16App(tk.Tk):
             anchor="w",
         )
         self.stadium_loading_title.pack(fill="x")
+        preview_frame = tk.Frame(modal_frame, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654", height=128)
+        preview_frame.pack_propagate(False)
+        self.stadium_loading_preview_frame = preview_frame
         self.stadium_loading_preview = tk.Label(
-            modal_frame,
+            preview_frame,
             text="STADIUM\nPREVIEW",
             bg=self.card_soft,
             fg=self.muted,
             font=("Bahnschrift", 11, "bold"),
             justify="center",
             anchor="center",
-            highlightthickness=1,
-            highlightbackground="#243654",
         )
-        self.stadium_loading_preview.pack(fill="x", pady=(6, 8), ipady=8)
+        self.stadium_loading_preview.pack(fill="both", expand=True)
         info_frame = tk.Frame(modal_frame, bg=self.card)
         info_frame.pack(fill="x")
         self.stadium_loading_info = info_frame
@@ -696,7 +698,7 @@ class Server16App(tk.Tk):
             anchor="w",
         )
         self.stadium_loading_progress_text.pack(fill="x")
-        modal.geometry("340x252")
+        modal.geometry("340x168")
 
     def _show_stadium_loading_modal(self, stadium_name: str, detail: str = "Preparing stadium assets", progress: float = 0.0) -> None:
         if self.stadium_loading_modal is None:
@@ -705,6 +707,7 @@ class Server16App(tk.Tk):
             self._stadium_loading_visible = False
             self._stadium_loading_restore_fullscreen = False
             return
+        already_visible = self._stadium_loading_visible
         self.stadium_loading_modal.configure(cursor="arrow")
         self._update_stadium_loading_preview(stadium_name)
         if self.stadium_loading_name is not None:
@@ -715,11 +718,14 @@ class Server16App(tk.Tk):
             self.stadium_loading_value.set(max(0, min(100, progress)))
         if self.stadium_loading_progress_text is not None:
             self.stadium_loading_progress_text.configure(text=f"{int(max(0, min(100, progress)))}%")
-        self._stadium_loading_restore_fullscreen = self._is_probable_fullscreen_window(self._fifa_hwnd)
+        if not already_visible:
+            self._stadium_loading_restore_fullscreen = self._is_probable_fullscreen_window(self._fifa_hwnd)
         self._stadium_loading_visible = True
         self._position_stadium_loading_modal()
-        self.stadium_loading_modal.deiconify()
         self.stadium_loading_modal.update_idletasks()
+        if already_visible:
+            return
+        self.stadium_loading_modal.deiconify()
         self.stadium_loading_modal.update()
         self._stadium_loading_hwnd = self.stadium_loading_modal.winfo_id()
         self._apply_noactivate_window_style(self._stadium_loading_hwnd)
@@ -765,7 +771,7 @@ class Server16App(tk.Tk):
             return
         window = self._window()
         window.update_idletasks()
-        modal_height = 252 if self._stadium_loading_preview_visible else 148
+        modal_height = 308 if self._stadium_loading_preview_visible else 168
         if self._overlay_visible and self._fifa_hwnd:
             rect = RECT()
             if self.user32.GetWindowRect(self._fifa_hwnd, ctypes.byref(rect)):
@@ -961,16 +967,18 @@ class Server16App(tk.Tk):
     def _update_stadium_loading_preview(self, stadium_name: str) -> None:
         stadium_name = (stadium_name or "").strip()
         label = self.stadium_loading_preview
+        frame = self.stadium_loading_preview_frame
         if label is None:
             return
         if stadium_name == self._stadium_loading_preview_last_value and self._stadium_loading_image is not None:
             return
         self._stadium_loading_image = None
         image_path = self._resolve_stadium_preview_path(stadium_name)
-        photo = self._load_preview_photo(image_path, (250, 110))
+        photo = self._load_preview_photo(image_path, (312, 116))
         if photo is None:
             if self._stadium_loading_preview_visible:
-                label.pack_forget()
+                if frame is not None:
+                    frame.pack_forget()
                 self._stadium_loading_preview_visible = False
                 self._position_stadium_loading_modal()
             self._stadium_loading_preview_last_value = stadium_name
@@ -978,12 +986,30 @@ class Server16App(tk.Tk):
             return
         if not self._stadium_loading_preview_visible:
             pack_target = self.stadium_loading_info if self.stadium_loading_info is not None else self.stadium_loading_name
-            label.pack(fill="x", pady=(6, 8), ipady=8, before=pack_target)
+            if frame is not None:
+                frame.pack(fill="x", pady=(6, 8), before=pack_target)
             self._stadium_loading_preview_visible = True
             self._position_stadium_loading_modal()
         self._stadium_loading_image = photo
         self._stadium_loading_preview_last_value = stadium_name
         label.configure(image=photo, text="", compound="center")
+
+    def _finish_initial_startup(self) -> None:
+        self._startup_warm_job = None
+        if self._closing:
+            return
+        try:
+            self.refresh_camera_catalog()
+        except Exception as exc:
+            self.log("Deferred camera catalog refresh failed", exc, exc_info=sys.exc_info())
+        if not self._has_selected_fifa_exe():
+            return
+        try:
+            self._load_team_database()
+            self.apply_bootstrap_files()
+            self.refresh_modules()
+        except Exception as exc:
+            self.log("Deferred startup warm-up failed", exc, exc_info=sys.exc_info())
 
     def prepare_floating_window(self) -> tk.Misc:
         window = self._window()
@@ -2641,8 +2667,23 @@ class Server16App(tk.Tk):
     def apply_stadium_runtime(self) -> None:
         self.stadium_runtime.apply_stadium_runtime()
 
-    def _start_stadium_task(self, section_id: str, section_name: str, injid: str, stadium_signature: tuple) -> None:
-        self.stadium_runtime.start_stadium_task(section_id, section_name, injid, stadium_signature)
+    def _start_stadium_task(
+        self,
+        section_id: str,
+        section_name: str,
+        injid: str,
+        stadium_signature: tuple,
+        task_request_key: tuple[str, str, str],
+        desired_stadium: str,
+    ) -> None:
+        self.stadium_runtime.start_stadium_task(
+            section_id,
+            section_name,
+            injid,
+            stadium_signature,
+            task_request_key,
+            desired_stadium,
+        )
 
     def _run_stadium_copy_job(self, hid: str, section: str, injid: str) -> dict:
         return self.stadium_runtime.run_stadium_copy_job(hid, section, injid)
@@ -2760,6 +2801,11 @@ class Server16App(tk.Tk):
         try:
             if self._worker_poll_job is not None:
                 self.after_cancel(self._worker_poll_job)
+        except Exception:
+            pass
+        try:
+            if self._startup_warm_job is not None:
+                self.after_cancel(self._startup_warm_job)
         except Exception:
             pass
         try:
