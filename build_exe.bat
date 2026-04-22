@@ -11,7 +11,6 @@ pyinstaller ^
   --clean ^
   --windowed ^
   --onefile ^
-  --icon "assets\server16.ico" ^
   --name "%APP_NAME%" ^
   --distpath "%DISTPATH%" ^
   --workpath "%WORKPATH%" ^
