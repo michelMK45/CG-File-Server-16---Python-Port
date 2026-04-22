@@ -66,10 +66,9 @@ class StadiumRuntime:
             if desired_stadium == app.curstad:
                 app.CCount = inc_count(0, app.CCount)
             app.injID, app.PoliceNum = set_inj_id(app.CCount)
-            app._show_stadium_loading_modal(desired_stadium, "Preparing stadium assets", progress=4)
             app._set_process_status("Loading Stadium", app.gold)
             app._set_progress(8, f"Preparing stadium {section_id}")
-            self.start_stadium_task(section_id, section_name, app.injID, stadium_signature, task_request_key)
+            self.start_stadium_task(section_id, section_name, app.injID, stadium_signature, task_request_key, desired_stadium)
             return
         app._last_stadium_applied_signature = None
         app._hide_stadium_loading_modal()
@@ -90,11 +89,13 @@ class StadiumRuntime:
         injid: str,
         stadium_signature: tuple,
         task_request_key: tuple[str, str, str],
+        desired_stadium: str,
     ) -> None:
         app = self.app
         app._stadium_task_running = True
         app._stadium_task_signature = stadium_signature
         app._stadium_task_request_key = task_request_key
+        app._show_stadium_loading_modal(desired_stadium, "Preparing stadium assets", progress=4)
         app._update_stadium_loading_modal(10, f"Loading stadium from [{section_name}] {section_id}")
 
         def worker() -> None:
