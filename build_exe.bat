@@ -17,6 +17,7 @@ pyinstaller ^
   --clean ^
   --distpath "%DISTPATH%" ^
   --workpath "%WORKPATH%" ^
+  --add-data "server16.ico;." ^
   "Server16Python.spec"
 
 echo.

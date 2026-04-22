@@ -64,6 +64,9 @@ class Server16App(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.withdraw()
         self.base_dir = self._resolve_base_dir()
+        self.resource_dir = self._resolve_resource_dir()
+        self.icon_path = self._resolve_icon_path()
+        self._window_icon_image = None
         self.log_path = self.base_dir / "runtime" / "server16.log"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
@@ -246,6 +249,7 @@ class Server16App(tk.Tk):
         self.user32.keybd_event.restype = None
         self.user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM), wintypes.LPARAM]
         self.user32.EnumWindows.restype = wintypes.BOOL
+        self._apply_window_icon(self)
         self._configure_theme()
         self._build_ui()
         self._install_exception_hook()
@@ -269,6 +273,37 @@ class Server16App(tk.Tk):
         if getattr(sys, "frozen", False):
             return Path(sys.executable).resolve().parent
         return Path(__file__).resolve().parent.parent
+
+    def _resolve_resource_dir(self) -> Path:
+        bundle_dir = getattr(sys, "_MEIPASS", None)
+        if bundle_dir:
+            return Path(bundle_dir)
+        return self.base_dir
+
+    def _resolve_icon_path(self) -> Path | None:
+        candidates = [
+            self.resource_dir / "server16.ico",
+            self.base_dir / "server16.ico",
+        ]
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    def _apply_window_icon(self, window: tk.Misc) -> None:
+        if self.icon_path is None:
+            return
+        icon_value = str(self.icon_path)
+        try:
+            window.iconbitmap(default=icon_value)
+        except Exception:
+            pass
+        try:
+            image = Image.open(self.icon_path)
+            self._window_icon_image = ImageTk.PhotoImage(image)
+            window.iconphoto(True, self._window_icon_image)
+        except Exception:
+            pass
 
     def _configure_theme(self) -> None:
         self.bg = "#0b1220"
@@ -517,6 +552,7 @@ class Server16App(tk.Tk):
         root.minsize(980, 640)
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.configure(bg=self.bg)
+        self._apply_window_icon(root)
         self.ui_root = root
 
         top = tk.Frame(root, bg=self.bg, padx=10, pady=10)
@@ -631,6 +667,7 @@ class Server16App(tk.Tk):
         modal.overrideredirect(True)
         modal.attributes("-topmost", True)
         modal.configure(bg=self.card)
+        self._apply_window_icon(modal)
         modal_frame = tk.Frame(modal, bg=self.card, highlightthickness=1, highlightbackground="#2a3c59", padx=12, pady=10)
         modal_frame.pack(fill="both", expand=True)
         self.stadium_loading_modal = modal
@@ -1022,6 +1059,7 @@ class Server16App(tk.Tk):
         return window
 
     def configure_secondary_window(self, window: tk.Toplevel) -> None:
+        self._apply_window_icon(window)
         try:
             window.overrideredirect(False)
         except Exception:
