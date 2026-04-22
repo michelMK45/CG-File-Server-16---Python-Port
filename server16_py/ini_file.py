@@ -78,6 +78,9 @@ class SessionIniFile:
         self._sections: dict[str, dict[str, str]] = {}
         self._section_names: dict[str, str] = {}
         self._last_mtime_ns: int | None = None
+        self._dirty_sections: set[str] = set()
+        self._deleted_keys: dict[str, set[str]] = {}
+        self._deleted_sections: set[str] = set()
         self._load()
 
     def _load(self) -> None:
@@ -145,8 +148,40 @@ class SessionIniFile:
             self._section_names[section.lower()] = section
             self._sections[section] = {}
         self._sections.setdefault(resolved_section, {})[key] = value
+        self._dirty_sections.add(resolved_section)
+        self._deleted_sections.discard(resolved_section.lower())
+        deleted_keys = self._deleted_keys.get(resolved_section.lower())
+        if deleted_keys is not None:
+            deleted_keys.discard(key)
 
     def save(self) -> None:
+        merged_sections: dict[str, dict[str, str]] = {}
+        merged_section_names: dict[str, str] = {}
+        if self.path.exists():
+            disk_state = SessionIniFile(self.path)
+            merged_sections = {
+                section: dict(values)
+                for section, values in disk_state._sections.items()
+            }
+            merged_section_names = dict(disk_state._section_names)
+        for section_lower in self._deleted_sections:
+            resolved_section = merged_section_names.pop(section_lower, None)
+            if resolved_section:
+                merged_sections.pop(resolved_section, None)
+        for section_lower, keys in self._deleted_keys.items():
+            resolved_section = merged_section_names.get(section_lower)
+            if not resolved_section:
+                continue
+            section_values = merged_sections.get(resolved_section)
+            if not section_values:
+                continue
+            for key in keys:
+                section_values.pop(key, None)
+        for section in self._dirty_sections:
+            merged_section_names[section.lower()] = section
+            merged_sections[section] = dict(self._sections.get(section, {}))
+        self._sections = merged_sections
+        self._section_names = merged_section_names
         lines: list[str] = []
         for section, values in self._sections.items():
             lines.append(f"[{section}]")
@@ -160,19 +195,28 @@ class SessionIniFile:
             self._last_mtime_ns = self.path.stat().st_mtime_ns
         except OSError:
             self._last_mtime_ns = None
+        self._dirty_sections.clear()
+        self._deleted_keys.clear()
+        self._deleted_sections.clear()
 
     def delete_key(self, key: str, section: str) -> None:
         self._reload_if_needed()
         resolved_section = self._resolve_section_name(section)
         if resolved_section:
             self._sections.get(resolved_section, {}).pop(key, None)
+            self._dirty_sections.add(resolved_section)
+            self._deleted_keys.setdefault(resolved_section.lower(), set()).add(key)
 
     def delete_section(self, section: str) -> None:
         self._reload_if_needed()
         resolved_section = self._resolve_section_name(section)
         if resolved_section:
             self._sections.pop(resolved_section, None)
-            self._section_names.pop(section.lower(), None)
+            section_lower = resolved_section.lower()
+            self._section_names.pop(section_lower, None)
+            self._dirty_sections.discard(resolved_section)
+            self._deleted_keys.pop(section_lower, None)
+            self._deleted_sections.add(section_lower)
 
     def key_exists(self, key: str, section: str) -> bool:
         return bool(self.read(key, section))

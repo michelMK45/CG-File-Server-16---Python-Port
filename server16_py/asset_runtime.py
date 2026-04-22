@@ -28,15 +28,38 @@ class AssetRuntime:
         app = self.app
         chants_enabled = app.module_enabled("Chants") if hasattr(app, "module_states") else False
         app._set_display("audio_module", "Enabled" if chants_enabled else "Disabled")
-        app._set_display("audio_status", "Live match monitor" if chants_enabled else "Idle")
         current_audio = app.labels.get("audio_current").cget("text") if app.labels.get("audio_current") else "-"
+        current_mode = app.labels.get("audio_crowd_mode").cget("text") if app.labels.get("audio_crowd_mode") else "-"
+        current_status = app.labels.get("audio_status").cget("text") if app.labels.get("audio_status") else "-"
+        current_source = app.labels.get("audio_source").cget("text") if app.labels.get("audio_source") else "-"
+        current_next = app.labels.get("audio_next").cget("text") if app.labels.get("audio_next") else "-"
+        current_clubsong = app.labels.get("audio_clubsong").cget("text") if app.labels.get("audio_clubsong") else "-"
+        if not chants_enabled:
+            app._set_display("audio_status", "Idle")
+            if current_audio in {"", "-", "No active track", "No active chant"}:
+                app._set_display("audio_current", "No active chant")
+            app._set_display("audio_clubsong", app.HID or "-")
+            app._set_display("audio_crowd_mode", "Idle")
+            app._set_display("audio_crowd_volume", "-")
+            app._set_display("audio_source", "-")
+            app._set_display("audio_next", "-")
+        else:
+            if current_status in {"", "-", "Idle"}:
+                app._set_display("audio_status", "Live match monitor")
+            if current_audio in {"", "-"}:
+                app._set_display("audio_current", "No active chant")
+            if current_clubsong in {"", "-"}:
+                app._set_display("audio_clubsong", app.HID or "-")
+            if current_mode in {"", "-"}:
+                app._set_display("audio_crowd_mode", "Monitoring")
+            if current_source in {"", "-"}:
+                app._set_display("audio_source", "Home crowd")
+            if current_next in {"", "-"}:
+                app._set_display("audio_next", "Wait for in-game action")
+            if app.labels.get("audio_crowd_volume") and app.labels["audio_crowd_volume"].cget("text") in {"", "-"}:
+                app._set_display("audio_crowd_volume", "Managed by chants")
         if current_audio in {"", "-", "No active track"}:
             app._set_display("audio_current", "No active chant")
-        app._set_display("audio_clubsong", app.HID or "-")
-        app._set_display("audio_crowd_mode", "Paused" if app._chants_paused else "Monitoring" if chants_enabled else "Idle")
-        app._set_display("audio_crowd_volume", "-" if not chants_enabled else "Managed by chants")
-        app._set_display("audio_source", "Home crowd" if chants_enabled else "-")
-        app._set_display("audio_next", "Wait for in-game action" if chants_enabled else "-")
         app._set_display("audio_chants_dir", str(app.exedir / "FSW" / "Chants") if hasattr(app, "exedir") else "-")
         status_label = app.labels.get("status")
         last_action = app.labels.get("audio_last_action").cget("text") if app.labels.get("audio_last_action") else "-"
