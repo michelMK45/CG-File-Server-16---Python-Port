@@ -2,7 +2,14 @@ from __future__ import annotations
 
 import random
 import shutil
+import zipfile
 from pathlib import Path
+
+try:
+    import rarfile
+    _RAR_AVAILABLE = True
+except ImportError:
+    _RAR_AVAILABLE = False
 
 try:
     from win32api import GetFileVersionInfo, HIWORD, LOWORD
@@ -10,6 +17,34 @@ except Exception:
     GetFileVersionInfo = None
     HIWORD = LOWORD = None
 
+
+
+def is_archive(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    return suffix == ".zip" or (suffix == ".rar" and _RAR_AVAILABLE)
+
+
+def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) -> None:
+    suffix = archive_path.suffix.lower()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if suffix == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            members = zf.infolist()
+            total = len(members)
+            for index, member in enumerate(members, start=1):
+                zf.extract(member, dest_dir)
+                if progress_callback:
+                    progress_callback(index, total, member.filename)
+    elif suffix == ".rar" and _RAR_AVAILABLE:
+        with rarfile.RarFile(archive_path, "r") as rf:
+            members = rf.infolist()
+            total = len(members)
+            for index, member in enumerate(members, start=1):
+                rf.extract(member, dest_dir)
+                if progress_callback:
+                    progress_callback(index, total, member.filename)
+    else:
+        raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
 
 
 def checkdirs(path: str | Path) -> None:
@@ -122,7 +157,7 @@ def copy_glares(src: str | Path, day_or_night: str, index: str, inj_id: str, exe
         return
     dst = Path(exedir) / "data" / "sceneassets" / "fx" / f"glares_{inj_id}_{day_or_night}_{index}.lnx"
     dst.parent.mkdir(parents=True, exist_ok=True)
-    lines = src_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+    lines = src_path.read_text(encoding="utf-8-sig", errors="ignore").splitlines()
     rewritten: list[str] = []
     for line in lines:
         if 'name="glares' in line:

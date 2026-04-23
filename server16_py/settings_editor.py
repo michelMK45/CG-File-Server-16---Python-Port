@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-import unicodedata
 import tkinter as tk
 from tkinter import messagebox, ttk
 
@@ -19,7 +18,7 @@ class SectionSpec:
 
 class SettingsAreaEditor(tk.Toplevel):
     def __init__(self, app, title: str, specs: list[SectionSpec], initial_section: str | None = None) -> None:
-        owner = app if isinstance(app, tk.Tk) else getattr(app, "ui_root", None) or app
+        owner = app._window() if hasattr(app, "_window") else app
         super().__init__(owner)
         self.app = app
         self.specs = specs
@@ -27,8 +26,13 @@ class SettingsAreaEditor(tk.Toplevel):
         self.title(title)
         self.geometry("1120x700")
         self.minsize(1000, 640)
-        if hasattr(app, "configure_secondary_window"):
-            app.configure_secondary_window(self)
+        self.transient(owner)
+        self.deiconify()
+        self.lift()
+        try:
+            self.focus_force()
+        except Exception:
+            pass
         self.notebook = ttk.Notebook(self, style="Server16.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         self.frames: dict[str, SettingsSectionFrame] = {}
@@ -59,12 +63,15 @@ class SettingsSectionFrame(tk.Frame):
     STADIUM_NAME_DEFAULTS = {"name": "", "active": "1"}
     CHANTS_DEFAULTS = {
         "folder": "",
-        "default": "0.30",
-        "winning": "0.35",
-        "lose1": "0.25",
-        "lose2": "0.30",
-        "lose3": "0.30",
-        "clubsong": "0.18",
+        "default": "0.12",
+        "winning": "0.15",
+        "lose1": "0.10",
+        "lose2": "0.05",
+        "lose3": "0.15",
+        "goal": "0.13",
+        "silence_prob": "0.15",
+        "silence_max": "8.0",
+        "away_prob": "0.35",
     }
 
     def __init__(self, parent: tk.Misc, app, spec: SectionSpec) -> None:
@@ -236,9 +243,7 @@ class SettingsSectionFrame(tk.Frame):
 
     def _build_scoreboard_name_editor(self) -> None:
         self.display_name_var = tk.StringVar()
-        self.active_var = tk.StringVar(value=self.STADIUM_NAME_DEFAULTS["active"])
         self._add_entry_row(self.body, 0, "Displayed Name", self.display_name_var)
-        self._add_combo_row(self.body, 1, "Active", self.active_var, ["0", "1"])
 
     def _build_chants_editor(self) -> None:
         self.chants_folder_var = tk.StringVar(value=self.CHANTS_DEFAULTS["folder"])
@@ -247,19 +252,21 @@ class SettingsSectionFrame(tk.Frame):
         self.lose1_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose1"])
         self.lose2_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose2"])
         self.lose3_var = tk.StringVar(value=self.CHANTS_DEFAULTS["lose3"])
-        self.clubsong_var = tk.StringVar(value=self.CHANTS_DEFAULTS["clubsong"])
-        self._add_combo_row(self.body, 0, "Chants Folder", self.chants_folder_var, self._available_choices())
-        self._add_entry_row(self.body, 1, "Default", self.default_var)
-        self._add_entry_row(self.body, 2, "Winning", self.winning_var)
-        self._add_entry_row(self.body, 3, "Lose 1", self.lose1_var)
-        self._add_entry_row(self.body, 4, "Lose 2", self.lose2_var)
-        self._add_entry_row(self.body, 5, "Lose 3", self.lose3_var)
-        self._add_entry_row(self.body, 6, "Club Song", self.clubsong_var)
-
-    @staticmethod
-    def _normalize_text(value: str) -> str:
-        normalized = unicodedata.normalize("NFKD", value or "")
-        return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
+        self.goal_var = tk.StringVar(value=self.CHANTS_DEFAULTS["goal"])
+        self.silence_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_prob"])
+        self.silence_max_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_max"])
+        self.away_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["away_prob"])
+        folder_choices = self._available_choices()
+        self._add_combo_row(self.body, 0, "Chants Folder", self.chants_folder_var, folder_choices or [""])
+        self._add_entry_row(self.body, 1, "Vol. Empate", self.default_var)
+        self._add_entry_row(self.body, 2, "Vol. Ganando", self.winning_var)
+        self._add_entry_row(self.body, 3, "Vol. Perdiendo -1", self.lose1_var)
+        self._add_entry_row(self.body, 4, "Vol. Perdiendo -2", self.lose2_var)
+        self._add_entry_row(self.body, 5, "Vol. Complaint -3+", self.lose3_var)
+        self._add_entry_row(self.body, 6, "Vol. ClubSong (gol)", self.goal_var)
+        self._add_entry_row(self.body, 7, "Prob. Silencio (0-1)", self.silence_prob_var)
+        self._add_entry_row(self.body, 8, "Max. Silencio (seg)", self.silence_max_var)
+        self._add_entry_row(self.body, 9, "Prob. Away Crowd (0-1)", self.away_prob_var)
 
     def _add_entry_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, readonly: bool = False):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
@@ -269,8 +276,6 @@ class SettingsSectionFrame(tk.Frame):
             bg=self.app.panel_alt,
             fg=self.app.fg,
             insertbackground=self.app.fg,
-            readonlybackground=self.app.panel_alt,
-            disabledforeground=self.app.muted,
             relief="flat",
             font=("Consolas", 11),
         )
@@ -282,7 +287,7 @@ class SettingsSectionFrame(tk.Frame):
 
     def _add_combo_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, values: list[str]):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10))
         combo.grid(row=row, column=1, sticky="ew", pady=4)
         parent.grid_columnconfigure(1, weight=1)
         return combo
@@ -328,15 +333,13 @@ class SettingsSectionFrame(tk.Frame):
 
     def reload_entries(self, preserve: bool = True) -> None:
         current_selection = self.selected_key if preserve else None
-        self.app.settings_ini.reload()
+        # Use reload_if_needed instead of force-reload to avoid re-reading the
+        # file right after a save (which already updated _last_mtime_ns).
+        self.app.settings_ini._reload_if_needed()
         items = self.app.settings_ini.items(self.spec.section)
-        query = self._normalize_text(self.search_var.get().strip())
+        query = self.search_var.get().strip().lower()
         if query:
-            items = [
-                (key, value)
-                for key, value in items
-                if query in self._normalize_text(key) or query in self._normalize_text(value)
-            ]
+            items = [(key, value) for key, value in items if query in key.lower() or query in value.lower()]
         self.entries_list.delete(0, "end")
         self._display_keys = []
         for key, value in items:
@@ -354,12 +357,16 @@ class SettingsSectionFrame(tk.Frame):
         self._schedule_refresh()
 
     def _schedule_refresh(self) -> None:
+        # Do not schedule auto-refresh while the user is actively editing an entry
+        # — it would overwrite what they typed in the form fields before they save.
+        if self.selected_key is not None:
+            return
         if self._refresh_job is not None:
             try:
                 self.after_cancel(self._refresh_job)
             except Exception:
                 pass
-        self._refresh_job = self.after(1500, self.reload_entries)
+        self._refresh_job = self.after(3000, self.reload_entries)
 
     def new_entry(self) -> None:
         self.selected_key = None
@@ -379,7 +386,6 @@ class SettingsSectionFrame(tk.Frame):
             self.shape_var.set(self.NET_DEFAULTS["shape"])
         elif self.spec.kind == "scoreboardstdname":
             self.display_name_var.set("")
-            self.active_var.set(self.STADIUM_NAME_DEFAULTS["active"])
         elif self.spec.kind == "chants":
             choices = self._available_choices()
             self.chants_folder_var.set(choices[0] if choices else self.CHANTS_DEFAULTS["folder"])
@@ -388,7 +394,10 @@ class SettingsSectionFrame(tk.Frame):
             self.lose1_var.set(self.CHANTS_DEFAULTS["lose1"])
             self.lose2_var.set(self.CHANTS_DEFAULTS["lose2"])
             self.lose3_var.set(self.CHANTS_DEFAULTS["lose3"])
-            self.clubsong_var.set(self.CHANTS_DEFAULTS["clubsong"])
+            self.goal_var.set(self.CHANTS_DEFAULTS["goal"])
+            self.silence_prob_var.set(self.CHANTS_DEFAULTS["silence_prob"])
+            self.silence_max_var.set(self.CHANTS_DEFAULTS["silence_max"])
+            self.away_prob_var.set(self.CHANTS_DEFAULTS["away_prob"])
         elif self.spec.kind == "exclude":
             self.exclude_var.set("excluded from stadium server")
         self.status_var.set("Novo item pronto. Salvar grava imediatamente no settings.ini.")
@@ -443,24 +452,41 @@ class SettingsSectionFrame(tk.Frame):
         self.shape_var.set(parts[3] or self.NET_DEFAULTS["shape"])
 
     def _load_scoreboard_name_value(self, key: str, value: str) -> None:
-        if "," in value:
-            display_name, active = value.rsplit(",", 1)
-        else:
-            display_name, active = value or key, self.STADIUM_NAME_DEFAULTS["active"]
+        # Format: DisplayName  (comma-separated values are supported, we take first part)
+        display_name = value.split(",")[0].strip() if value else key
         self.display_name_var.set(display_name)
-        self.active_var.set(active or self.STADIUM_NAME_DEFAULTS["active"])
 
     def _load_chants_value(self, value: str) -> None:
         parts = [part.strip() for part in value.split(",")]
-        while len(parts) < 7:
-            parts.append("")
-        self.chants_folder_var.set(parts[0] or self.CHANTS_DEFAULTS["folder"])
-        self.default_var.set(parts[1] or self.CHANTS_DEFAULTS["default"])
-        self.winning_var.set(parts[2] or self.CHANTS_DEFAULTS["winning"])
-        self.lose1_var.set(parts[3] or self.CHANTS_DEFAULTS["lose1"])
-        self.lose2_var.set(parts[4] or self.CHANTS_DEFAULTS["lose2"])
-        self.lose3_var.set(parts[5] or self.CHANTS_DEFAULTS["lose3"])
-        self.clubsong_var.set(parts[6] or self.CHANTS_DEFAULTS["clubsong"])
+        # Backward compatibility:
+        # old format (7): folder,default,winning,lose1,lose2,lose3,goal
+        # new format (10): folder,default,winning,lose1,lose2,lose3,goal,silence_prob,silence_max,away_prob
+        if len(parts) >= 7:
+            folder = parts[0]
+            default = parts[1] if len(parts) > 1 else ""
+            winning = parts[2] if len(parts) > 2 else ""
+            lose1 = parts[3] if len(parts) > 3 else ""
+            lose2 = parts[4] if len(parts) > 4 else ""
+            lose3 = parts[5] if len(parts) > 5 else ""
+            goal = parts[6] if len(parts) > 6 else ""
+            silence_prob = parts[7] if len(parts) > 7 else ""
+            silence_max = parts[8] if len(parts) > 8 else ""
+            away_prob = parts[9] if len(parts) > 9 else ""
+        else:
+            # Very old/invalid payload: keep best effort with defaults.
+            while len(parts) < 10:
+                parts.append("")
+            folder, default, winning, lose1, lose2, lose3, goal, silence_prob, silence_max, away_prob = parts[:10]
+        self.chants_folder_var.set(folder or self.CHANTS_DEFAULTS["folder"])
+        self.default_var.set(default or self.CHANTS_DEFAULTS["default"])
+        self.winning_var.set(winning or self.CHANTS_DEFAULTS["winning"])
+        self.lose1_var.set(lose1 or self.CHANTS_DEFAULTS["lose1"])
+        self.lose2_var.set(lose2 or self.CHANTS_DEFAULTS["lose2"])
+        self.lose3_var.set(lose3 or self.CHANTS_DEFAULTS["lose3"])
+        self.goal_var.set(goal or self.CHANTS_DEFAULTS["goal"])
+        self.silence_prob_var.set(silence_prob or self.CHANTS_DEFAULTS["silence_prob"])
+        self.silence_max_var.set(silence_max or self.CHANTS_DEFAULTS["silence_max"])
+        self.away_prob_var.set(away_prob or self.CHANTS_DEFAULTS["away_prob"])
 
     def _compose_value(self) -> str:
         if self.spec.kind == "simple":
@@ -480,8 +506,7 @@ class SettingsSectionFrame(tk.Frame):
                 ]
             )
         if self.spec.kind == "scoreboardstdname":
-            display_name = self.display_name_var.get().strip() or self.key_var.get().strip()
-            return f"{display_name},{self.active_var.get().strip() or '1'}"
+            return self.display_name_var.get().strip() or self.key_var.get().strip()
         if self.spec.kind == "chants":
             return ",".join(
                 [
@@ -491,7 +516,10 @@ class SettingsSectionFrame(tk.Frame):
                     self.lose1_var.get().strip(),
                     self.lose2_var.get().strip(),
                     self.lose3_var.get().strip(),
-                    self.clubsong_var.get().strip(),
+                    self.goal_var.get().strip(),
+                    self.silence_prob_var.get().strip(),
+                    self.silence_max_var.get().strip(),
+                    self.away_prob_var.get().strip(),
                 ]
             )
         if self.spec.kind == "exclude":
@@ -499,9 +527,6 @@ class SettingsSectionFrame(tk.Frame):
         return ""
 
     def save_entry(self) -> None:
-        if not self.app._has_selected_fifa_exe():
-            messagebox.showwarning("Settings", "Selecione o executavel do FIFA 16 antes de salvar no settings.ini.")
-            return
         key = self.key_var.get().strip()
         if not key:
             messagebox.showwarning("Settings", "Informe a chave da entrada.")
@@ -524,9 +549,6 @@ class SettingsSectionFrame(tk.Frame):
         self._apply_runtime()
 
     def delete_entry(self) -> None:
-        if not self.app._has_selected_fifa_exe():
-            messagebox.showwarning("Settings", "Selecione o executavel do FIFA 16 antes de editar o settings.ini.")
-            return
         key = self.key_var.get().strip() or self.selected_key
         if not key:
             return
@@ -554,7 +576,8 @@ def stadium_specs() -> list[SectionSpec]:
         SectionSpec("comp", "Competition Stadiums", kind="stadium", directory="StadiumGBD"),
         SectionSpec("stadiumnetname", "Net By Stadium Name", kind="net", directory="StadiumGBD"),
         SectionSpec("stadiumnetid", "Net By Stadium ID", kind="net"),
-        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD"),
+        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name (slot 176)", kind="scoreboardstdname", directory="StadiumGBD"),
+        SectionSpec("scoreboardstdnamem", "Scoreboard Stadium Name (slot 261)", kind="scoreboardstdname", directory="StadiumGBD"),
         SectionSpec("exclude", "Excluded Competitions", kind="exclude"),
     ]
 

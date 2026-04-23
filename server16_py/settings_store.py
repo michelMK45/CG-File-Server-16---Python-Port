@@ -8,6 +8,8 @@ class SettingsStore:
     DEFAULTS = {
         "FIFAEXE": "default",
         "CAMERAPACKAGE": "",
+        # Backward-compatible: keep this key available even if current UI
+        # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
     }
 
@@ -24,7 +26,7 @@ class SettingsStore:
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
-                raise ValueError("Settings file must contain an object")
+                raise ValueError("Settings file must contain a JSON object")
             self.data = {**self.DEFAULTS, **loaded}
         except Exception:
             self.data = dict(self.DEFAULTS)

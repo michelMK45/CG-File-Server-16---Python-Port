@@ -13,14 +13,6 @@ class AssignmentRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
 
-    def _ensure_fifa_selected(self) -> bool:
-        app = self.app
-        if app._has_selected_fifa_exe():
-            return True
-        messagebox.showwarning("Assignment", "Selecione o executavel do FIFA 16 primeiro.")
-        app.log("Assignment blocked: FIFA EXE not selected")
-        return False
-
     def refresh_context_for_assignment(self) -> None:
         app = self.app
         page_name = app.labels["page"].cget("text")
@@ -72,9 +64,8 @@ class AssignmentRuntime:
 
     def assign_scoreboard(self) -> None:
         app = self.app
-        if not self._ensure_fifa_selected():
-            return
         self.refresh_context_for_assignment()
+        app.prepare_floating_window()
         dialog = ScoreboardDialog(app, app.exedir, default_scope=self.default_scope_for_scoreboard())
         app.wait_window(dialog)
         if not dialog.result:
@@ -102,9 +93,8 @@ class AssignmentRuntime:
 
     def assign_movie(self) -> None:
         app = self.app
-        if not self._ensure_fifa_selected():
-            return
         self.refresh_context_for_assignment()
+        app.prepare_floating_window()
         dialog = MovieDialog(app, app.exedir, default_scope=self.default_scope_for_movie())
         app.wait_window(dialog)
         if not dialog.result:
@@ -134,9 +124,8 @@ class AssignmentRuntime:
 
     def assign_stadium(self) -> None:
         app = self.app
-        if not self._ensure_fifa_selected():
-            return
         self.refresh_context_for_assignment()
+        app.prepare_floating_window()
         dialog = StadiumDialog(app, app.exedir, default_scope=self.default_scope_for_stadium())
         app.wait_window(dialog)
         if not dialog.result:
@@ -175,9 +164,8 @@ class AssignmentRuntime:
 
     def exclude_competition(self) -> None:
         app = self.app
-        if not self._ensure_fifa_selected():
-            return
         app.refresh_live_context(app.labels["page"].cget("text"))
+        app.prepare_floating_window()
         dialog = ExcludeDialog(app)
         app.wait_window(dialog)
         if not dialog.result:
@@ -211,8 +199,6 @@ class AssignmentRuntime:
 
     def assign_with_delete(self, comp: str, key: str, value: str, default_value: str, success_message: str) -> None:
         app = self.app
-        if not self._ensure_fifa_selected():
-            return
         if not comp:
             messagebox.showwarning("Assignment", "Nenhum contexto de jogo foi capturado ainda.")
             app.log(f"Assignment skipped: missing context for key={key} value={value}")
