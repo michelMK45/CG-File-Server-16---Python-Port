@@ -13,7 +13,7 @@ from datetime import datetime
 from time import perf_counter
 from pathlib import Path
 from ctypes import wintypes
-from tkinter import filedialog, messagebox, scrolledtext, ttk
+from tkinter import filedialog, messagebox, ttk
 
 import psutil
 from PIL import Image, ImageTk
@@ -72,6 +72,7 @@ class Server16App(tk.Tk):
         self.log_path = self.base_dir / "runtime" / "server16.log"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
+        self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.offsets = Offsets.load()
         self.memory = Memory()
         self.pagechange = False
@@ -252,8 +253,8 @@ class Server16App(tk.Tk):
         self._build_stadium_loading_modal()
         self.setuppaths()
         self.refresh_camera_catalog()
-        self.apply_bootstrap_files()
         self.refresh_modules()
+        self.log("Bootstrap file writes are deferred until an explicit runtime action")
         self.log("Application started")
         self._poll_job = self.after(500, self.poll_process)
         self._stats_job = self.after(250, self.stats_loop)
@@ -329,6 +330,21 @@ class Server16App(tk.Tk):
         style.map("TButton", background=[("active", "#2b3442")])
         style.configure("TCheckbutton", background=self.bg, foreground=self.fg)
         style.configure(
+            "Server16.TEntry",
+            fieldbackground=self.panel_alt,
+            foreground=self.fg,
+            insertcolor=self.fg,
+            bordercolor="#2a3c59",
+            lightcolor=self.panel_alt,
+            darkcolor=self.panel_alt,
+            padding=4,
+        )
+        style.map(
+            "Server16.TEntry",
+            fieldbackground=[("disabled", self.card_soft), ("readonly", self.card_soft)],
+            foreground=[("disabled", self.muted), ("!disabled", self.fg)],
+        )
+        style.configure(
             "Switch.TCheckbutton",
             background=self.card,
             foreground=self.fg,
@@ -364,7 +380,71 @@ class Server16App(tk.Tk):
             background=[("selected", self.card_soft), ("active", self.panel_alt)],
             foreground=[("selected", self.fg), ("active", self.fg)],
         )
+        style.configure(
+            "Server16.Vertical.TScrollbar",
+            background=self.panel_alt,
+            troughcolor=self.card_soft,
+            bordercolor="#243654",
+            arrowcolor=self.fg,
+            darkcolor=self.panel_alt,
+            lightcolor=self.panel_alt,
+            arrowsize=14,
+        )
+        style.map(
+            "Server16.Vertical.TScrollbar",
+            background=[("active", "#223753"), ("pressed", "#1b3453")],
+            arrowcolor=[("disabled", self.muted), ("!disabled", self.fg)],
+        )
+        style.configure(
+            "Server16.Horizontal.TScrollbar",
+            background=self.panel_alt,
+            troughcolor=self.card_soft,
+            bordercolor="#243654",
+            arrowcolor=self.fg,
+            darkcolor=self.panel_alt,
+            lightcolor=self.panel_alt,
+            arrowsize=14,
+        )
+        style.map(
+            "Server16.Horizontal.TScrollbar",
+            background=[("active", "#223753"), ("pressed", "#1b3453")],
+            arrowcolor=[("disabled", self.muted), ("!disabled", self.fg)],
+        )
+        style.configure(
+            "Server16.TCombobox",
+            fieldbackground=self.panel_alt,
+            background=self.panel_alt,
+            foreground=self.fg,
+            arrowcolor=self.fg,
+            bordercolor="#2a3c59",
+            lightcolor=self.panel_alt,
+            darkcolor=self.panel_alt,
+            insertcolor=self.fg,
+            selectbackground="#1b3453",
+            selectforeground=self.fg,
+            padding=2,
+        )
+        style.map(
+            "Server16.TCombobox",
+            fieldbackground=[("readonly", self.panel_alt), ("disabled", self.card_soft)],
+            background=[("readonly", self.panel_alt), ("active", self.panel_alt)],
+            foreground=[("readonly", self.fg), ("disabled", self.muted), ("!disabled", self.fg)],
+            arrowcolor=[("disabled", self.muted), ("!disabled", self.fg)],
+            selectbackground=[("readonly", "#1b3453")],
+            selectforeground=[("readonly", self.fg)],
+        )
         style.configure("TCombobox", fieldbackground=self.panel_alt, background=self.panel_alt, foreground=self.fg, arrowcolor=self.fg)
+        style.map(
+            "TCombobox",
+            fieldbackground=[("readonly", self.panel_alt), ("disabled", self.card_soft)],
+            foreground=[("readonly", self.fg), ("disabled", self.muted), ("!disabled", self.fg)],
+            arrowcolor=[("disabled", self.muted), ("!disabled", self.fg)],
+        )
+        self.option_add("*TCombobox*Listbox.background", self.panel_alt)
+        self.option_add("*TCombobox*Listbox.foreground", self.fg)
+        self.option_add("*TCombobox*Listbox.selectBackground", "#1b3453")
+        self.option_add("*TCombobox*Listbox.selectForeground", self.fg)
+        self.option_add("*TCombobox*Listbox.font", "Consolas 10")
         style.configure("Accent.Horizontal.TProgressbar", troughcolor=self.card_soft, background=self.accent, borderwidth=0, lightcolor=self.accent, darkcolor=self.accent)
 
     def _install_exception_hook(self) -> None:
@@ -506,7 +586,12 @@ class Server16App(tk.Tk):
         dashboard_host = tk.Frame(self.dashboard_tab, bg=self.bg)
         dashboard_host.pack(fill="both", expand=True, padx=10, pady=10)
         self.dashboard_canvas = tk.Canvas(dashboard_host, bg=self.bg, highlightthickness=0, bd=0)
-        self.dashboard_scrollbar = ttk.Scrollbar(dashboard_host, orient="vertical", command=self.dashboard_canvas.yview)
+        self.dashboard_scrollbar = ttk.Scrollbar(
+            dashboard_host,
+            orient="vertical",
+            command=self.dashboard_canvas.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
         self.dashboard_canvas.configure(yscrollcommand=self.dashboard_scrollbar.set)
         self.dashboard_scrollbar.pack(side="right", fill="y")
         self.dashboard_canvas.pack(side="left", fill="both", expand=True)
@@ -600,6 +685,10 @@ class Server16App(tk.Tk):
         modal.geometry("340x274")
 
     def _show_stadium_loading_modal(self, stadium_name: str, detail: str = "Preparing stadium assets", progress: float = 0.0) -> None:
+        if not self.show_stadium_loading_var.get():
+            self._stadium_loading_visible = False
+            self._stadium_loading_restore_fullscreen = False
+            return
         if self.stadium_loading_modal is None:
             return
         self.stadium_loading_modal.configure(cursor="arrow")
@@ -640,6 +729,8 @@ class Server16App(tk.Tk):
             self.after(140, self._restore_fifa_fullscreen)
 
     def _update_stadium_loading_modal(self, value: float, detail: str) -> None:
+        if not self.show_stadium_loading_var.get():
+            return
         if self.stadium_loading_modal is None:
             return
         if self.stadium_loading_value is not None:
@@ -1020,7 +1111,7 @@ class Server16App(tk.Tk):
     def _build_modules_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "MODULES", "Loaded from settings.ini at startup")
         card.grid(row=row, column=0, sticky="ew")
-        card.configure(height=214)
+        card.configure(height=256)
         card.grid_propagate(False)
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
@@ -1050,6 +1141,15 @@ class Server16App(tk.Tk):
             )
             check.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
             self.module_checks[name] = check
+
+        notification_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text="Show loading notification",
+            variable=self.show_stadium_loading_var,
+            command=self._toggle_stadium_loading_visibility,
+        )
+        notification_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
         """Toggle Discord RPC on/off and save to settings."""
@@ -1091,6 +1191,12 @@ class Server16App(tk.Tk):
             self.settings.save()
             self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
             self.settings_ini.save()
+
+    def _toggle_stadium_loading_visibility(self) -> None:
+        self.settings.show_stadium_loading_notification = self.show_stadium_loading_var.get()
+        if self.show_stadium_loading_var.get():
+            return
+        self._hide_stadium_loading_modal()
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "CHANTS CONTROL", "Crowd audio, club anthem and detailed playback state")
@@ -1142,7 +1248,7 @@ class Server16App(tk.Tk):
         self.camera_package_label.pack(fill="x", pady=(0, 8))
         list_frame = tk.Frame(library_body, bg=self.card)
         list_frame.pack(fill="both", expand=True)
-        scrollbar = ttk.Scrollbar(list_frame, orient="vertical")
+        scrollbar = ttk.Scrollbar(list_frame, orient="vertical", style="Server16.Vertical.TScrollbar")
         self.camera_listbox = tk.Listbox(
             list_frame,
             bg=self.panel_alt,
@@ -1217,18 +1323,29 @@ class Server16App(tk.Tk):
         self.camera_example_combo = ttk.Combobox(detail_body, state="readonly", textvariable=self.camera_example_var)
         self.camera_example_combo.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         self.camera_example_combo.bind("<<ComboboxSelected>>", self._on_camera_example_change)
-        self.camera_instruction_text = scrolledtext.ScrolledText(
-            detail_body,
+        instruction_host = tk.Frame(detail_body, bg=self.panel)
+        instruction_host.grid(row=4, column=0, sticky="nsew")
+        self.camera_instruction_text = tk.Text(
+            instruction_host,
             height=5,
             bg=self.panel,
             fg=self.fg,
             insertbackground=self.fg,
             relief="flat",
             borderwidth=0,
+            highlightthickness=0,
             font=("Consolas", 9),
             wrap="word",
         )
-        self.camera_instruction_text.grid(row=4, column=0, sticky="nsew")
+        camera_instruction_scrollbar = ttk.Scrollbar(
+            instruction_host,
+            orient="vertical",
+            command=self.camera_instruction_text.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
+        self.camera_instruction_text.configure(yscrollcommand=camera_instruction_scrollbar.set)
+        self.camera_instruction_text.pack(side="left", fill="both", expand=True)
+        camera_instruction_scrollbar.pack(side="right", fill="y")
         self.camera_instruction_text.configure(state="disabled")
         self.camera_apply_button = ttk.Button(detail_body, text="Apply Camera", command=self.apply_selected_camera)
         self.camera_apply_button.grid(row=5, column=0, sticky="ew", pady=(12, 0))
@@ -1250,17 +1367,29 @@ class Server16App(tk.Tk):
         self.log_status_label.pack(side="left")
         self.log_follow_button = ttk.Button(header, text="Jump To Latest / Ir para o fim", command=self._jump_logs_to_latest)
         self.log_follow_button.pack(side="right")
-        self.log_widget = scrolledtext.ScrolledText(
-            logs,
+        logs_body = tk.Frame(logs, bg=self.panel)
+        logs_body.pack(fill="both", expand=True)
+        self.log_widget = tk.Text(
+            logs_body,
             height=18,
             bg=self.panel,
             fg=self.fg,
             insertbackground=self.fg,
             relief="flat",
             borderwidth=0,
+            highlightthickness=0,
             font=("Consolas", 9),
+            wrap="word",
         )
-        self.log_widget.pack(fill="both", expand=True)
+        log_scrollbar = ttk.Scrollbar(
+            logs_body,
+            orient="vertical",
+            command=self.log_widget.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
+        self.log_widget.configure(yscrollcommand=log_scrollbar.set)
+        self.log_widget.pack(side="left", fill="both", expand=True)
+        log_scrollbar.pack(side="right", fill="y")
         self.log_widget.configure(state="disabled")
         self.log_widget.bind("<ButtonRelease-1>", self._refresh_log_autofollow_state)
         self.log_widget.bind("<ButtonRelease-4>", self._refresh_log_autofollow_state)
@@ -1627,9 +1756,9 @@ class Server16App(tk.Tk):
         self.settings.fifa_exe = filename
         self.setuppaths()
         self._load_team_database()
-        self.apply_bootstrap_files()
         self.refresh_modules()
         self.log(f"Selected FIFA executable: {filename}")
+        self.log("Bootstrap file writes deferred until overlay start or another explicit runtime action")
 
     def _auto_detect_fifa_exe(self) -> Path | None:
         for name in ("fifa16.exe", "FIFA16.exe", "FIFA 16.exe", "fifa 16.exe"):

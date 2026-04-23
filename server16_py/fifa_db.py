@@ -118,25 +118,25 @@ class FifaDatabase:
                 if team_name:
                     self.team_cache[team_id] = team_name
 
-                # Load stadiums from stadiums table
-                stadium_table = db.GetTable("stadiums")
-                if stadium_table is not None:
-                    stadium_descriptor = stadium_table.TableDescriptor
-                    stadium_field_names = [
-                        stadium_descriptor.FieldDescriptors[i].FieldName
-                        for i in range(stadium_descriptor.NFields)
-                    ]
-                    stadium_id_field = self._pick_field(stadium_field_names, ["stadiumid", "id"])
-                    stadium_name_field = self._pick_field(stadium_field_names, ["stadiumname", "name"])
-                
-                    if stadium_id_field and stadium_name_field:
-                        for i in range(stadium_table.NValidRecords):
-                            rec = stadium_table.Records[i]
-                            stadium_id = str(rec.GetIntField(stadium_id_field))
-                            stadium_name = rec.GetStringField(stadium_name_field)
-                            if stadium_name:
-                                self.stadium_cache[stadium_id] = stadium_name
-                        print(f" Loaded {len(self.stadium_cache)} stadiums from database")
+            # Load stadiums from stadiums table once.
+            stadium_table = db.GetTable("stadiums")
+            if stadium_table is not None:
+                stadium_descriptor = stadium_table.TableDescriptor
+                stadium_field_names = [
+                    stadium_descriptor.FieldDescriptors[i].FieldName
+                    for i in range(stadium_descriptor.NFields)
+                ]
+                stadium_id_field = self._pick_field(stadium_field_names, ["stadiumid", "id"])
+                stadium_name_field = self._pick_field(stadium_field_names, ["stadiumname", "name"])
+
+                if stadium_id_field and stadium_name_field:
+                    for i in range(stadium_table.NValidRecords):
+                        rec = stadium_table.Records[i]
+                        stadium_id = str(rec.GetIntField(stadium_id_field))
+                        stadium_name = rec.GetStringField(stadium_name_field)
+                        if stadium_name:
+                            self.stadium_cache[stadium_id] = stadium_name
+                    print(f" Loaded {len(self.stadium_cache)} stadiums from database")
 
             self._is_loaded = True
             self.last_error = ""

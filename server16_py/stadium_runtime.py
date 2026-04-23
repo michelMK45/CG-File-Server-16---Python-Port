@@ -8,7 +8,6 @@ import winsound
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .db_patcher import patch_stadium_names, restore_stadium_names
 from .file_tools import copy, copy_glares, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
@@ -124,11 +123,11 @@ class StadiumRuntime:
                 std_name = display_name if display_name else chosen_stadium
             else:
                 std_name = chosen_stadium
-            # 1) Patch the DB file (in case FIFA re-reads it)
-            patch_stadium_names(app, std_name, std_name)
-            # 2) Scan FIFA memory and patch the pipe-delimited match string directly
+            # Avoid patching fifa_ng_db.db on disk. That change can survive the match
+            # lifecycle and leave the game crashing on the next launch.
+            # Patch FIFA memory only for the current session.
             patch_match_string(app, std_name)
-            # 2) Also pre-write to memory for the scoreboard
+            # Also pre-write to memory for the scoreboard.
             if app.memory.is_open():
                 try:
                     app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, app.offsets.STDNAMEOFFSET176, "_" + std_name)

@@ -140,7 +140,15 @@ class SettingsSectionFrame(tk.Frame):
             relief="flat",
             font=("Consolas", 10),
         )
-        self.entries_list.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        entries_scroll = ttk.Scrollbar(
+            left_card,
+            orient="vertical",
+            command=self.entries_list.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
+        self.entries_list.configure(yscrollcommand=entries_scroll.set)
+        self.entries_list.grid(row=1, column=0, sticky="nsew", padx=(12, 0), pady=(0, 8))
+        entries_scroll.grid(row=1, column=1, sticky="ns", padx=(8, 12), pady=(0, 8))
         self.entries_list.bind("<<ListboxSelect>>", self._on_entry_selected)
 
         self.count_label = tk.Label(left_card, text="0 entries", bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 9))
@@ -221,7 +229,17 @@ class SettingsSectionFrame(tk.Frame):
             relief="flat",
             font=("Consolas", 10),
         )
-        self.stadium_list.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        stadium_scroll = ttk.Scrollbar(
+            self.body,
+            orient="vertical",
+            command=self.stadium_list.yview,
+            style="Server16.Vertical.TScrollbar",
+        )
+        self.stadium_list.configure(yscrollcommand=stadium_scroll.set)
+        self.stadium_list.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
+        stadium_scroll.grid(row=0, column=1, sticky="ns", padx=(8, 0), pady=(0, 10))
+        self.body.grid_columnconfigure(0, weight=1)
+        self.body.grid_columnconfigure(1, weight=0)
         for entry in self._available_choices():
             self.stadium_list.insert("end", entry)
         self.police_var = tk.StringVar(value=self.STADIUM_DEFAULTS["police"])
@@ -277,17 +295,24 @@ class SettingsSectionFrame(tk.Frame):
             fg=self.app.fg,
             insertbackground=self.app.fg,
             relief="flat",
+            bd=0,
+            highlightthickness=0,
             font=("Consolas", 11),
         )
         if readonly:
-            entry.configure(state="readonly")
+            entry.configure(
+                readonlybackground=self.app.panel_alt,
+                disabledbackground=self.app.card_soft,
+                disabledforeground=self.app.muted,
+                state="readonly",
+            )
         entry.grid(row=row, column=1, sticky="ew", pady=4)
         parent.grid_columnconfigure(1, weight=1)
         return entry
 
     def _add_combo_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, values: list[str]):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10))
+        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
         combo.grid(row=row, column=1, sticky="ew", pady=4)
         parent.grid_columnconfigure(1, weight=1)
         return combo
