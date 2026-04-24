@@ -4,8 +4,12 @@
 a = Analysis(
     ['main.py'],
     pathex=[],
-    binaries=[],
-    datas=[('server16_py\\offsets.json', 'server16_py'), ('bin\\FifaLibrary14.dll', 'bin'), ('server16.ico', '.')],
+    binaries=[
+        ('bin\\cgfs16_overlay.dll', 'bin'),
+        ('bin\\cgfs16_inject.exe',  'bin'),
+        ('bin\\FifaLibrary14.dll',  'bin'),
+    ],
+    datas=[('server16_py\\offsets.json', 'server16_py'), ('server16.ico', '.')],
     hiddenimports=['clr'],
     hookspath=[],
     hooksconfig={},

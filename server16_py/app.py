@@ -34,6 +34,10 @@ from .offsets import Offsets
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 from .settings_store import SettingsStore
 from .stadium_runtime import StadiumRuntime
+try:
+    from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
+except Exception:
+    _D3DOverlayInjector = None  # type: ignore[assignment,misc]
 
 
 class RECT(ctypes.Structure):
@@ -164,6 +168,9 @@ class Server16App(tk.Tk):
         self._stadium_loading_hwnd = 0
         self._stadium_loading_visible = False
         self._stadium_loading_restore_fullscreen = False
+        self._d3d_injector = None  # D3DOverlayInjector, created lazily
+        self._d3d_overlay_shown_at = 0.0   # monotonic time when overlay was shown
+        self._d3d_overlay_hide_job = None  # pending after() job for deferred hide
         self.status_pill = None
         self.dashboard_canvas = None
         self.dashboard_scrollbar = None
@@ -902,6 +909,10 @@ class Server16App(tk.Tk):
             self._stadium_loading_visible = False
             self._stadium_loading_restore_fullscreen = False
             return
+        # ── D3D injection overlay (visible in fullscreen) ─────────────────────
+        if self._try_d3d_overlay_show(stadium_name, detail, progress):
+            return
+        # ── Tkinter modal fallback ────────────────────────────────────────────
         if self.stadium_loading_modal is None:
             return
         self.stadium_loading_modal.configure(cursor="arrow")
@@ -926,7 +937,72 @@ class Server16App(tk.Tk):
             pass
         self.after(10, self._focus_fifa_window)
 
+    def _try_d3d_overlay_show(self, stadium_name: str, detail: str, progress: float) -> bool:
+        """Inject the D3D overlay DLL and show the notification.
+
+        Returns True if the overlay was shown via D3D injection, False if we
+        should fall back to the Tkinter modal.
+        """
+        if _D3DOverlayInjector is None:
+            self.log("D3D overlay: injector module not available (import failed)")
+            return False
+        dll_path = self.resource_dir / "bin" / "cgfs16_overlay.dll"
+        if not dll_path.exists():
+            self.log(f"D3D overlay: DLL not found at {dll_path}")
+            return False
+        # Create the injector lazily (once per app session)
+        if self._d3d_injector is None:
+            try:
+                self._d3d_injector = _D3DOverlayInjector(dll_path)
+            except Exception as exc:
+                self.log(f"D3D overlay injector init failed: {exc}")
+                self._d3d_injector = None
+                return False
+        inj = self._d3d_injector
+        if not inj.is_ready():
+            self.log(f"D3D overlay: not ready (shared_mem={inj._ready}, "
+                     f"dll={dll_path.exists()}, "
+                     f"exe={inj._find_inject_exe() is not None})")
+            return False
+        # Inject into FIFA if not already done
+        pid = self._resolve_fifa_pid()
+        if pid and not inj.is_injected(pid):
+            ok = inj.inject(pid)
+            if not ok:
+                self.log("D3D overlay: injection failed, using modal fallback")
+                return False
+            self.log(f"D3D overlay: DLL injected into FIFA pid {pid}")
+        elif not pid:
+            self.log("D3D overlay: FIFA not running, using modal fallback")
+            return False
+        inj.show(stadium_name, detail or self.tr("stadium_modal.preparing"), progress,
+                 image_path=str(self._resolve_stadium_preview_path(stadium_name) or ""))
+        self._d3d_overlay_shown_at = time.monotonic()
+        self.log(f"Stadium notification via D3D overlay: {stadium_name}")
+        return True
+
     def _hide_stadium_loading_modal(self) -> None:
+        # ── D3D injection overlay ─────────────────────────────────────────────
+        if self._d3d_injector is not None and self._d3d_injector.is_injected():
+            # Cancel any previously scheduled deferred hide
+            if self._d3d_overlay_hide_job is not None:
+                try:
+                    self.after_cancel(self._d3d_overlay_hide_job)
+                except Exception:
+                    pass
+                self._d3d_overlay_hide_job = None
+            # Enforce minimum visible time (2.5 s) so at least ~150 frames are drawn
+            _MIN_VISIBLE_MS = 2500
+            elapsed_ms = int((time.monotonic() - self._d3d_overlay_shown_at) * 1000)
+            remaining_ms = max(0, _MIN_VISIBLE_MS - elapsed_ms)
+            if remaining_ms > 0:
+                self._d3d_overlay_hide_job = self.after(
+                    remaining_ms, self._do_hide_d3d_overlay
+                )
+            else:
+                self._do_hide_d3d_overlay()
+            return
+        # ── Tkinter modal fallback ────────────────────────────────────────────
         if self._stadium_loading_hwnd:
             try:
                 self.user32.ShowWindow(self._stadium_loading_hwnd, SW_HIDE)
@@ -941,9 +1017,20 @@ class Server16App(tk.Tk):
         if was_visible and should_restore:
             self.after(140, self._restore_fifa_fullscreen)
 
+    def _do_hide_d3d_overlay(self) -> None:
+        self._d3d_overlay_hide_job = None
+        if self._d3d_injector is not None:
+            self._d3d_injector.hide()
+        self.log("Stadium notification hidden via D3D overlay")
+
     def _update_stadium_loading_modal(self, value: float, detail: str) -> None:
         if not self.show_stadium_loading_var.get():
             return
+        # ── D3D injection overlay ─────────────────────────────────────────────
+        if self._d3d_injector is not None and self._d3d_injector.is_injected():
+            self._d3d_injector.update(value, detail)
+            return
+        # ── Tkinter modal fallback ────────────────────────────────────────────
         if self.stadium_loading_modal is None:
             return
         if self.stadium_loading_value is not None:
@@ -1414,6 +1501,7 @@ class Server16App(tk.Tk):
 
     def _toggle_stadium_loading_visibility(self) -> None:
         self.settings.show_stadium_loading_notification = self.show_stadium_loading_var.get()
+        self.settings.save()
         if self.show_stadium_loading_var.get():
             return
         self._hide_stadium_loading_modal()
@@ -3026,6 +3114,11 @@ class Server16App(tk.Tk):
             pass
         try:
             restore_stadium_names(self)
+        except Exception:
+            pass
+        try:
+            if self._d3d_injector is not None:
+                self._d3d_injector.destroy()
         except Exception:
             pass
         try:
