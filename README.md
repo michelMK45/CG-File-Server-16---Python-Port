@@ -135,6 +135,10 @@ You can build the standalone executable with the included batch file:
 .\build_exe.bat
 ```
 
+The batch file compiles the C++ overlay helpers when Visual Studio C++ tools are available. If they
+are not installed, it uses the existing helper binaries in `bin/` and still runs the PyInstaller
+package step.
+
 Or run PyInstaller directly:
 
 ```powershell
