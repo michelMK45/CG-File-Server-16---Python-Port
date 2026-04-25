@@ -125,6 +125,7 @@ class Server16App(tk.Tk):
         self._worker_poll_job = None
         self._stadium_task_running = False
         self._stadium_task_signature = None
+        self._stadium_task_request_key = None
         self._last_stadium_applied_signature = None
         self.labels = {}
         self.stat_title_labels = {}
@@ -171,6 +172,7 @@ class Server16App(tk.Tk):
         self._d3d_injector = None  # D3DOverlayInjector, created lazily
         self._d3d_overlay_shown_at = 0.0   # monotonic time when overlay was shown
         self._d3d_overlay_hide_job = None  # pending after() job for deferred hide
+        self._stadium_loading_hide_job = None
         self.status_pill = None
         self.dashboard_canvas = None
         self.dashboard_scrollbar = None
@@ -909,6 +911,7 @@ class Server16App(tk.Tk):
             self._stadium_loading_visible = False
             self._stadium_loading_restore_fullscreen = False
             return
+        self._cancel_stadium_loading_hide()
         # ── D3D injection overlay (visible in fullscreen) ─────────────────────
         if self._try_d3d_overlay_show(stadium_name, detail, progress):
             return
@@ -978,10 +981,35 @@ class Server16App(tk.Tk):
         inj.show(stadium_name, detail or self.tr("stadium_modal.preparing"), progress,
                  image_path=str(self._resolve_stadium_preview_path(stadium_name) or ""))
         self._d3d_overlay_shown_at = time.monotonic()
+        self._stadium_loading_visible = True
         self.log(f"Stadium notification via D3D overlay: {stadium_name}")
         return True
 
-    def _hide_stadium_loading_modal(self) -> None:
+    def _cancel_stadium_loading_hide(self) -> None:
+        if self._stadium_loading_hide_job is not None:
+            try:
+                self.after_cancel(self._stadium_loading_hide_job)
+            except Exception:
+                pass
+            self._stadium_loading_hide_job = None
+        if self._d3d_overlay_hide_job is not None:
+            try:
+                self.after_cancel(self._d3d_overlay_hide_job)
+            except Exception:
+                pass
+            self._d3d_overlay_hide_job = None
+
+    def _hide_stadium_loading_modal(self, delay_ms: int = 0) -> None:
+        if delay_ms > 0:
+            self._cancel_stadium_loading_hide()
+            self._stadium_loading_hide_job = self.after(delay_ms, self._hide_stadium_loading_modal)
+            return
+        if self._stadium_loading_hide_job is not None:
+            try:
+                self.after_cancel(self._stadium_loading_hide_job)
+            except Exception:
+                pass
+        self._stadium_loading_hide_job = None
         # ── D3D injection overlay ─────────────────────────────────────────────
         if self._d3d_injector is not None and self._d3d_injector.is_injected():
             # Cancel any previously scheduled deferred hide
@@ -1021,6 +1049,7 @@ class Server16App(tk.Tk):
         self._d3d_overlay_hide_job = None
         if self._d3d_injector is not None:
             self._d3d_injector.hide()
+        self._stadium_loading_visible = False
         self.log("Stadium notification hidden via D3D overlay")
 
     def _update_stadium_loading_modal(self, value: float, detail: str) -> None:
@@ -1040,6 +1069,7 @@ class Server16App(tk.Tk):
         if self._stadium_loading_visible:
             self._position_stadium_loading_modal()
             self.stadium_loading_modal.update_idletasks()
+            self.stadium_loading_modal.update()
 
     def _position_stadium_loading_modal(self) -> None:
         if self.stadium_loading_modal is None:
@@ -1969,11 +1999,13 @@ class Server16App(tk.Tk):
                 self._finish_stadium_apply(payload)
             elif kind == "error":
                 _, message = event
+                short_message = str(message).splitlines()[0] if message else self.status_text("stadium_error")
+                self._set_progress(100, short_message)
                 self._stadium_task_running = False
                 self._stadium_task_signature = None
                 self._stadium_task_request_key = None
                 self._set_process_status(self.status_text("stadium_error"), self.error)
-                self._hide_stadium_loading_modal()
+                self._hide_stadium_loading_modal(delay_ms=5000)
                 self.log(message)
         if self._stadium_task_running or not self._worker_queue.empty():
             self._schedule_worker_poll()
@@ -2972,6 +3004,7 @@ class Server16App(tk.Tk):
         section_name: str,
         injid: str,
         stadium_signature: tuple,
+        task_request_key: tuple[str, str, str],
         chosen_stadium: str | None = None,
     ) -> None:
         self.stadium_runtime.start_stadium_task(
@@ -2979,6 +3012,7 @@ class Server16App(tk.Tk):
             section_name,
             injid,
             stadium_signature,
+            task_request_key,
             chosen_stadium=chosen_stadium,
         )
 
@@ -3110,6 +3144,10 @@ class Server16App(tk.Tk):
         try:
             if self._worker_poll_job is not None:
                 self.after_cancel(self._worker_poll_job)
+        except Exception:
+            pass
+        try:
+            self._cancel_stadium_loading_hide()
         except Exception:
             pass
         try:

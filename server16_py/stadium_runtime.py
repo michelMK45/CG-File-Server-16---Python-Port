@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import unicodedata
+import tempfile
 import threading
 import traceback
 import winsound
@@ -18,6 +19,77 @@ if TYPE_CHECKING:
 class StadiumRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
+
+    @staticmethod
+    def _parse_assignment(raw_value: str) -> tuple[list[str], str, str, str]:
+        parts = [part.strip() for part in raw_value.split(",") if part.strip()]
+        if len(parts) < 4:
+            return [], "", "", ""
+        police, pitch, net = parts[-3:]
+        stadiums = [name for name in parts[:-3] if name and name != "None"]
+        return stadiums, police, pitch, net
+
+    @staticmethod
+    def _build_task_request_key(section_name: str, section_id: str, raw_value: str) -> tuple[str, str, str]:
+        return section_name, section_id, raw_value
+
+    @staticmethod
+    def _looks_like_stadium_dir(path: Path) -> bool:
+        required_markers = ("model.rx3", "texture_day.rx3", "texture_night.rx3", "crowd_day.dat", "crowd_night.dat")
+        return any((path / marker).exists() for marker in required_markers)
+
+    def _find_extracted_stadium_root(self, extracted_root: Path, preferred_name: str) -> Path:
+        preferred_path = extracted_root / preferred_name
+        if preferred_path.is_dir() and self._looks_like_stadium_dir(preferred_path):
+            return preferred_path
+        if self._looks_like_stadium_dir(extracted_root):
+            return extracted_root
+        matches: list[Path] = []
+        for candidate in extracted_root.rglob("*"):
+            if not candidate.is_dir():
+                continue
+            if candidate.name.startswith(".") or candidate.name.upper() == "__MACOSX":
+                continue
+            if candidate.name.casefold() == preferred_name.casefold() and self._looks_like_stadium_dir(candidate):
+                return candidate
+            if self._looks_like_stadium_dir(candidate):
+                matches.append(candidate)
+        if not matches:
+            raise RuntimeError(f"Could not find a valid stadium folder inside extracted archive {preferred_name}")
+        matches.sort(key=lambda path: (len(path.relative_to(extracted_root).parts), str(path).lower()))
+        return matches[0]
+
+    def _resolve_stadium_source(self, stadium_name: str) -> tuple[str, Path, str]:
+        app = self.app
+        normalized_name = (stadium_name or "").strip()
+        if not normalized_name or normalized_name == "None":
+            raise RuntimeError("No stadium name was provided for runtime loading")
+        folder_path = app.targetpath / normalized_name
+        if folder_path.is_dir():
+            return folder_path.name, folder_path, "folder"
+        direct_path = app.targetpath / normalized_name
+        if direct_path.is_file() and is_archive(direct_path):
+            return direct_path.stem, direct_path, "archive"
+        for ext in (".zip", ".rar"):
+            archive_path = app.targetpath / f"{normalized_name}{ext}"
+            if archive_path.is_file() and is_archive(archive_path):
+                return archive_path.stem, archive_path, "archive"
+
+        name_nfc = unicodedata.normalize("NFC", normalized_name)
+        name_nfd = unicodedata.normalize("NFD", normalized_name)
+        try:
+            for item in app.targetpath.iterdir():
+                item_nfc = unicodedata.normalize("NFC", item.name)
+                stem_nfc = unicodedata.normalize("NFC", item.stem)
+                if item.is_dir() and item_nfc in {name_nfc, name_nfd}:
+                    return item.name, item, "folder"
+                if item.is_file() and item.suffix.lower() in {".zip", ".rar"} and stem_nfc in {name_nfc, name_nfd}:
+                    if is_archive(item):
+                        return item.stem, item, "archive"
+        except Exception:
+            pass
+
+        raise RuntimeError(f"Assigned stadium source not found: {folder_path} or matching .zip/.rar archive")
 
     def apply_stadium_runtime(self) -> None:
         app = self.app
@@ -37,10 +109,7 @@ class StadiumRuntime:
             section_id, section_name = app.HID, "stadium"
         if section_id:
             raw_value = app.settings_ini.read(section_id, section_name)
-            parts = raw_value.split(",")
-            # Last 3 fields are always police, pitch, net — stadiums come before them
-            stadiums_in_value = parts[:-3] if len(parts) >= 4 else parts[:1]
-            valid_stadiums = [s for s in stadiums_in_value if s and s != "None"]
+            valid_stadiums, _police, _pitch, _net = self._parse_assignment(raw_value)
             if not valid_stadiums:
                 app.log(f"No valid stadiums in assignment [{section_name}] {section_id}: {raw_value}")
                 return
@@ -78,12 +147,13 @@ class StadiumRuntime:
             else:
                 candidates = valid_stadiums
             desired_stadium = random.choice(candidates)
+            task_request_key = self._build_task_request_key(section_name, section_id, raw_value)
             stadium_signature = (app._kickoff_generation, section_name, section_id, raw_value, app.HID, app.TOURNAME, app.TOURROUNDID)
             if stadium_signature == app._last_stadium_applied_signature and app.curstad == desired_stadium:
                 app._set_progress(100, f"Stadium already loaded: {desired_stadium}")
                 return
             if app._stadium_task_running:
-                if stadium_signature == app._stadium_task_signature:
+                if task_request_key == app._stadium_task_request_key or stadium_signature == app._stadium_task_signature:
                     app.log(f"Stadium task already running for {desired_stadium}")
                 else:
                     app.log(f"Stadium task busy; skipping new request for {desired_stadium}")
@@ -91,10 +161,15 @@ class StadiumRuntime:
             if desired_stadium == app.curstad:
                 app.CCount = inc_count(0, app.CCount)
             app.injID, app.PoliceNum = set_inj_id(app.CCount)
-            app._show_stadium_loading_modal(desired_stadium, "Preparing stadium assets", progress=4)
             app._set_process_status("Loading Stadium", app.gold)
-            app._set_progress(8, f"Preparing stadium {section_id}")
-            self.start_stadium_task(section_id, section_name, app.injID, stadium_signature, chosen_stadium=desired_stadium)
+            self.start_stadium_task(
+                section_id,
+                section_name,
+                app.injID,
+                stadium_signature,
+                task_request_key,
+                chosen_stadium=desired_stadium,
+            )
             return
         app._last_stadium_applied_signature = None
         app._hide_stadium_loading_modal()
@@ -108,10 +183,21 @@ class StadiumRuntime:
         app._set_progress(100, "Default stadium restored")
         app.log("No stadium assignment found; default stadium restored")
 
-    def start_stadium_task(self, section_id: str, section_name: str, injid: str, stadium_signature: tuple, chosen_stadium: str | None = None) -> None:
+    def start_stadium_task(
+        self,
+        section_id: str,
+        section_name: str,
+        injid: str,
+        stadium_signature: tuple,
+        task_request_key: tuple[str, str, str],
+        chosen_stadium: str | None = None,
+    ) -> None:
         app = self.app
         app._stadium_task_running = True
         app._stadium_task_signature = stadium_signature
+        app._stadium_task_request_key = task_request_key
+        app._show_stadium_loading_modal(chosen_stadium or section_id, "Preparing stadium assets", progress=4)
+        app._set_progress(8, f"Preparing stadium {section_id}")
         app._update_stadium_loading_modal(10, f"Loading stadium from [{section_name}] {section_id}")
         # Write the stadium name to memory immediately — before file copying starts —
         # so it is already in place when FIFA renders the match intro screen.
@@ -150,66 +236,34 @@ class StadiumRuntime:
         app = self.app
         if not app.settings_ini.key_exists(hid, section):
             raise RuntimeError(f"Missing stadium assignment [{section}] {hid}")
-        parts = app.settings_ini.read(hid, section).split(",")
-        if len(parts) < 4:
-            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {parts}")
-        police, pitch, net = parts[-3:]
-        stadiums = parts[:-3]
-        valid_stadiums = [name for name in stadiums if name and name != "None"]
+        raw_value = app.settings_ini.read(hid, section)
+        valid_stadiums, police, pitch, net = self._parse_assignment(raw_value)
+        if len(valid_stadiums) == 0 and not all([police, pitch, net]):
+            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {raw_value}")
         if not valid_stadiums:
             raise RuntimeError(f"No valid stadium names in assignment [{section}] {hid}")
         # Use the pre-selected stadium if provided (chosen in apply_stadium_runtime),
         # otherwise fall back to random.choice (e.g. when called directly).
-        if chosen_stadium and chosen_stadium in valid_stadiums:
-            stad_name = chosen_stadium
+        chosen = (chosen_stadium or "").strip()
+        if chosen and chosen in valid_stadiums:
+            stad_name = chosen
         else:
             stad_name = random.choice(valid_stadiums)
+        stad_name, source_path, source_kind = self._resolve_stadium_source(stad_name)
         # Support zip/rar archives: extract to a temp folder and work from there
         _temp_dir = None
-        # Resolve the actual folder/archive name on disk (handles NFC/NFD mismatch)
-        def _resolve_actual_name(name: str) -> str:
-            name_nfc = unicodedata.normalize("NFC", name)
+        if source_kind == "archive":
+            runtime_dir = app.base_dir / "runtime"
+            runtime_dir.mkdir(parents=True, exist_ok=True)
+            _temp_dir = tempfile.mkdtemp(prefix="server16_stad_", dir=runtime_dir)
             try:
-                for item in app.targetpath.iterdir():
-                    if unicodedata.normalize("NFC", item.name) == name_nfc:
-                        return item.name
-                    if unicodedata.normalize("NFC", item.stem) == name_nfc and item.suffix.lower() in (".zip", ".rar"):
-                        return item.stem
-            except Exception:
-                pass
-            return name
-        resolved_name = _resolve_actual_name(stad_name)
-        stad_folder = app.targetpath / resolved_name
-        # Also check for archive files: StadiumName.zip or StadiumName.rar
-        archive_path = None
-        for ext in (".zip", ".rar"):
-            candidate = app.targetpath / (resolved_name + ext)
-            if candidate.exists() and is_archive(candidate):
-                archive_path = candidate
-                break
-        if archive_path is not None:
-            import tempfile as _tempfile
-            _temp_dir = _tempfile.mkdtemp(prefix="server16_stad_")
-            try:
-                app._worker_queue.put(("progress", 5, f"Extracting {archive_path.name}..."))
+                app._worker_queue.put(("progress", 5, f"Extracting {source_path.name}..."))
                 def _zip_progress(current, total, filename):
                     pct = 5 + int((current / max(1, total)) * 6)
                     short = filename if len(filename) <= 40 else "..." + filename[-37:]
                     app._worker_queue.put(("progress", pct, f"Extracting {short} ({current}/{total})"))
-                extract_archive(archive_path, Path(_temp_dir), progress_callback=_zip_progress)
-                # The archive may contain a subfolder with the stadium name or dump files directly
-                extracted = Path(_temp_dir)
-                # Look for the actual stadium content - could be in root or a subfolder
-                subfolders = [p for p in extracted.iterdir() if p.is_dir()]
-                files_in_root = [p for p in extracted.iterdir() if p.is_file()]
-                if len(subfolders) == 1 and not files_in_root:
-                    stad = subfolders[0]
-                elif any(f.name.lower() in ("model.rx3", "texture_day.rx3", "texture_night.rx3") for f in files_in_root):
-                    stad = extracted
-                elif len(subfolders) == 1:
-                    stad = subfolders[0]
-                else:
-                    stad = extracted
+                extract_archive(source_path, Path(_temp_dir), progress_callback=_zip_progress)
+                stad = self._find_extracted_stadium_root(Path(_temp_dir), source_path.stem)
                 app.log(f"Archive extracted to: {stad}")
             except Exception:
                 # Cleanup temp dir if extraction fails
@@ -217,10 +271,10 @@ class StadiumRuntime:
                 _shutil2.rmtree(_temp_dir, ignore_errors=True)
                 _temp_dir = None
                 raise
-        elif stad_folder.exists():
-            stad = stad_folder
+        elif source_path.exists():
+            stad = source_path
         else:
-            raise RuntimeError(f"Assigned stadium folder or archive not found: {stad_folder}")
+            raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
         dest = app.exedir / "data" / "sceneassets"
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
@@ -327,16 +381,17 @@ class StadiumRuntime:
             app.stadmovie = bool(payload["stadmovie"])
             app._set_display("stadium", stad_name)
             app._set_display("audio_last_action", f"Stadium {stad_name}")
-            self.play_stadium_loaded_sound()
             app._set_progress(100, f"Stadium applied: {stad_name}")
             app._set_process_status("Stadium Ready", app.success)
+            self.play_stadium_loaded_sound()
             app._last_stadium_applied_signature = app._stadium_task_signature
             app._update_audio_overview()
             app.log(f"Applied stadium {stad_name} from [{payload['section_name']}] {payload['section_id']} using injID={payload['injid']}")
         finally:
             app._stadium_task_running = False
             app._stadium_task_signature = None
-            app._hide_stadium_loading_modal()
+            app._stadium_task_request_key = None
+            app._hide_stadium_loading_modal(delay_ms=1200)
 
     def stadium_offsets(self, stadium_type: str) -> list[int]:
         app = self.app

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import random
 import shutil
+import subprocess
 import zipfile
 from pathlib import Path
 
@@ -21,7 +22,7 @@ except Exception:
 
 def is_archive(path: Path) -> bool:
     suffix = path.suffix.lower()
-    return suffix == ".zip" or (suffix == ".rar" and _RAR_AVAILABLE)
+    return suffix in {".zip", ".rar"}
 
 
 def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) -> None:
@@ -43,6 +44,29 @@ def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) 
                 rf.extract(member, dest_dir)
                 if progress_callback:
                     progress_callback(index, total, member.filename)
+    elif suffix == ".rar":
+        startupinfo = None
+        creationflags = 0
+        if hasattr(subprocess, "STARTUPINFO") and hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            result = subprocess.run(
+                ["tar", "-xf", str(archive_path), "-C", str(dest_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+            )
+        except FileNotFoundError as exc:
+            raise RuntimeError("The system tar extractor is not available for RAR support") from exc
+        if result.returncode != 0:
+            details = (result.stderr or result.stdout or "").strip()
+            raise RuntimeError(f"Failed to extract RAR archive {archive_path.name}: {details or 'unknown error'}")
+        if progress_callback:
+            progress_callback(1, 1, archive_path.name)
     else:
         raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
 
