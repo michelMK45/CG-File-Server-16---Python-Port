@@ -3,6 +3,7 @@ from __future__ import annotations
 import random
 import shutil
 import subprocess
+import unicodedata
 import zipfile
 from pathlib import Path
 
@@ -19,10 +20,71 @@ except Exception:
     HIWORD = LOWORD = None
 
 
+STADIUM_ARCHIVE_SUFFIXES = {".zip", ".rar"}
+STADIUM_PREVIEW_SUFFIXES = {".png", ".jpg", ".jpeg", ".jepg"}
+
+
+def _normalized_lookup_name(value: str) -> str:
+    return unicodedata.normalize("NFC", value or "").casefold()
+
+
+def stadium_preview_dir(stadium_gbd: str | Path) -> Path:
+    return Path(stadium_gbd) / "render" / "thumbnail" / "stadium"
+
+
+def resolve_stadium_preview_path(stadium_gbd: str | Path, stadium_name: str) -> Path | None:
+    stadium_name = (stadium_name or "").strip()
+    if not stadium_name or stadium_name in {"-", "None", "Stadium Module Disable"}:
+        return None
+    preview_dir = stadium_preview_dir(stadium_gbd)
+    if not preview_dir.exists():
+        return None
+
+    for suffix in sorted(STADIUM_PREVIEW_SUFFIXES):
+        candidate = preview_dir / f"{stadium_name}{suffix}"
+        if candidate.is_file():
+            return candidate
+
+    wanted = _normalized_lookup_name(stadium_name)
+    for candidate in sorted(preview_dir.iterdir(), key=lambda path: path.name.lower()):
+        if not candidate.is_file() or candidate.suffix.lower() not in STADIUM_PREVIEW_SUFFIXES:
+            continue
+        if _normalized_lookup_name(candidate.stem) == wanted:
+            return candidate
+    return None
+
+
+def discover_stadium_names(stadium_gbd: str | Path) -> list[str]:
+    root = Path(stadium_gbd)
+    names: dict[str, str] = {}
+
+    def add(name: str) -> None:
+        name = (name or "").strip()
+        if not name or name == "None":
+            return
+        names.setdefault(_normalized_lookup_name(name), name)
+
+    if root.exists():
+        for item in root.iterdir():
+            if item.name.startswith(".") or item.name.casefold() == "render":
+                continue
+            if item.is_dir():
+                add(item.name)
+            elif item.is_file() and item.suffix.lower() in STADIUM_ARCHIVE_SUFFIXES:
+                add(item.stem)
+
+    previews = stadium_preview_dir(root)
+    if previews.exists():
+        for item in previews.iterdir():
+            if item.is_file() and item.suffix.lower() in STADIUM_PREVIEW_SUFFIXES:
+                add(item.stem)
+
+    return sorted(names.values(), key=lambda value: _normalized_lookup_name(value))
+
 
 def is_archive(path: Path) -> bool:
     suffix = path.suffix.lower()
-    return suffix in {".zip", ".rar"}
+    return suffix in STADIUM_ARCHIVE_SUFFIXES
 
 
 def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) -> None:

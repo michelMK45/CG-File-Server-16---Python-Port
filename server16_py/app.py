@@ -26,7 +26,7 @@ from .camera_runtime import CameraPreset, CameraRuntime
 from .chants_runtime import ChantsRuntime, MciAudioPlayer
 from .discord_rpc_runtime import DiscordRPCRuntime
 from .fifa_db import FifaDatabase
-from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
+from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup, resolve_stadium_preview_path
 from .ini_file import SessionIniFile
 from .memory_access import Memory, MemoryAccessError
 from .localization import LANGUAGE_LABELS, LocalizationManager, SUPPORTED_LANGUAGES
@@ -1200,12 +1200,9 @@ class Server16App(tk.Tk):
             if root in seen:
                 continue
             seen.add(root)
-            preview_dir = root / stadium_name / "render" / "thumbnail"
-            if not preview_dir.exists():
-                continue
-            for candidate in sorted(preview_dir.glob("stadium.*")):
-                if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".jepg"}:
-                    return candidate
+            candidate = resolve_stadium_preview_path(root, stadium_name)
+            if candidate is not None:
+                return candidate
         return None
 
     def _load_preview_photo(self, image_path: Path | None, max_size: tuple[int, int]) -> ImageTk.PhotoImage | None:
