@@ -9,6 +9,7 @@ import threading
 import time
 import traceback
 import tkinter as tk
+import webbrowser
 from datetime import datetime
 from time import perf_counter
 from pathlib import Path
@@ -18,6 +19,7 @@ from tkinter import filedialog, messagebox, ttk
 import psutil
 from PIL import Image, ImageTk
 
+from . import __version__ as APP_VERSION
 from .asset_runtime import AssetRuntime
 from .db_patcher import restore_stadium_names
 from .match_string_patcher import patch_match_string
@@ -34,6 +36,7 @@ from .offsets import Offsets
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 from .settings_store import SettingsStore
 from .stadium_runtime import StadiumRuntime
+from .update_checker import GithubReleaseChecker, UpdateCheckResult
 try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
 except Exception:
@@ -66,6 +69,9 @@ KEYEVENTF_KEYUP = 0x0002
 
 
 class Server16App(tk.Tk):
+    UPDATE_REPO_OWNER = "igor1043"
+    UPDATE_REPO_NAME = "CG-File-Server-16---Python-Port"
+
     def __init__(self) -> None:
         super().__init__()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -135,7 +141,7 @@ class Server16App(tk.Tk):
         self.module_states = {}
         self.log_widget = None
         self.logs_frame = None
-        self.toggle_logs_button = None
+        self.check_update_button = None
         self.locate_fifa_button = None
         self.launch_fifa_button = None
         self.assign_scoreboard_button = None
@@ -208,6 +214,9 @@ class Server16App(tk.Tk):
         self.camera_library_card = None
         self.camera_preview_card = None
         self.logs_group = None
+        self.app_version = APP_VERSION
+        self._update_check_in_progress = False
+        self._update_checker = GithubReleaseChecker(self.UPDATE_REPO_OWNER, self.UPDATE_REPO_NAME)
         self.chants_thread_started = False
         self._chants_stop = threading.Event()
         self._chants_reset_requested = False
@@ -371,11 +380,8 @@ class Server16App(tk.Tk):
             self.assign_movie_button.configure(text=self.tr("button.assign_movie"))
         if self.exclude_competition_button is not None:
             self.exclude_competition_button.configure(text=self.tr("button.exclude_competition"))
-        if self.toggle_logs_button is not None:
-            current = self.tabview.index(self.tabview.select()) if self.tabview is not None else 0
-            logs_index = self.tabview.index(self.logs_tab) if self.tabview is not None and self.logs_tab is not None else -1
-            key = "button.open_logs" if current != logs_index else "button.back_to_dashboard"
-            self.toggle_logs_button.configure(text=self.tr(key))
+        if self.check_update_button is not None:
+            self.check_update_button.configure(text=self._check_update_button_text())
         if self.language_label is not None:
             self.language_label.configure(text=self.tr("label.language"))
         if self.language_combo is not None:
@@ -766,8 +772,8 @@ class Server16App(tk.Tk):
         self.language_combo.pack(side="left")
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
         self.language_var.set(self._language_combo_value())
-        self.toggle_logs_button = ttk.Button(top, text=self.tr("button.open_logs"), command=self.toggle_logs)
-        self.toggle_logs_button.pack(side="right")
+        self.check_update_button = ttk.Button(top, text=self.tr("button.check_update"), command=self.check_updates)
+        self.check_update_button.pack(side="right", padx=(0, 6))
 
         header = tk.Frame(root, bg=self.bg, padx=10)
         header.pack(fill="x")
@@ -1966,17 +1972,62 @@ class Server16App(tk.Tk):
         self.stat_title_labels[key] = title_label
         self.labels[key] = label
 
-    def toggle_logs(self) -> None:
-        if self.tabview is None or self.toggle_logs_button is None:
+    def _check_update_button_text(self) -> str:
+        key = "button.checking_update" if self._update_check_in_progress else "button.check_update"
+        return self.tr(key)
+
+    def check_updates(self) -> None:
+        if self._update_check_in_progress:
             return
-        current = self.tabview.index(self.tabview.select())
-        logs_index = self.tabview.index(self.logs_tab)
-        if current == logs_index:
-            self.tabview.select(0)
-            self.toggle_logs_button.configure(text=self.tr("button.open_logs"))
-        else:
-            self.tabview.select(logs_index)
-            self.toggle_logs_button.configure(text=self.tr("button.back_to_dashboard"))
+        self._update_check_in_progress = True
+        if self.check_update_button is not None:
+            self.check_update_button.configure(state="disabled", text=self._check_update_button_text())
+        self.log("Checking for updates on GitHub releases")
+        threading.Thread(target=self._run_check_updates_worker, daemon=True).start()
+
+    def _run_check_updates_worker(self) -> None:
+        result = self._update_checker.check_latest_release(self.app_version)
+        window = self._window()
+        try:
+            window.after(0, lambda: self._handle_check_updates_result(result))
+        except Exception:
+            pass
+
+    def _handle_check_updates_result(self, result: UpdateCheckResult) -> None:
+        self._update_check_in_progress = False
+        if self.check_update_button is not None:
+            self.check_update_button.configure(state="normal", text=self._check_update_button_text())
+
+        if not result.ok:
+            self.log(f"Update check failed: {result.error}")
+            messagebox.showerror(
+                self.tr("message.update_check_title"),
+                self.tr("message.update_check_error", error=result.error),
+            )
+            return
+
+        if result.update_available:
+            self.log(f"Update available: v{result.latest_version} (current v{result.current_version})")
+            should_open = messagebox.askyesno(
+                self.tr("message.update_check_title"),
+                self.tr(
+                    "message.update_available",
+                    latest=result.latest_version,
+                    current=result.current_version,
+                ),
+            )
+            if should_open:
+                url = result.release_url or (
+                    f"https://github.com/{self.UPDATE_REPO_OWNER}/{self.UPDATE_REPO_NAME}/releases/latest"
+                )
+                webbrowser.open(url)
+            return
+
+        self.log(f"No updates found. Current version is v{result.current_version}")
+        messagebox.showinfo(
+            self.tr("message.update_check_title"),
+            self.tr("message.update_none", current=result.current_version),
+        )
 
     def _set_progress(self, value: float, text: str) -> None:
         if self.progress_value is not None:
