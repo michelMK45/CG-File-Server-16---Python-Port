@@ -7,6 +7,8 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
+from .file_tools import discover_stadium_names, resolve_stadium_preview_path
+
 
 SCOREBOARD_SCOPE_OPTIONS = (
     ("0", "dialog.scope.every_tournament"),
@@ -220,8 +222,7 @@ class StadiumDialog(BaseDialog):
         self.police_source = self._first_existing(exedir / "FSW" / "Images" / "Police", exedir / "FSW" / "Police")
         self._all_stadiums = ["None"]
         self._country_group_labels = {"All Countries": self.tr("dialog.stadium.all_countries")}
-        if self.stadium_source.exists():
-            self._all_stadiums.extend(self._discover_stadium_names())
+        self._all_stadiums.extend(discover_stadium_names(self.stadium_source))
         self._country_group_values = self._build_country_group_values(self._all_stadiums)
         self.country_group_var.set(self._country_group_values[0] if self._country_group_values else self.tr("dialog.stadium.all_countries"))
         self.grid_columnconfigure(0, weight=5)
@@ -281,6 +282,7 @@ class StadiumDialog(BaseDialog):
             style="Server16.TCombobox",
         )
         self.country_group_combo.grid(row=6, column=0, sticky="ew", pady=(6, 10))
+        self.country_group_combo.bind("<<ComboboxSelected>>", self._on_country_group_changed)
 
         stadium_list_wrap = tk.Frame(left_body, bg=self.card)
         stadium_list_wrap.grid(row=3, column=0, sticky="nsew")
@@ -288,11 +290,8 @@ class StadiumDialog(BaseDialog):
         stadium_list_wrap.grid_rowconfigure(0, weight=1)
 
         self.stadiums = self._dark_listbox(stadium_list_wrap, exportselection=False, height=22, selectmode="browse", font=("Consolas", 10))
-        self.stadiums.insert("end", "None")
-        stadium_dir = exedir / "StadiumGBD"
-        if stadium_dir.exists():
-            for directory in sorted(p for p in stadium_dir.iterdir() if p.is_dir()):
-                self.stadiums.insert("end", directory.name)
+        for stadium_name in self._all_stadiums:
+            self.stadiums.insert("end", stadium_name)
         stadium_scroll = ttk.Scrollbar(
             stadium_list_wrap,
             orient="vertical",
@@ -572,16 +571,7 @@ class StadiumDialog(BaseDialog):
         self.selection_value.configure(text=text)
 
     def _resolve_stadium_preview_path(self, stadium_name: str) -> Path | None:
-        stadium_name = (stadium_name or "").strip()
-        if not stadium_name or stadium_name == "None":
-            return None
-        preview_dir = self.stadium_source / stadium_name / "render" / "thumbnail"
-        if not preview_dir.exists():
-            return None
-        for candidate in sorted(preview_dir.glob("stadium.*")):
-            if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg", ".jepg"}:
-                return candidate
-        return None
+        return resolve_stadium_preview_path(self.stadium_source, stadium_name)
 
     def _build_preview(
         self,

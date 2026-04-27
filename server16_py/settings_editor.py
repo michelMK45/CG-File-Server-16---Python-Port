@@ -5,6 +5,8 @@ from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from .file_tools import discover_stadium_names
+
 
 @dataclass(frozen=True)
 class SectionSpec:
@@ -346,6 +348,8 @@ class SettingsSectionFrame(tk.Frame):
             return entries
         if not base.exists():
             return []
+        if directory.replace("/", "\\").casefold() == "stadiumgbd":
+            return discover_stadium_names(base)
         return sorted(path.name for path in base.iterdir() if path.is_dir())
 
     def _file_stems(self, folder: Path) -> list[str]:

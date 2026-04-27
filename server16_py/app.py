@@ -26,7 +26,7 @@ from .camera_runtime import CameraPreset, CameraRuntime
 from .chants_runtime import ChantsRuntime, MciAudioPlayer
 from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
-from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
+from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup, resolve_stadium_preview_path
 from .ini_file import SessionIniFile
 from .memory_access import Memory, MemoryAccessError
 from .localization import LANGUAGE_LABELS, LocalizationManager, SUPPORTED_LANGUAGES
