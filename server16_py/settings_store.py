@@ -8,7 +8,11 @@ class SettingsStore:
     DEFAULTS = {
         "FIFAEXE": "default",
         "CAMERAPACKAGE": "",
+        # Backward-compatible: keep this key available even if current UI
+        # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
+        "LOG_FILE_ENABLED": True,
+        "LANGUAGE": "en",
     }
 
     def __init__(self, path: Path) -> None:
@@ -24,7 +28,7 @@ class SettingsStore:
         try:
             loaded = json.loads(self.path.read_text(encoding="utf-8"))
             if not isinstance(loaded, dict):
-                raise ValueError("Settings file must contain an object")
+                raise ValueError("Settings file must contain a JSON object")
             self.data = {**self.DEFAULTS, **loaded}
         except Exception:
             self.data = dict(self.DEFAULTS)
@@ -57,4 +61,25 @@ class SettingsStore:
     @show_stadium_loading_notification.setter
     def show_stadium_loading_notification(self, value: bool) -> None:
         self.data["SHOW_STADIUM_LOADING_NOTIFICATION"] = bool(value)
+        self.save()
+
+
+    @property
+    def log_file_enabled(self) -> bool:
+        return bool(self.data.get("LOG_FILE_ENABLED", True))
+
+    @log_file_enabled.setter
+    def log_file_enabled(self, value: bool) -> None:
+        self.data["LOG_FILE_ENABLED"] = bool(value)
+        self.save()
+
+    @property
+    def language(self) -> str:
+        value = str(self.data.get("LANGUAGE", "en")).strip().lower()
+        return value if value in {"en", "pt", "es"} else "en"
+
+    @language.setter
+    def language(self, value: str) -> None:
+        normalized = str(value or "en").strip().lower()
+        self.data["LANGUAGE"] = normalized if normalized in {"en", "pt", "es"} else "en"
         self.save()

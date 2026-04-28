@@ -1,7 +1,13 @@
 from __future__ import annotations
 
 import configparser
+import unicodedata
 from pathlib import Path
+
+
+def _normalize_key(key: str) -> str:
+    """Normalize a key for comparison: NFC unicode + strip whitespace."""
+    return unicodedata.normalize("NFC", key).strip()
 
 
 class IniFile:
@@ -49,7 +55,7 @@ class IniFile:
             parser.add_section(section)
             resolved_section = section
         parser.set(resolved_section, key, value)
-        with self.path.open("w", encoding="cp1252", errors="replace") as handle:
+        with self.path.open("w", encoding="utf-8", errors="replace") as handle:
             parser.write(handle)
 
     def delete_key(self, key: str, section: str) -> None:
@@ -57,7 +63,7 @@ class IniFile:
         resolved_section = self._resolve_section_name(parser, section)
         if resolved_section:
             parser.remove_option(resolved_section, key)
-            with self.path.open("w", encoding="cp1252", errors="replace") as handle:
+            with self.path.open("w", encoding="utf-8", errors="replace") as handle:
                 parser.write(handle)
 
     def delete_section(self, section: str) -> None:
@@ -65,7 +71,7 @@ class IniFile:
         resolved_section = self._resolve_section_name(parser, section)
         if resolved_section:
             parser.remove_section(resolved_section)
-        with self.path.open("w", encoding="cp1252", errors="replace") as handle:
+        with self.path.open("w", encoding="utf-8", errors="replace") as handle:
             parser.write(handle)
 
     def key_exists(self, key: str, section: str) -> bool:
@@ -78,22 +84,42 @@ class SessionIniFile:
         self._sections: dict[str, dict[str, str]] = {}
         self._section_names: dict[str, str] = {}
         self._last_mtime_ns: int | None = None
+        # Pending deletions: set of (canonical_section, normalized_key) pairs.
+        # Populated by delete_key() and consumed (cleared) by save().
+        # This ensures that if _reload_if_needed() runs between delete_key()
+        # and save() — e.g. via the editor's 3-second auto-refresh — the
+        # deleted keys are not silently re-introduced from disk.
+        self._pending_deletes: set[tuple[str, str]] = set()
         self._load()
 
     def _load(self) -> None:
         self._sections = {}
         self._section_names = {}
+        # Do NOT clear _pending_deletes here. Deletions are an in-flight intent
+        # that must survive disk reloads until save() actually commits them.
+        # _pending_deletes is only cleared in save() after the file is written.
         if not self.path.exists():
             self._last_mtime_ns = None
             return
         raw = self.path.read_bytes()
         text = ""
-        for encoding in ("utf-8", "utf-8-sig", "cp1252", "latin-1"):
+        # Detect encoding: if file has UTF-8 BOM use utf-8-sig,
+        # if bytes are valid UTF-8 (strict) use utf-8,
+        # otherwise fall back to cp1252 (most common for FIFA modding tools on Windows).
+        if raw.startswith(b"\xef\xbb\xbf"):
+            # UTF-8 BOM present
+            text = raw.decode("utf-8-sig", errors="replace")
+        else:
             try:
-                text = raw.decode(encoding)
-                break
+                text = raw.decode("utf-8")
+                # Extra check: if decoded text has replacement chars, likely not utf-8
+                if "\ufffd" in text:
+                    raise UnicodeDecodeError("utf-8", raw, 0, 1, "replacement chars found")
             except UnicodeDecodeError:
-                continue
+                try:
+                    text = raw.decode("cp1252")
+                except UnicodeDecodeError:
+                    text = raw.decode("latin-1")
         current_section: str | None = None
         for raw_line in text.splitlines():
             line = raw_line.strip()
@@ -109,7 +135,7 @@ class SessionIniFile:
             if current_section is None or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            self._sections[current_section][key.strip()] = value.strip()
+            self._sections[current_section][_normalize_key(key)] = unicodedata.normalize("NFC", value.strip())
         try:
             self._last_mtime_ns = self.path.stat().st_mtime_ns
         except OSError:
@@ -118,13 +144,18 @@ class SessionIniFile:
     def _reload_if_needed(self, force: bool = False) -> None:
         if force:
             self._load()
-            return
-        try:
-            current_mtime = self.path.stat().st_mtime_ns
-        except OSError:
-            current_mtime = None
-        if current_mtime != self._last_mtime_ns:
+        else:
+            try:
+                current_mtime = self.path.stat().st_mtime_ns
+            except OSError:
+                current_mtime = None
+            if current_mtime == self._last_mtime_ns:
+                return
             self._load()
+        # Re-apply any pending deletes so that in-memory state stays consistent
+        # even after a disk reload triggered between delete_key() and save().
+        for canonical, normalized_key in self._pending_deletes:
+            self._sections.get(canonical, {}).pop(normalized_key, None)
 
     def _resolve_section_name(self, section: str) -> str | None:
         self._reload_if_needed()
@@ -134,7 +165,7 @@ class SessionIniFile:
         self._reload_if_needed()
         resolved_section = self._resolve_section_name(section)
         if resolved_section:
-            return self._sections.get(resolved_section, {}).get(key, "")
+            return self._sections.get(resolved_section, {}).get(_normalize_key(key), "")
         return ""
 
     def write(self, key: str, value: str, section: str) -> None:
@@ -144,9 +175,42 @@ class SessionIniFile:
             resolved_section = section
             self._section_names[section.lower()] = section
             self._sections[section] = {}
-        self._sections.setdefault(resolved_section, {})[key] = value
+        self._sections.setdefault(resolved_section, {})[_normalize_key(key)] = unicodedata.normalize("NFC", value)
 
     def save(self) -> None:
+        # Before writing, merge any pending in-memory changes on top of the
+        # current disk state. This prevents a race condition where _reload_if_needed
+        # inside write() reloads from disk AFTER the caller already called write()
+        # but BEFORE save() runs, causing the pending changes to be lost.
+        pending: dict[str, dict[str, str]] = {}
+        for section, values in self._sections.items():
+            pending[section] = dict(values)
+        # Snapshot pending deletions so the merge step below can skip them
+        # even if _load() re-reads them from disk.
+        pending_deletes = set(self._pending_deletes)
+        try:
+            current_mtime = self.path.stat().st_mtime_ns
+        except OSError:
+            current_mtime = None
+        if current_mtime != self._last_mtime_ns:
+            # Disk changed since last load — reload first, then re-apply pending
+            self._load()
+            for section, values in pending.items():
+                section_key = section.lower()
+                canonical = self._section_names.get(section_key)
+                if not canonical:
+                    canonical = section
+                    self._section_names[section_key] = section
+                    self._sections[section] = {}
+                for key, value in values.items():
+                    # Skip keys that were explicitly deleted — do not let a
+                    # stale disk version resurrect them during the merge.
+                    if (canonical, key) not in pending_deletes:
+                        self._sections.setdefault(canonical, {})[key] = value
+        # Apply any remaining pending deletes against the (possibly reloaded) state.
+        for canonical, normalized_key in pending_deletes:
+            self._sections.get(canonical, {}).pop(normalized_key, None)
+        self._pending_deletes.clear()
         lines: list[str] = []
         for section, values in self._sections.items():
             lines.append(f"[{section}]")
@@ -155,24 +219,40 @@ class SessionIniFile:
             lines.append("")
         payload = "\n".join(lines).rstrip() + ("\n" if lines else "")
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(payload, encoding="cp1252", errors="replace")
+        self.path.write_text(payload, encoding="utf-8", errors="replace")
         try:
             self._last_mtime_ns = self.path.stat().st_mtime_ns
         except OSError:
             self._last_mtime_ns = None
 
     def delete_key(self, key: str, section: str) -> None:
+        # Do NOT force-reload here. A force-reload updates _last_mtime_ns,
+        # which causes save() to think the disk is up-to-date and skip its
+        # own merge step — but if _reload_if_needed() fires again between
+        # this call and save() (e.g. the editor's 3-second auto-refresh),
+        # the just-deleted key gets silently re-read from disk and ends up
+        # back in _sections before save() runs.
+        #
+        # Instead, remove the key from the in-memory state immediately and
+        # record it in _pending_deletes so that _reload_if_needed() and
+        # save() both know to keep it absent even after a disk reload.
         self._reload_if_needed()
-        resolved_section = self._resolve_section_name(section)
+        normalized = _normalize_key(key)
+        # Resolve the section directly from the already-loaded cache to avoid
+        # a second _reload_if_needed() call inside _resolve_section_name(),
+        # which could trigger another _load() and briefly wipe _pending_deletes
+        # before the fix in _load() re-applies them.
+        resolved_section = self._section_names.get(section.lower())
         if resolved_section:
-            self._sections.get(resolved_section, {}).pop(key, None)
+            self._sections.get(resolved_section, {}).pop(normalized, None)
+            self._pending_deletes.add((resolved_section, normalized))
 
     def delete_section(self, section: str) -> None:
         self._reload_if_needed()
         resolved_section = self._resolve_section_name(section)
         if resolved_section:
             self._sections.pop(resolved_section, None)
-            self._section_names.pop(section.lower(), None)
+            self._section_names.pop(resolved_section.lower(), None)
 
     def key_exists(self, key: str, section: str) -> bool:
         return bool(self.read(key, section))

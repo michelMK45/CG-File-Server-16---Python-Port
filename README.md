@@ -135,10 +135,14 @@ You can build the standalone executable with the included batch file:
 .\build_exe.bat
 ```
 
+The batch file compiles the C++ overlay helpers when Visual Studio C++ tools are available. If they
+are not installed, it uses the existing helper binaries in `bin/` and still runs the PyInstaller
+package step.
+
 Or run PyInstaller directly:
 
 ```powershell
-pyinstaller --noconfirm --clean --windowed --onefile --name Server16Python --distpath dist --workpath build\pyinstaller --add-data "server16_py\offsets.json;server16_py" main.py
+pyinstaller --noconfirm --clean --distpath dist --workpath build\pyinstaller Server16Python.spec
 ```
 
 The resulting executable will be created at:
@@ -180,6 +184,7 @@ Suggested contribution flow:
 Suggested GitHub release contents:
 
 - `Server16Python.exe`
+- `RELEASE_NOTES_v0.2.1.md`
 - release notes summarizing major fixes and improvements
 - optional screenshots or changelog excerpts
 

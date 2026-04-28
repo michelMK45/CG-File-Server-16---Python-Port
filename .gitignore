@@ -33,3 +33,10 @@ desktop.ini
 
 # PyInstaller temp data
 localpycs/
+
+# MSVC / C++ build artifacts
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
