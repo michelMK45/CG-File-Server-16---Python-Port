@@ -103,15 +103,47 @@ class AssetRuntime:
                 fallback=("0", "Scoreboard"),
             )
             if scoreboard:
-                variant = app.ScoreBoard / scoreboard / app.tvlogoscoreboardtype
-                scoreboard_dir = app.ScoreBoard / scoreboard
-                if app.tvlogoscoreboardtype != "default" and variant.exists():
-                    copy(variant, app.Scoredata)
-                elif scoreboard_dir.exists():
-                    copy(scoreboard_dir, app.Scoredata)
+                from .file_tools import is_archive, extract_archive
+                import tempfile, shutil
+
+                scoreboard_path = app.ScoreBoard / scoreboard
+                scoreboard_dir = scoreboard_path
+
+                # If not found as folder, try archive extensions
+                if not scoreboard_path.exists():
+                    for ext in (".zip", ".rar"):
+                        candidate = app.ScoreBoard / (scoreboard + ext)
+                        if candidate.exists():
+                            scoreboard_path = candidate
+                            break
+
+                if scoreboard_path.exists() and is_archive(scoreboard_path):
+                    tmp_dir = Path(tempfile.mkdtemp())
+                    try:
+                        app.log(f"Extracting scoreboard archive: {scoreboard_path.name}")
+                        extract_archive(scoreboard_path, tmp_dir)
+                        extracted = list(tmp_dir.iterdir())
+                        if len(extracted) == 1 and extracted[0].is_dir():
+                            scoreboard_dir = extracted[0]
+                        else:
+                            scoreboard_dir = tmp_dir
+                        variant = scoreboard_dir / app.tvlogoscoreboardtype
+                        if app.tvlogoscoreboardtype != "default" and variant.exists():
+                            copy(variant, app.Scoredata)
+                        else:
+                            copy(scoreboard_dir, app.Scoredata)
+                    finally:
+                        shutil.rmtree(tmp_dir, ignore_errors=True)
+                elif scoreboard_dir.exists() and scoreboard_dir.is_dir():
+                    variant = scoreboard_dir / app.tvlogoscoreboardtype
+                    if app.tvlogoscoreboardtype != "default" and variant.exists():
+                        copy(variant, app.Scoredata)
+                    else:
+                        copy(scoreboard_dir, app.Scoredata)
                 else:
-                    app.log(f"Scoreboard directory not found, keeping default scoreboard: {scoreboard_dir}")
+                    app.log(f"Scoreboard not found, keeping default: {scoreboard_path}")
                     scoreboard = ""
+
                 if scoreboard:
                     app._set_display("scoreboard", scoreboard)
                     app.log(f"Applied scoreboard: {scoreboard}")

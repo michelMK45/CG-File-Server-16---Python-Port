@@ -84,6 +84,7 @@ class Server16App(tk.Tk):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
+        self.log_file_enabled_var = tk.BooleanVar(value=self.settings.log_file_enabled)
         self.localization = LocalizationManager(self.base_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
@@ -103,6 +104,10 @@ class Server16App(tk.Tk):
         self.PoliceNum = "4"
         self.HID = ""
         self.AID = ""
+        self._last_known_hid = ""
+        self._last_known_aid = ""
+        self._active_stad_token = 0
+        self._written_stad_slots: list = []
         self.STADID = ""
         self.TOURNAME = ""
         self.TOURROUNDID = ""
@@ -131,7 +136,6 @@ class Server16App(tk.Tk):
         self._worker_poll_job = None
         self._stadium_task_running = False
         self._stadium_task_signature = None
-        self._stadium_task_request_key = None
         self._last_stadium_applied_signature = None
         self.labels = {}
         self.stat_title_labels = {}
@@ -142,6 +146,7 @@ class Server16App(tk.Tk):
         self.log_widget = None
         self.logs_frame = None
         self.check_update_button = None
+        self.toggle_logs_button = None
         self.locate_fifa_button = None
         self.launch_fifa_button = None
         self.assign_scoreboard_button = None
@@ -150,6 +155,7 @@ class Server16App(tk.Tk):
         self.start_overlay_button = None
         self.log_status_label = None
         self.log_follow_button = None
+        self.log_file_toggle = None
         self.language_label = None
         self.language_combo = None
         self.language_var = tk.StringVar(value=self.settings.language)
@@ -670,6 +676,8 @@ class Server16App(tk.Tk):
         ) + "\n"
 
     def _prepare_runtime_log(self) -> None:
+        if not self.settings.log_file_enabled:
+            return
         header = self._build_runtime_log_header()
         try:
             if self.log_path.exists():
@@ -689,11 +697,12 @@ class Server16App(tk.Tk):
             line = f"{line}\n{''.join(traceback.format_exception(*exc_info)).strip()}"
         elif error is not None:
             line = f"{line}\n{traceback.format_exc().strip()}" if traceback.format_exc().strip() != "NoneType: None" else line
-        try:
-            with self.log_path.open("a", encoding="utf-8") as handle:
-                handle.write(line + "\n")
-        except Exception:
-            pass
+        if getattr(self.settings, "log_file_enabled", True):
+            try:
+                with self.log_path.open("a", encoding="utf-8") as handle:
+                    handle.write(line + "\n")
+            except Exception:
+                pass
         if self.log_widget is not None:
             if self._log_widget_is_near_bottom():
                 self._log_autofollow = True
@@ -703,6 +712,24 @@ class Server16App(tk.Tk):
                 self.log_widget.see("end")
             self.log_widget.configure(state="disabled")
             self._update_log_follow_ui()
+
+    def _toggle_log_file_enabled(self) -> None:
+        enabled = bool(self.log_file_enabled_var.get())
+        if enabled:
+            self.settings.log_file_enabled = True
+            self.settings.save()
+            self._prepare_runtime_log()
+            self.log("File logging enabled")
+        else:
+            self.log("File logging disabled")
+            self.settings.log_file_enabled = False
+            self.settings.save()
+        self._update_log_file_toggle_ui()
+
+    def _update_log_file_toggle_ui(self) -> None:
+        if self.log_file_toggle is not None:
+            state_text = "ON" if self.log_file_enabled_var.get() else "OFF"
+            self.log_file_toggle.configure(text=f"Write .log file: {state_text}")
 
     def _log_widget_is_near_bottom(self) -> bool:
         if self.log_widget is None:
@@ -1097,7 +1124,6 @@ class Server16App(tk.Tk):
         if self._stadium_loading_visible:
             self._position_stadium_loading_modal()
             self.stadium_loading_modal.update_idletasks()
-            self.stadium_loading_modal.update()
 
     def _position_stadium_loading_modal(self) -> None:
         if self.stadium_loading_modal is None:
@@ -1733,6 +1759,14 @@ class Server16App(tk.Tk):
         self.log_status_label.pack(side="left")
         self.log_follow_button = ttk.Button(header, text=self.tr("button.jump_latest"), command=self._jump_logs_to_latest)
         self.log_follow_button.pack(side="right")
+        self.log_file_toggle = ttk.Checkbutton(
+            header,
+            style="Switch.TCheckbutton",
+            variable=self.log_file_enabled_var,
+            command=self._toggle_log_file_enabled,
+        )
+        self.log_file_toggle.pack(side="right", padx=(0, 10))
+        self._update_log_file_toggle_ui()
         logs_body = tk.Frame(logs, bg=self.panel)
         logs_body.pack(fill="both", expand=True)
         self.log_widget = tk.Text(
@@ -2685,6 +2719,8 @@ class Server16App(tk.Tk):
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None
             self.pagechange = True
+            self._active_stad_token += 1
+            self._written_stad_slots = []
             self.skillgamechange = False
             self.bumperpagechange = False
             self._clear_live_context()
@@ -2718,6 +2754,22 @@ class Server16App(tk.Tk):
         self.pagechange = False
         self.bumperpagechange = False
         self.skillgamechange = False
+
+    def _write_active_stad_name(self, std_name: str) -> bool:
+        """Write stadium name directly via STDNAMEOFFSET176/261 pointer chain."""
+        if not self.memory.is_open():
+            return False
+        nb = std_name.encode("utf-8") + b"\x00"
+        written = False
+        for offsets in [self.offsets.STDNAMEOFFSET176, self.offsets.STDNAMEOFFSET261]:
+            try:
+                addr = self.memory.resolve_pointer(self.offsets.STDNAMEBASE, offsets)
+                self.memory.write_process_memory(addr, nb)
+                self.log(f"Stad name written @ 0x{addr:X}: {std_name}")
+                written = True
+            except Exception as exc:
+                self.log(f"Stad name write error ({offsets}): {exc}")
+        return written
 
     def _clear_live_context(self) -> None:
         self.HID = ""
@@ -2772,6 +2824,13 @@ class Server16App(tk.Tk):
         if self.HID not in {"", "0"} and self.AID not in {"", "0"}:
             self._kickoff_retry_remaining = 0
             self.log(f"KickOffHub context captured HID={self.HID} AID={self.AID}")
+            if self.curstad:
+                if self.settings_ini.key_exists(self.curstad, "scoreboardstdname"):
+                    _raw = self.settings_ini.read(self.curstad, "scoreboardstdname")
+                    _display = _raw.split(",")[0].strip() or self.curstad
+                else:
+                    _display = self.curstad
+                self._write_active_stad_name(_display)
             return
         if self._kickoff_retry_remaining > 0:
             self._kickoff_retry_remaining -= 1
@@ -2808,6 +2867,10 @@ class Server16App(tk.Tk):
                 if friendly_aid != "0":
                     aid = friendly_aid
             return hid, aid
+        except MemoryAccessError:
+            # Null pointer is expected while the game is in menus / not in a match yet.
+            # Return silently — callers already log "Context not ready" with the address.
+            return None, None
         except Exception as exc:
             self.log("Legacy team context read failed", exc, exc_info=sys.exc_info())
             return None, None
@@ -2854,8 +2917,10 @@ class Server16App(tk.Tk):
         round_id = self._try_read_context_int("T-ROUND", self.offsets.ORITOURIDBASE, self.offsets.T[:4] + [self.offsets.T[5]], page_name)
         if hid not in {None, "0"}:
             self.HID = hid
+            self._last_known_hid = hid
         if aid not in {None, "0"}:
             self.AID = aid
+            self._last_known_aid = aid
         if stadid not in {None, "0"}:
             self.STADID = stadid
         if tour not in {None, "0"}:

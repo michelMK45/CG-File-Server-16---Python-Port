@@ -9,9 +9,102 @@ from pathlib import Path
 
 try:
     import rarfile
-    _RAR_AVAILABLE = True
+    _RARFILE_AVAILABLE = True
 except ImportError:
-    _RAR_AVAILABLE = False
+    rarfile = None  # type: ignore[assignment]
+    _RARFILE_AVAILABLE = False
+
+
+def _candidate_rar_tools() -> list[Path]:
+    candidates: list[Path] = []
+    for name in ("UnRAR.exe", "unrar.exe", "WinRAR.exe", "winrar.exe", "7z.exe", "7za.exe"):
+        found = shutil.which(name)
+        if found:
+            candidates.append(Path(found))
+    common_dirs = [
+        Path.cwd(),
+        Path.cwd() / "bin",
+        Path(__file__).resolve().parent,
+        Path(__file__).resolve().parent / "bin",
+        Path(__file__).resolve().parents[1] / "bin" if len(Path(__file__).resolve().parents) > 1 else Path(__file__).resolve().parent / "bin",
+        Path(r"C:\Program Files\WinRAR"),
+        Path(r"C:\Program Files (x86)\WinRAR"),
+        Path(r"C:\Program Files\7-Zip"),
+        Path(r"C:\Program Files (x86)\7-Zip"),
+    ]
+    for base in common_dirs:
+        for name in ("UnRAR.exe", "unrar.exe", "WinRAR.exe", "winrar.exe", "7z.exe", "7za.exe"):
+            candidate = base / name
+            if candidate.exists():
+                candidates.append(candidate)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for item in candidates:
+        key = str(item).lower()
+        if key not in seen:
+            unique.append(item)
+            seen.add(key)
+    return unique
+
+
+def _extract_rar_with_external_tool(archive_path: Path, dest_dir: Path) -> None:
+    import subprocess
+    # Run external extractors hidden on Windows so no CMD window opens.
+    errors: list[str] = []
+    for tool in _candidate_rar_tools():
+        exe = tool.name.lower()
+        if exe in {"winrar.exe", "winrar"}:
+            cmd = [str(tool), "x", "-ibck", "-o+", str(archive_path), str(dest_dir) + "\\"]
+        elif exe in {"7z.exe", "7za.exe", "7z", "7za"}:
+            cmd = [str(tool), "x", "-y", f"-o{dest_dir}", str(archive_path)]
+        else:
+            cmd = [str(tool), "x", "-o+", str(archive_path), str(dest_dir) + "\\"]
+        try:
+            startupinfo = None
+            creationflags = 0
+            if hasattr(subprocess, "STARTUPINFO"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= getattr(subprocess, "STARTF_USESHOWWINDOW", 1)
+                startupinfo.wShowWindow = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                creationflags |= subprocess.CREATE_NO_WINDOW
+
+            result = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                errors="ignore",
+                startupinfo=startupinfo,
+                creationflags=creationflags,
+                shell=False,
+            )
+            if result.returncode == 0:
+                return
+            errors.append(f"{tool}: exit {result.returncode} {result.stderr.strip() or result.stdout.strip()}")
+        except Exception as exc:
+            errors.append(f"{tool}: {exc}")
+    raise RuntimeError(
+        "RAR extraction failed. Install WinRAR/UnRAR/7-Zip or place UnRAR.exe next to the server exe. "
+        + ("Attempts: " + " | ".join(errors) if errors else "No RAR tool found.")
+    )
+
+
+def _configure_rarfile_tool() -> None:
+    if not _RARFILE_AVAILABLE:
+        return
+    for tool in _candidate_rar_tools():
+        if tool.name.lower() in {"unrar.exe", "unrar", "rar.exe", "rar"}:
+            try:
+                rarfile.UNRAR_TOOL = str(tool)  # type: ignore[union-attr]
+            except Exception:
+                pass
+            return
+
+
+_configure_rarfile_tool()
+_RAR_AVAILABLE = True
 
 try:
     from win32api import GetFileVersionInfo, HIWORD, LOWORD
@@ -141,6 +234,45 @@ def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) 
         raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
 
 
+def is_archive(path: Path) -> bool:
+    suffix = path.suffix.lower()
+    return suffix in {".zip", ".rar"}
+
+
+def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) -> None:
+    suffix = archive_path.suffix.lower()
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    if suffix == ".zip":
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            members = zf.infolist()
+            total = len(members)
+            for index, member in enumerate(members, start=1):
+                zf.extract(member, dest_dir)
+                if progress_callback:
+                    progress_callback(index, total, member.filename)
+        return
+
+    if suffix == ".rar":
+        if _RARFILE_AVAILABLE:
+            try:
+                with rarfile.RarFile(archive_path, "r") as rf:  # type: ignore[union-attr]
+                    members = rf.infolist()
+                    total = len(members)
+                    for index, member in enumerate(members, start=1):
+                        rf.extract(member, dest_dir)
+                        if progress_callback:
+                            progress_callback(index, total, member.filename)
+                return
+            except Exception:
+                pass
+        _extract_rar_with_external_tool(archive_path, dest_dir)
+        if progress_callback:
+            progress_callback(1, 1, archive_path.name)
+        return
+
+    raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
+
+
 def checkdirs(path: str | Path) -> None:
     Path(path).mkdir(parents=True, exist_ok=True)
 
@@ -174,7 +306,10 @@ def copy(src: str | Path, dst: str | Path) -> None:
         target = dst_path if dst_path.suffix else dst_path / src_path.name
         _copy_file_if_needed(src_path, target)
         return
+    _SKIP_NAMES = {"desktop.ini", "thumbs.db", ".ds_store"}
     for item in src_path.rglob("*"):
+        if item.name.lower() in _SKIP_NAMES:
+            continue
         rel = item.relative_to(src_path)
         target = dst_path / rel
         if item.is_dir():
