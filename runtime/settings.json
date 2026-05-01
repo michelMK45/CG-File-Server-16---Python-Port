@@ -7,5 +7,6 @@
     "stadium_preview_provider": "imgbb",
     "stadium_preview_imgbb_api_key": "af421c8d5d14de2bbefc9697cbe5cae9",
     "stadium_preview_mode": "url"
-  }
+  },
+  "LOG_FILE_ENABLED": true
 }

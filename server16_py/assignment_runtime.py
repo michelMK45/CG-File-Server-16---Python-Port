@@ -92,12 +92,29 @@ class AssignmentRuntime:
         if not comp:
             messagebox.showwarning(app.tr("message.assignment"), app.tr("message.warning.no_context"))
             app.log("Scoreboard assignment skipped: no usable context")
+
+        # Scope 3 = Friendly/Default
+        if scope == "3":
+            app.log("Scoreboard assignment using Friendly/Default key '0'")
+            self.scoreboards("0", tvlogo, scoreboard)
             return
-        app.log(f"Scoreboard assignment using {resolved}: {comp}")
-        if resolved == "Home Team":
-            self.teamscoreboards(comp, tvlogo, scoreboard)
+
+        scope_mapping = {
+            "0": (app.TOURNAME, "Tournament"),
+            "1": (app.TOURROUNDID, "Round"),
+            "2": (app.HID, "Home Team"),
+        }
+        comp_value, resolved_label = scope_mapping.get(scope, ("", ""))
+        if not comp_value:
+            messagebox.showwarning(app.tr("message.assignment"), app.tr("message.warning.no_context"))
+            app.log(f"Scoreboard assignment skipped: scope '{scope}' has no context")
+            return
+
+        app.log(f"Scoreboard assignment using {resolved_label}: {comp_value}")
+        if resolved_label == "Home Team":
+            self.teamscoreboards(comp_value, tvlogo, scoreboard)
         else:
-            self.scoreboards(comp, tvlogo, scoreboard)
+            self.scoreboards(comp_value, tvlogo, scoreboard)
 
     def assign_movie(self) -> None:
         app = self.app
@@ -139,17 +156,21 @@ class AssignmentRuntime:
         if not dialog.result:
             return
         scope = dialog.result["selectedround"]
-        selected_stadium = dialog.result["Selectedstadium"]
-        selected_police = dialog.result["selectedpolice"]
-        selected_pitch = dialog.result["selectedpitch"]
-        selected_net = dialog.result["selectednet"]
-        multi = dialog.result["multistadium"]
-        if selected_stadium == "None":
-            payload = "None"
-        elif scope in {"2", "3", "4"}:
-            payload = ",".join(multi + [selected_police, selected_pitch, selected_net])
+        selected_stadium = (dialog.result.get("Selectedstadium") or "None").strip()
+        selected_police = dialog.result.get("selectedpolice") or "4"
+        selected_pitch = dialog.result.get("selectedpitch") or "0"
+        selected_net = dialog.result.get("selectednet") or "0"
+        multi = [s.strip() for s in dialog.result.get("multistadium", []) if s and s.strip() and s.strip() != "None"]
+        if scope in {"2", "3", "4"}:
+            if multi:
+                payload = ",".join(multi + [selected_police, selected_pitch, selected_net])
+            else:
+                payload = "None"
         else:
-            payload = ",".join([selected_stadium, selected_police, selected_pitch, selected_net])
+            if selected_stadium and selected_stadium != "None":
+                payload = ",".join([selected_stadium, selected_police, selected_pitch, selected_net])
+            else:
+                payload = "None"
         comp, resolved = self.resolve_assignment_target(
             scope,
             {

@@ -8,31 +8,119 @@
   "STDNAMEBASE": 57964392,
   "GAMESTARTEDBINARYBASE": 55490608,
   "GAMESTATSBASE": 56299464,
-  "PG1": [232, 192, 136, 472, 0],
-  "HT": [504, 3544, 1712, 80, 276, 280],
-  "HT2": [656, 920, 200, 1504, 552, 556],
-  "S": [1552, 80, 3448, 3440, 832, 3068],
-  "T": [504, 3544, 1712, 80, 40, 44],
-  "NTDP": [648],
-  "NTCP": [644],
-  "NTRI": [632],
-  "NTTR": [624],
-  "STDNAMEOFFSET176": [408, 48, 41580],
-  "STDNAMEOFFSET261": [296, 48, 51436],
-  "GAMESTARTEDBINARY": [560, 1592, 88, 16, 4056],
-  "GAMERANTIME": [5500],
-  "GAMEHOMEGOALSCORE": [5484],
-  "GAMEAWAYGOALSCORE": [5488],
+  "PG1": [
+    232,
+    192,
+    136,
+    472,
+    0
+  ],
+  "HT": [
+    504,
+    3544,
+    1712,
+    80,
+    276,
+    280
+  ],
+  "HT2": [
+    656,
+    920,
+    200,
+    1504,
+    552,
+    556
+  ],
+  "S": [
+    1552,
+    80,
+    3448,
+    3440,
+    832,
+    3068
+  ],
+  "T": [
+    504,
+    3544,
+    1712,
+    80,
+    40,
+    44
+  ],
+  "NTDP": [
+    648
+  ],
+  "NTCP": [
+    644
+  ],
+  "NTRI": [
+    632
+  ],
+  "NTTR": [
+    624
+  ],
+  "STDNAMEOFFSET176": [
+    408,
+    48,
+    7393
+  ],
+  "STDNAMEOFFSET261": [
+    296,
+    48,
+    13553
+  ],
+  "GAMESTARTEDBINARY": [
+    560,
+    1592,
+    88,
+    16,
+    4056
+  ],
+  "GAMERANTIME": [
+    5500
+  ],
+  "GAMEHOMEGOALSCORE": [
+    5484
+  ],
+  "GAMEAWAYGOALSCORE": [
+    5488
+  ],
   "DASHBOARDSECONDSBASE": 57966104,
   "DASHBOARDMINUTESBASE": 57964464,
   "DASHBOARDHOMEIDBASE": 56705008,
   "DASHBOARDAWAYIDBASE": 57966104,
   "DASHBOARDHOMEGOALSBASE": 55425024,
   "DASHBOARDAWAYGOALSBASE": 56634592,
-  "DASHBOARDSECONDS": [648, 536, 72, 3640, 2456, 1296],
-  "DASHBOARDMINUTES": [40],
-  "DASHBOARDHOMEID": [104, 2112, 16, 24, 3472],
-  "DASHBOARDAWAYID": [1004],
-  "DASHBOARDHOMEGOALS": [56, 2984, 1092],
-  "DASHBOARDAWAYGOALS": [240, 360, 216, 1444]
+  "DASHBOARDSECONDS": [
+    648,
+    536,
+    72,
+    3640,
+    2456,
+    1296
+  ],
+  "DASHBOARDMINUTES": [
+    40
+  ],
+  "DASHBOARDHOMEID": [
+    104,
+    2112,
+    16,
+    24,
+    3472
+  ],
+  "DASHBOARDAWAYID": [
+    1004
+  ],
+  "DASHBOARDHOMEGOALS": [
+    56,
+    2984,
+    1092
+  ],
+  "DASHBOARDAWAYGOALS": [
+    240,
+    360,
+    216,
+    1444
+  ]
 }

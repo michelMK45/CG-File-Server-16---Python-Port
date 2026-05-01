@@ -109,7 +109,10 @@ class StadiumRuntime:
             section_id, section_name = app.HID, "stadium"
         if section_id:
             raw_value = app.settings_ini.read(section_id, section_name)
-            valid_stadiums, _police, _pitch, _net = self._parse_assignment(raw_value)
+            parts = raw_value.split(",")
+            # Last 3 fields are always police, pitch, net — stadiums come before them
+            stadiums_in_value = parts[:-3] if len(parts) >= 4 else parts[:1]
+            valid_stadiums = [s for s in stadiums_in_value if s and s != "None"]
             if not valid_stadiums:
                 app.log(f"No valid stadiums in assignment [{section_name}] {section_id}: {raw_value}")
                 return
@@ -147,13 +150,12 @@ class StadiumRuntime:
             else:
                 candidates = valid_stadiums
             desired_stadium = random.choice(candidates)
-            task_request_key = self._build_task_request_key(section_name, section_id, raw_value)
             stadium_signature = (app._kickoff_generation, section_name, section_id, raw_value, app.HID, app.TOURNAME, app.TOURROUNDID)
             if stadium_signature == app._last_stadium_applied_signature and app.curstad == desired_stadium:
                 app._set_progress(100, f"Stadium already loaded: {desired_stadium}")
                 return
             if app._stadium_task_running:
-                if task_request_key == app._stadium_task_request_key or stadium_signature == app._stadium_task_signature:
+                if stadium_signature == app._stadium_task_signature:
                     app.log(f"Stadium task already running for {desired_stadium}")
                 else:
                     app.log(f"Stadium task busy; skipping new request for {desired_stadium}")
@@ -161,15 +163,10 @@ class StadiumRuntime:
             if desired_stadium == app.curstad:
                 app.CCount = inc_count(0, app.CCount)
             app.injID, app.PoliceNum = set_inj_id(app.CCount)
+            app._show_stadium_loading_modal(desired_stadium, "Preparing stadium assets", progress=4)
             app._set_process_status("Loading Stadium", app.gold)
-            self.start_stadium_task(
-                section_id,
-                section_name,
-                app.injID,
-                stadium_signature,
-                task_request_key,
-                chosen_stadium=desired_stadium,
-            )
+            app._set_progress(8, f"Preparing stadium {section_id}")
+            self.start_stadium_task(section_id, section_name, app.injID, stadium_signature, chosen_stadium=desired_stadium)
             return
         app._last_stadium_applied_signature = None
         app._hide_stadium_loading_modal()
@@ -189,13 +186,13 @@ class StadiumRuntime:
         section_name: str,
         injid: str,
         stadium_signature: tuple,
-        task_request_key: tuple[str, str, str],
+        task_request_key: tuple[str, str, str] | None = None,
         chosen_stadium: str | None = None,
     ) -> None:
         app = self.app
         app._stadium_task_running = True
         app._stadium_task_signature = stadium_signature
-        app._stadium_task_request_key = task_request_key
+        app._stadium_task_request_key = task_request_key or (section_name, section_id, "")
         app._show_stadium_loading_modal(chosen_stadium or section_id, "Preparing stadium assets", progress=4)
         app._set_progress(8, f"Preparing stadium {section_id}")
         app._update_stadium_loading_modal(10, f"Loading stadium from [{section_name}] {section_id}")
@@ -236,34 +233,66 @@ class StadiumRuntime:
         app = self.app
         if not app.settings_ini.key_exists(hid, section):
             raise RuntimeError(f"Missing stadium assignment [{section}] {hid}")
-        raw_value = app.settings_ini.read(hid, section)
-        valid_stadiums, police, pitch, net = self._parse_assignment(raw_value)
-        if len(valid_stadiums) == 0 and not all([police, pitch, net]):
-            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {raw_value}")
+        parts = app.settings_ini.read(hid, section).split(",")
+        if len(parts) < 4:
+            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {parts}")
+        police, pitch, net = parts[-3:]
+        stadiums = parts[:-3]
+        valid_stadiums = [name for name in stadiums if name and name != "None"]
         if not valid_stadiums:
             raise RuntimeError(f"No valid stadium names in assignment [{section}] {hid}")
         # Use the pre-selected stadium if provided (chosen in apply_stadium_runtime),
         # otherwise fall back to random.choice (e.g. when called directly).
-        chosen = (chosen_stadium or "").strip()
-        if chosen and chosen in valid_stadiums:
-            stad_name = chosen
+        if chosen_stadium and chosen_stadium in valid_stadiums:
+            stad_name = chosen_stadium
         else:
             stad_name = random.choice(valid_stadiums)
-        stad_name, source_path, source_kind = self._resolve_stadium_source(stad_name)
         # Support zip/rar archives: extract to a temp folder and work from there
         _temp_dir = None
-        if source_kind == "archive":
-            runtime_dir = app.base_dir / "runtime"
-            runtime_dir.mkdir(parents=True, exist_ok=True)
-            _temp_dir = tempfile.mkdtemp(prefix="server16_stad_", dir=runtime_dir)
+        # Resolve the actual folder/archive name on disk (handles NFC/NFD mismatch)
+        def _resolve_actual_name(name: str) -> str:
+            name_nfc = unicodedata.normalize("NFC", name)
             try:
-                app._worker_queue.put(("progress", 5, f"Extracting {source_path.name}..."))
+                for item in app.targetpath.iterdir():
+                    if unicodedata.normalize("NFC", item.name) == name_nfc:
+                        return item.name
+                    if unicodedata.normalize("NFC", item.stem) == name_nfc and item.suffix.lower() in (".zip", ".rar"):
+                        return item.stem
+            except Exception:
+                pass
+            return name
+        resolved_name = _resolve_actual_name(stad_name)
+        stad_folder = app.targetpath / resolved_name
+        # Also check for archive files: StadiumName.zip or StadiumName.rar
+        archive_path = None
+        for ext in (".zip", ".rar"):
+            candidate = app.targetpath / (resolved_name + ext)
+            if candidate.exists() and is_archive(candidate):
+                archive_path = candidate
+                break
+        if archive_path is not None:
+            import tempfile as _tempfile
+            _temp_dir = _tempfile.mkdtemp(prefix="server16_stad_")
+            try:
+                app._worker_queue.put(("progress", 5, f"Extracting {archive_path.name}..."))
                 def _zip_progress(current, total, filename):
                     pct = 5 + int((current / max(1, total)) * 6)
                     short = filename if len(filename) <= 40 else "..." + filename[-37:]
                     app._worker_queue.put(("progress", pct, f"Extracting {short} ({current}/{total})"))
-                extract_archive(source_path, Path(_temp_dir), progress_callback=_zip_progress)
-                stad = self._find_extracted_stadium_root(Path(_temp_dir), source_path.stem)
+                extract_archive(archive_path, Path(_temp_dir), progress_callback=_zip_progress)
+                # The archive may contain a subfolder with the stadium name or dump files directly
+                extracted = Path(_temp_dir)
+                # Look for the actual stadium content - could be in root or a subfolder
+                subfolders = [p for p in extracted.iterdir() if p.is_dir()]
+                files_in_root = [p for p in extracted.iterdir() if p.is_file()]
+                if len(subfolders) == 1 and not files_in_root:
+                    stad = subfolders[0]
+                elif any(f.name.lower() in ("model.rx3", "texture_day.rx3", "texture_night.rx3") for f in files_in_root):
+                    stad = extracted
+                elif len(subfolders) == 1:
+                    stad = subfolders[0]
+                else:
+                    stad = extracted
                 app.log(f"Archive extracted to: {stad}")
             except Exception:
                 # Cleanup temp dir if extraction fails
@@ -271,10 +300,10 @@ class StadiumRuntime:
                 _shutil2.rmtree(_temp_dir, ignore_errors=True)
                 _temp_dir = None
                 raise
-        elif source_path.exists():
-            stad = source_path
+        elif stad_folder.exists():
+            stad = stad_folder
         else:
-            raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
+            raise RuntimeError(f"Assigned stadium folder or archive not found: {stad_folder}")
         dest = app.exedir / "data" / "sceneassets"
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
@@ -379,6 +408,12 @@ class StadiumRuntime:
             app.curstad = stad_name
             app.ScoreboardStadName = scoreboard_display_name  # Save display name for Discord RPC
             app.stadmovie = bool(payload["stadmovie"])
+            if app.settings_ini.key_exists(stad_name, "scoreboardstdname"):
+                _raw = app.settings_ini.read(stad_name, "scoreboardstdname")
+                _display = _raw.split(",")[0].strip() or stad_name
+            else:
+                _display = stad_name
+            app._write_active_stad_name(_display)
             app._set_display("stadium", stad_name)
             app._set_display("audio_last_action", f"Stadium {stad_name}")
             app._set_progress(100, f"Stadium applied: {stad_name}")
@@ -390,8 +425,7 @@ class StadiumRuntime:
         finally:
             app._stadium_task_running = False
             app._stadium_task_signature = None
-            app._stadium_task_request_key = None
-            app._hide_stadium_loading_modal(delay_ms=1200)
+            app._hide_stadium_loading_modal()
 
     def stadium_offsets(self, stadium_type: str) -> list[int]:
         app = self.app
