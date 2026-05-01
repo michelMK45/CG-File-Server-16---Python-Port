@@ -40,7 +40,6 @@ class SettingsStore:
             "stadium_preview_imgbb_api_key": "af421c8d5d14de2bbefc9697cbe5cae9",
             "stadium_preview_mode": "url"
         },
-        "LOG_FILE_ENABLED": True
     }
 
     def __init__(self, path: Path) -> None:
@@ -92,16 +91,6 @@ class SettingsStore:
     @show_stadium_loading_notification.setter
     def show_stadium_loading_notification(self, value: bool) -> None:
         self.data["SHOW_STADIUM_LOADING_NOTIFICATION"] = bool(value)
-        self.save()
-
-
-    @property
-    def log_file_enabled(self) -> bool:
-        return bool(self.data.get("LOG_FILE_ENABLED", True))
-
-    @log_file_enabled.setter
-    def log_file_enabled(self, value: bool) -> None:
-        self.data["LOG_FILE_ENABLED"] = bool(value)
         self.save()
 
     @property
