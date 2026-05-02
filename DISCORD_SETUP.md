@@ -67,7 +67,7 @@ In `FSW/settings.ini`, ensure this is set under `[Modules]`:
 
 ```ini
 [Modules]
-discordRP=1
+DiscordRPC=1
 ```
 
 Then edit `runtime/settings.json` and set:

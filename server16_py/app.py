@@ -239,7 +239,7 @@ class Server16App(tk.Tk):
         self.chants_runtime = ChantsRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
-        # Initialize Discord RPC (loads from settings.json)
+        # Initialize DiscordRPC (loads from settings.json)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)
@@ -320,11 +320,11 @@ class Server16App(tk.Tk):
         self._overlay_job = self.after(80, self.overlay_loop)
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
-        # Log Discord RPC initialization status
+        # Log DiscordRPC initialization status
         if self._discord_rpc_enabled:
-            self.log("Discord RPC initialized (enabled in settings)")
+            self.log("DiscordRPC initialized (enabled in settings)")
         else:
-            self.log("Discord RPC initialized (disabled in settings)")
+            self.log("DiscordRPC initialized (disabled in settings)")
 
     def tr(self, key: str, **kwargs) -> str:
         return self.localization.translate(key, **kwargs)
@@ -454,7 +454,7 @@ class Server16App(tk.Tk):
             "Autorun": "module.autorun",
             "StadiumNet": "module.stadiumnet",
             "Chants": "module.chants",
-            "Discord RPC": "module.discord_rpc",
+            "DiscordRPC": "module.discord_rpc",
         }
         for name, check in self.module_checks.items():
             check.configure(text=self.tr(module_map.get(name, name)))
@@ -1488,10 +1488,10 @@ class Server16App(tk.Tk):
             "StadiumName",
             "AwayChants",
             "AwayClubSong",
-            "Discord RPC",
+            "DiscordRPC",
         ]
         for idx, name in enumerate(module_names):
-            initial = self._discord_rpc_enabled if name == "Discord RPC" else False
+            initial = self._discord_rpc_enabled if name == "DiscordRPC" else False
             var = tk.BooleanVar(value=initial)
             self.module_vars[name] = var
             check = ttk.Checkbutton(
@@ -1514,8 +1514,8 @@ class Server16App(tk.Tk):
         notification_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
-        """Toggle Discord RPC on/off and save to settings."""
-        new_state = self.module_vars["Discord RPC"].get()
+        """Toggle DiscordRPC on/off and save to settings."""
+        new_state = self.module_vars["DiscordRPC"].get()
         
         # Update internal state first
         self._discord_rpc_enabled = new_state
@@ -1525,33 +1525,33 @@ class Server16App(tk.Tk):
         discord_config["enabled"] = new_state
         self.settings.data["discord_rpc"] = discord_config
         self.settings.save()
-        self.module_states["Discord RPC"] = new_state
-        self.settings_ini.write("discordRP", "1" if new_state else "0", "Modules")
+        self.module_states["DiscordRPC"] = new_state
+        self.settings_ini.write("DiscordRPC", "1" if new_state else "0", "Modules")
         self.settings_ini.save()
         
         # Connect or disconnect based on new state
         try:
             if new_state:
-                # Enable Discord RPC
+                # Enable DiscordRPC
                 success = self.discord_rpc.connect()
                 if success:
-                    self.log("Discord RPC enabled and connected")
+                    self.log("DiscordRPC enabled and connected")
                 else:
-                    self.log("Discord RPC enabled but failed to connect (Discord may not be running)")
+                    self.log("DiscordRPC enabled but failed to connect (Discord may not be running)")
             else:
-                # Disable Discord RPC - disconnect and clear presence
+                # Disable DiscordRPC - disconnect and clear presence
                 self.discord_rpc.disconnect()
-                self.log("Discord RPC disabled and presence cleared")
+                self.log("DiscordRPC disabled and presence cleared")
         except Exception as exc:
-            self.log("Error toggling Discord RPC", exc, exc_info=sys.exc_info())
+            self.log("Error toggling DiscordRPC", exc, exc_info=sys.exc_info())
             # Revert checkbox if there was an error
             self._discord_rpc_enabled = not new_state
-            self.module_states["Discord RPC"] = not new_state
-            self.module_vars["Discord RPC"].set(not new_state)
+            self.module_states["DiscordRPC"] = not new_state
+            self.module_vars["DiscordRPC"].set(not new_state)
             discord_config["enabled"] = not new_state
             self.settings.data["discord_rpc"] = discord_config
             self.settings.save()
-            self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
+            self.settings_ini.write("DiscordRPC", "1" if not new_state else "0", "Modules")
             self.settings_ini.save()
 
     def _toggle_stadium_loading_visibility(self) -> None:
@@ -2114,15 +2114,15 @@ class Server16App(tk.Tk):
         module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong"]
         self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
         previous_rpc_state = self._discord_rpc_enabled
-        discord_ini_value = self.settings_ini.read("discordRP", "Modules")
+        discord_ini_value = self.settings_ini.read("DiscordRPC", "Modules")
         if discord_ini_value in {"0", "1"}:
             self._discord_rpc_enabled = discord_ini_value == "1"
         else:
             # Avoid creating FSW/settings.ini on first app start when FIFA is not linked yet.
             if self.fifaEXE != "default" or self.settings_ini.path.exists():
-                self.settings_ini.write("discordRP", "1" if self._discord_rpc_enabled else "0", "Modules")
+                self.settings_ini.write("DiscordRPC", "1" if self._discord_rpc_enabled else "0", "Modules")
                 self.settings_ini.save()
-        self.module_states["Discord RPC"] = self._discord_rpc_enabled
+        self.module_states["DiscordRPC"] = self._discord_rpc_enabled
         loaded = ", ".join(
             f"{name}={'1' if enabled else '0'}"
             for name, enabled in self.module_states.items()
@@ -2135,12 +2135,12 @@ class Server16App(tk.Tk):
         elif previous_rpc_state or self.discord_rpc.is_connected():
             self.discord_rpc.disconnect()
 
-        discord_var = self.module_vars.get("Discord RPC")
+        discord_var = self.module_vars.get("DiscordRPC")
         if discord_var is not None:
             discord_var.set(self._discord_rpc_enabled)
 
     def module_enabled(self, name: str) -> bool:
-        if name == "Discord RPC":
+        if name == "DiscordRPC":
             return self._discord_rpc_enabled
         if not hasattr(self, "settings_ini") or self.settings_ini is None:
             return self.module_states.get(name, False)
@@ -2594,7 +2594,7 @@ class Server16App(tk.Tk):
     def refresh_modules(self) -> None:
         self._load_module_states()
         for name, var in self.module_vars.items():
-            if name == "Discord RPC":
+            if name == "DiscordRPC":
                 var.set(self._discord_rpc_enabled)
             else:
                 var.set(self.module_enabled(name))
@@ -2657,7 +2657,7 @@ class Server16App(tk.Tk):
                 no_signature = self._last_runtime_signature is None
                 if (missing_ids or no_signature) and self._page_can_have_match_context(page_name):
                     self.refresh_live_context(page_name)
-            # Update Discord RPC presence
+            # Update DiscordRPC presence
             if self._discord_rpc_enabled:
                 self._update_discord_presence()
         except Exception as exc:
@@ -2977,13 +2977,13 @@ class Server16App(tk.Tk):
 
     def _on_stadium_preview_uploaded(self, stadium_name: str, url: str) -> None:
         """Called after a stadium preview is uploaded to Discord webhook.
-        Forces a Discord RPC refresh so the new image URL is applied immediately."""
+        Forces a DiscordRPC refresh so the new image URL is applied immediately."""
         self.log(f"Discord stadium preview uploaded: {stadium_name} -> {url}")
         self._discord_rpc_last_presence = None
 
     def _update_discord_presence(self) -> None:
         """Update Discord Rich Presence with current match state."""
-        # Only update if Discord RPC is enabled
+        # Only update if DiscordRPC is enabled
         if not self._discord_rpc_enabled:
             return
         
@@ -3070,16 +3070,16 @@ class Server16App(tk.Tk):
             if presence != self._discord_rpc_last_presence:
                 sent = self.discord_rpc.update_presence(**presence)
                 self._discord_rpc_last_presence = presence
-                # Log Discord RPC updates for debugging
-                self.log(f"Discord RPC updated: {presence.get('state', 'N/A')}")
-                self.log(f"Discord RPC image key: {presence.get('large_image', '')}")
-                self.log(f"Discord RPC external image mode: {stadium_preview_mode}")
+                # Log DiscordRPC updates for debugging
+                self.log(f"DiscordRPC updated: {presence.get('state', 'N/A')}")
+                self.log(f"DiscordRPC image key: {presence.get('large_image', '')}")
+                self.log(f"DiscordRPC external image mode: {stadium_preview_mode}")
                 if stadium_preview_override_url:
-                    self.log(f"Discord RPC external image override URL: {stadium_preview_override_url}")
+                    self.log(f"DiscordRPC external image override URL: {stadium_preview_override_url}")
                 if sent:
-                    self.log("Discord RPC update_presence result: ok")
+                    self.log("DiscordRPC update_presence result: ok")
                 else:
-                    self.log("Discord RPC update_presence result: failed")
+                    self.log("DiscordRPC update_presence result: failed")
         except Exception as exc:
             self.log("Discord RPC update error", exc, exc_info=sys.exc_info())
 
@@ -3237,7 +3237,7 @@ class Server16App(tk.Tk):
         self._closing = True
         self._chants_stop.set()
         self._reset_chants_state()
-        # Disconnect Discord RPC and clear presence
+        # Disconnect DiscordRPC and clear presence
         try:
             self.discord_rpc.disconnect()
         except Exception:
