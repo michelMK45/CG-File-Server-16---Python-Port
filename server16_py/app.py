@@ -28,7 +28,7 @@ from .camera_runtime import CameraPreset, CameraRuntime
 from .chants_runtime import ChantsRuntime, MciAudioPlayer
 from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
-from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup, resolve_stadium_preview_path
+from .file_tools import checkdirs, checkver, copy, copy_if_exists, discover_stadium_names, extra_setup, resolve_stadium_preview_path
 from .ini_file import SessionIniFile
 from .memory_access import Memory, MemoryAccessError
 from .localization import LANGUAGE_LABELS, LocalizationManager, SUPPORTED_LANGUAGES
@@ -52,6 +52,52 @@ class RECT(ctypes.Structure):
     ]
 
 
+class POINT(ctypes.Structure):
+    _fields_ = [
+        ("x", ctypes.c_long),
+        ("y", ctypes.c_long),
+    ]
+
+
+class MSLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("pt", POINT),
+        ("mouseData", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class KBDLLHOOKSTRUCT(ctypes.Structure):
+    _fields_ = [
+        ("vkCode", wintypes.DWORD),
+        ("scanCode", wintypes.DWORD),
+        ("flags", wintypes.DWORD),
+        ("time", wintypes.DWORD),
+        ("dwExtraInfo", ctypes.c_void_p),
+    ]
+
+
+class XINPUT_GAMEPAD(ctypes.Structure):
+    _fields_ = [
+        ("wButtons", ctypes.c_ushort),
+        ("bLeftTrigger", ctypes.c_ubyte),
+        ("bRightTrigger", ctypes.c_ubyte),
+        ("sThumbLX", ctypes.c_short),
+        ("sThumbLY", ctypes.c_short),
+        ("sThumbRX", ctypes.c_short),
+        ("sThumbRY", ctypes.c_short),
+    ]
+
+
+class XINPUT_STATE(ctypes.Structure):
+    _fields_ = [
+        ("dwPacketNumber", wintypes.DWORD),
+        ("Gamepad", XINPUT_GAMEPAD),
+    ]
+
+
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
@@ -63,9 +109,54 @@ SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
+VK_SPACE = 0x20
+VK_F12 = 0x7B
+VK_ESCAPE = 0x1B
+VK_LEFT = 0x25
+VK_UP = 0x26
+VK_RIGHT = 0x27
+VK_DOWN = 0x28
+VK_PRIOR = 0x21
+VK_NEXT = 0x22
+VK_HOME = 0x24
+VK_END = 0x23
+VK_LBUTTON = 0x01
 VK_MENU = 0x12
 VK_RETURN = 0x0D
 KEYEVENTF_KEYUP = 0x0002
+WH_MOUSE_LL = 14
+WH_KEYBOARD_LL = 13
+HC_ACTION = 0
+WM_MOUSEMOVE = 0x0200
+WM_LBUTTONDOWN = 0x0201
+WM_LBUTTONUP = 0x0202
+WM_RBUTTONDOWN = 0x0204
+WM_RBUTTONUP = 0x0205
+WM_MBUTTONDOWN = 0x0207
+WM_MBUTTONUP = 0x0208
+WM_MOUSEWHEEL = 0x020A
+WM_KEYDOWN = 0x0100
+WM_KEYUP = 0x0101
+WM_SYSKEYDOWN = 0x0104
+WM_SYSKEYUP = 0x0105
+XINPUT_GAMEPAD_START = 0x0010
+XINPUT_GAMEPAD_BACK = 0x0020
+XINPUT_GAMEPAD_LEFT_SHOULDER = 0x0100
+XINPUT_GAMEPAD_RIGHT_SHOULDER = 0x0200
+XINPUT_GAMEPAD_A = 0x1000
+XINPUT_GAMEPAD_B = 0x2000
+XINPUT_SUCCESS = 0
+XINPUT_GAMEPAD_DPAD_UP        = 0x0001
+XINPUT_GAMEPAD_DPAD_DOWN      = 0x0002
+_D3D_MENU_RATIO_W             = 0.88
+_D3D_MENU_RATIO_H             = 0.90
+_D3D_MENU_MIN_W               = 1240.0
+_D3D_MENU_MIN_H               = 760.0
+_D3D_MENU_VIEW_MARGIN         = 20.0
+_D3D_MENU_TAB_H               = 56.0
+_D3D_MENU_DASH_MIN_H          = 220.0
+_D3D_MENU_DASH_MAX_H          = 320.0
+_D3D_MENU_ITEM_H              = 28.0
 
 
 class Server16App(tk.Tk):
@@ -122,9 +213,51 @@ class Server16App(tk.Tk):
         self._overlay_enabled = False
         self._overlay_visible = False
         self._overlay_space_down = False
+        self._overlay_f12_down = False
+        self._overlay_up_down = False
+        self._overlay_down_down = False
+        self._overlay_left_down = False
+        self._overlay_right_down = False
+        self._overlay_escape_down = False
+        self._overlay_pgup_down = False
+        self._overlay_pgdn_down = False
+        self._overlay_home_down = False
+        self._overlay_end_down = False
+        self._overlay_enter_down = False
+        self._overlay_mouse_left_down = False
+        self._overlay_mouse_wheel_steps = 0
+        self._overlay_mouse_click_pending = False
+        self._overlay_mouse_screen_x = None
+        self._overlay_mouse_screen_y = None
+        self._overlay_blocked_key_down = set()
+        self._mouse_hook = None
+        self._mouse_hook_proc = None
+        self._keyboard_hook = None
+        self._keyboard_hook_proc = None
         self._overlay_toggle_ready_at = 0.0
+        self._overlay_tab_ready_at = 0.0
+        self._overlay_combo_latched = False
+        self._overlay_gp_prev_buttons = 0
+        self._overlay_gp_start_pressed_at = 0.0
+        self._overlay_gp_back_pressed_at = 0.0
+        self._overlay_gp_left_pressed_at = 0.0
+        self._overlay_gp_right_pressed_at = 0.0
+        self._overlay_gp_start_hold_latched = False
+        self._overlay_gp_rstick_repeat_at = 0.0
+        self._active_gamepad_index = 0
+        self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos"]
+        self._overlay_tab_index = 0
+        self._d3d_menu_visible = False
+        self._overlay_items: list[str] = []
+        self._overlay_item_count     = 0
+        self._overlay_selected_index = 0
+        self._overlay_scroll_offset  = 0
+        self._overlay_visible_rows   = 20
+        self._overlay_nav_ready_at   = 0.0
+        self._overlay_nav_repeat_at  = 0.0
         self._overlay_hwnd = 0
         self._fifa_hwnd = 0
+        self._fifa_hwnd_checked_at = 0.0
         self._restore_fullscreen_on_hide = False
         self._launcher_mode = True
         self._worker_queue: queue.Queue[tuple] = queue.Queue()
@@ -276,6 +409,12 @@ class Server16App(tk.Tk):
         self.user32.GetAsyncKeyState.argtypes = [wintypes.INT]
         self.user32.GetAsyncKeyState.restype = wintypes.SHORT
         self.user32.GetForegroundWindow.restype = wintypes.HWND
+        self.user32.GetCursorPos.argtypes = [ctypes.POINTER(POINT)]
+        self.user32.GetCursorPos.restype = wintypes.BOOL
+        self.user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
+        self.user32.ScreenToClient.restype = wintypes.BOOL
+        self.user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
+        self.user32.GetClientRect.restype = wintypes.BOOL
         self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
         self.user32.IsWindowVisible.restype = wintypes.BOOL
         self.user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
@@ -305,6 +444,18 @@ class Server16App(tk.Tk):
         self.user32.keybd_event.restype = None
         self.user32.EnumWindows.argtypes = [ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM), wintypes.LPARAM]
         self.user32.EnumWindows.restype = wintypes.BOOL
+        self.user32.SetWindowsHookExW.argtypes = [ctypes.c_int, ctypes.c_void_p, wintypes.HINSTANCE, wintypes.DWORD]
+        self.user32.SetWindowsHookExW.restype = ctypes.c_void_p
+        self.user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM]
+        self.user32.CallNextHookEx.restype = wintypes.LPARAM
+        self.user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+        self.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+        self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        self.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        self._xinput = self._load_xinput_dll()
+        self._install_mouse_wheel_hook()
+        self._install_keyboard_hook()
         self._apply_window_icon(self)
         self._configure_theme()
         self._build_ui()
@@ -981,36 +1132,54 @@ class Server16App(tk.Tk):
         if not dll_path.exists():
             self.log(f"D3D overlay: DLL not found at {dll_path}")
             return False
-        # Create the injector lazily (once per app session)
-        if self._d3d_injector is None:
-            try:
-                self._d3d_injector = _D3DOverlayInjector(dll_path)
-            except Exception as exc:
-                self.log(f"D3D overlay injector init failed: {exc}")
-                self._d3d_injector = None
-                return False
-        inj = self._d3d_injector
-        if not inj.is_ready():
-            self.log(f"D3D overlay: not ready (shared_mem={inj._ready}, "
-                     f"dll={dll_path.exists()}, "
-                     f"exe={inj._find_inject_exe() is not None})")
+        if not self._ensure_d3d_overlay_injected(log_errors=True):
+            self.log("D3D overlay unavailable, using modal fallback")
             return False
-        # Inject into FIFA if not already done
-        pid = self._resolve_fifa_pid()
-        if pid and not inj.is_injected(pid):
-            ok = inj.inject(pid)
-            if not ok:
-                self.log("D3D overlay: injection failed, using modal fallback")
-                return False
-            self.log(f"D3D overlay: DLL injected into FIFA pid {pid}")
-        elif not pid:
-            self.log("D3D overlay: FIFA not running, using modal fallback")
+        inj = self._d3d_injector
+        if inj is None:
             return False
         inj.show(stadium_name, detail or self.tr("stadium_modal.preparing"), progress,
                  image_path=str(self._resolve_stadium_preview_path(stadium_name) or ""))
         self._d3d_overlay_shown_at = time.monotonic()
         self._stadium_loading_visible = True
         self.log(f"Stadium notification via D3D overlay: {stadium_name}")
+        return True
+
+    def _ensure_d3d_overlay_injected(self, log_errors: bool = False) -> bool:
+        """Ensure the D3D overlay injector exists and is injected into FIFA."""
+        if _D3DOverlayInjector is None:
+            if log_errors:
+                self.log("D3D overlay: injector module not available (import failed)")
+            return False
+        dll_path = self.resource_dir / "bin" / "cgfs16_overlay.dll"
+        if not dll_path.exists():
+            if log_errors:
+                self.log(f"D3D overlay: DLL not found at {dll_path}")
+            return False
+        if self._d3d_injector is None:
+            try:
+                self._d3d_injector = _D3DOverlayInjector(dll_path)
+            except Exception as exc:
+                if log_errors:
+                    self.log(f"D3D overlay injector init failed: {exc}")
+                self._d3d_injector = None
+                return False
+        inj = self._d3d_injector
+        if inj is None or not inj.is_ready():
+            if log_errors and inj is not None:
+                self.log(f"D3D overlay: not ready (shared_mem={inj._ready}, "
+                         f"dll={dll_path.exists()}, "
+                         f"exe={inj._find_inject_exe() is not None})")
+            return False
+        pid = self._resolve_fifa_pid()
+        if not pid:
+            return False
+        if not inj.is_injected(pid):
+            if not inj.inject(pid):
+                if log_errors:
+                    self.log("D3D overlay: injection failed")
+                return False
+            self.log(f"D3D overlay: DLL injected into FIFA pid {pid}")
         return True
 
     def _cancel_stadium_loading_hide(self) -> None:
@@ -1155,12 +1324,23 @@ class Server16App(tk.Tk):
             pass
 
     def _on_dashboard_configure(self, _event=None) -> None:
+        if hasattr(self, "_dashboard_configure_job"):
+            self.after_cancel(self._dashboard_configure_job)
+        self._dashboard_configure_job = self.after(80, self._apply_dashboard_configure)
+
+    def _apply_dashboard_configure(self) -> None:
         if self.dashboard_canvas is not None and self.dashboard_content is not None:
             self.dashboard_canvas.configure(scrollregion=self.dashboard_canvas.bbox("all"))
 
     def _on_dashboard_canvas_configure(self, event) -> None:
+        if hasattr(self, "_dashboard_canvas_configure_job"):
+            self.after_cancel(self._dashboard_canvas_configure_job)
+        width = event.width
+        self._dashboard_canvas_configure_job = self.after(80, lambda: self._apply_dashboard_canvas_configure(width))
+
+    def _apply_dashboard_canvas_configure(self, width: int) -> None:
         if self.dashboard_canvas is not None and self.dashboard_window_id is not None:
-            self.dashboard_canvas.itemconfigure(self.dashboard_window_id, width=event.width)
+            self.dashboard_canvas.itemconfigure(self.dashboard_window_id, width=width)
 
     def _on_dashboard_mousewheel(self, event) -> None:
         if self.tabview is None or self.dashboard_canvas is None:
@@ -1860,7 +2040,9 @@ class Server16App(tk.Tk):
             self.camera_preview_status.configure(text=text)
 
     def _on_camera_preview_canvas_configure(self, _event=None) -> None:
-        self._render_camera_preview()
+        if hasattr(self, "_camera_preview_configure_job"):
+            self.after_cancel(self._camera_preview_configure_job)
+        self._camera_preview_configure_job = self.after(80, self._render_camera_preview)
 
     def _render_camera_preview(self) -> None:
         if self._camera_preview_source_key is None or self.camera_preview_canvas is None or self.camera_preview_image_label is None:
@@ -2360,6 +2542,7 @@ class Server16App(tk.Tk):
             return
         try:
             self._sync_overlay_hotkey()
+            self._sync_d3d_menu_input()
             if self._overlay_visible:
                 self._position_overlay()
         except Exception as exc:
@@ -2367,26 +2550,820 @@ class Server16App(tk.Tk):
         if not self._closing:
             self._overlay_job = self.after(80, self.overlay_loop)
 
+    def _refresh_fifa_hwnd_if_needed(self, now: float) -> None:
+        """Re-runs EnumWindows at most once per second, or when the cached hwnd is gone."""
+        hwnd = self._fifa_hwnd
+        if hwnd and not self.user32.IsWindow(hwnd):
+            # Cached hwnd is no longer valid — invalidate immediately
+            self._fifa_hwnd = 0
+            self._fifa_hwnd_checked_at = 0.0
+            hwnd = 0
+        if not hwnd and now - self._fifa_hwnd_checked_at >= 1.0:
+            self._fifa_hwnd_checked_at = now
+            self._fifa_hwnd = self._find_fifa_window_handle()
+
     def _sync_overlay_hotkey(self) -> None:
+        """Manages the Tkinter overlay window toggle (Space key, _overlay_enabled guard)."""
         if not self._overlay_enabled:
             return
         now = perf_counter()
         foreground = int(self.user32.GetForegroundWindow() or 0)
-        self._fifa_hwnd = self._find_fifa_window_handle()
-        key_down = bool(self.user32.GetAsyncKeyState(0x20) & 0x8000)
+        self._refresh_fifa_hwnd_if_needed(now)
+        space_down = bool(self.user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
         if self._overlay_visible:
             can_toggle = bool(self._fifa_hwnd or self._overlay_hwnd)
         else:
             can_toggle = foreground in {self._fifa_hwnd, self._overlay_hwnd} and foreground != 0
-        if key_down and not self._overlay_space_down and can_toggle and now >= self._overlay_toggle_ready_at:
+        if space_down and not self._overlay_space_down and can_toggle and now >= self._overlay_toggle_ready_at:
             if self._overlay_visible:
                 self._hide_overlay()
             else:
                 self._show_overlay()
             self._overlay_toggle_ready_at = now + 0.22
-        self._overlay_space_down = key_down
+        self._overlay_space_down = space_down
         if self._overlay_visible and not self._fifa_hwnd:
             self._hide_overlay()
+
+    def _sync_d3d_menu_input(self) -> None:
+        """Manages the D3D in-game menu (F12 / Start+Back / L-R). Independent of _overlay_enabled."""
+        if not self._ensure_d3d_overlay_injected(log_errors=False):
+            return
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        now = perf_counter()
+        self._refresh_fifa_hwnd_if_needed(now)
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        overlay_hwnd = 0
+        overlay_vw = 0
+        overlay_vh = 0
+        try:
+            overlay_hwnd, overlay_vw, overlay_vh = inj.get_menu_metrics()
+        except Exception:
+            overlay_hwnd = 0
+        fifa_fg = (foreground == self._fifa_hwnd and self._fifa_hwnd != 0)
+        overlay_fg = (foreground == int(overlay_hwnd) and int(overlay_hwnd) != 0)
+        menu_input_fg = fifa_fg or overlay_fg
+
+        if not self._d3d_menu_visible:
+            self._overlay_blocked_key_down.clear()
+
+        if overlay_vw > 0 and overlay_vh > 0:
+            self._overlay_visible_rows = self._compute_overlay_visible_rows(float(overlay_vw), float(overlay_vh))
+
+        f12_down = self._is_overlay_key_down(VK_F12, menu_input_fg)
+        key_up_down = self._is_overlay_key_down(VK_UP, menu_input_fg)
+        key_down_down = self._is_overlay_key_down(VK_DOWN, menu_input_fg)
+        key_left_down = self._is_overlay_key_down(VK_LEFT, menu_input_fg)
+        key_right_down = self._is_overlay_key_down(VK_RIGHT, menu_input_fg)
+        key_escape_down = self._is_overlay_key_down(VK_ESCAPE, menu_input_fg)
+        key_pgup_down = self._is_overlay_key_down(VK_PRIOR, menu_input_fg)
+        key_pgdn_down = self._is_overlay_key_down(VK_NEXT, menu_input_fg)
+        key_home_down = self._is_overlay_key_down(VK_HOME, menu_input_fg)
+        key_end_down = self._is_overlay_key_down(VK_END, menu_input_fg)
+        key_enter_down = self._is_overlay_key_down(VK_RETURN, menu_input_fg)
+        gamepad_buttons, _stick_rx, stick_ry = self._get_gamepad_snapshot()
+        start_down = bool(gamepad_buttons & XINPUT_GAMEPAD_START)
+        back_down = bool(gamepad_buttons & XINPUT_GAMEPAD_BACK)
+        left_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
+        right_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
+        a_down = bool(gamepad_buttons & XINPUT_GAMEPAD_A)
+        b_down = bool(gamepad_buttons & XINPUT_GAMEPAD_B)
+
+        prev_buttons = self._overlay_gp_prev_buttons
+        start_edge = start_down and not bool(prev_buttons & XINPUT_GAMEPAD_START)
+        back_edge = back_down and not bool(prev_buttons & XINPUT_GAMEPAD_BACK)
+        left_shoulder_edge = left_shoulder_down and not bool(prev_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
+        right_shoulder_edge = right_shoulder_down and not bool(prev_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
+
+        if start_edge:
+            self._overlay_gp_start_pressed_at = now
+            self._overlay_gp_start_hold_latched = False
+        if back_edge:
+            self._overlay_gp_back_pressed_at = now
+        if left_shoulder_edge:
+            self._overlay_gp_left_pressed_at = now
+        if right_shoulder_edge:
+            self._overlay_gp_right_pressed_at = now
+        if not start_down:
+            self._overlay_gp_start_hold_latched = False
+
+        # Toggle: allowed if FIFA in foreground OR menu already open
+        can_toggle = (self._fifa_hwnd != 0 or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at
+
+        f12_toggle = f12_down and not self._overlay_f12_down
+        key_escape_edge = key_escape_down and not self._overlay_escape_down
+        key_left_edge = key_left_down and not self._overlay_left_down
+        key_right_edge = key_right_down and not self._overlay_right_down
+        key_up_edge = key_up_down and not self._overlay_up_down
+        key_down_edge = key_down_down and not self._overlay_down_down
+        key_pgup_edge = key_pgup_down and not self._overlay_pgup_down
+        key_pgdn_edge = key_pgdn_down and not self._overlay_pgdn_down
+        key_home_edge = key_home_down and not self._overlay_home_down
+        key_end_edge = key_end_down and not self._overlay_end_down
+        key_enter_edge = key_enter_down and not getattr(self, "_overlay_enter_down", False)
+        a_edge = a_down and not bool(prev_buttons & XINPUT_GAMEPAD_A)
+        b_edge = b_down and not bool(prev_buttons & XINPUT_GAMEPAD_B)
+        combo_toggle = False
+        start_hold_toggle = False
+        single_back_toggle = back_edge and not start_down
+        if start_down and back_down:
+            has_combo_window = (
+                self._overlay_gp_start_pressed_at > 0.0
+                and self._overlay_gp_back_pressed_at > 0.0
+                and abs(self._overlay_gp_start_pressed_at - self._overlay_gp_back_pressed_at) <= 0.22
+            )
+            if has_combo_window and not self._overlay_combo_latched:
+                combo_toggle = True
+                self._overlay_combo_latched = True
+        elif not self._d3d_menu_visible and left_shoulder_down and right_shoulder_down:
+            has_combo_window = (
+                self._overlay_gp_left_pressed_at > 0.0
+                and self._overlay_gp_right_pressed_at > 0.0
+                and abs(self._overlay_gp_left_pressed_at - self._overlay_gp_right_pressed_at) <= 0.22
+            )
+            if has_combo_window and not self._overlay_combo_latched:
+                combo_toggle = True
+                self._overlay_combo_latched = True
+        else:
+            self._overlay_combo_latched = False
+
+        if start_down and not back_down and self._overlay_gp_start_pressed_at > 0.0:
+            if (now - self._overlay_gp_start_pressed_at) >= 0.60 and not self._overlay_gp_start_hold_latched:
+                start_hold_toggle = True
+                self._overlay_gp_start_hold_latched = True
+
+        if (f12_toggle or combo_toggle or start_hold_toggle or single_back_toggle) and can_toggle:
+            self._d3d_menu_visible = not self._d3d_menu_visible
+            self._overlay_toggle_ready_at = now + 0.22
+            self.log(f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}")
+            self._publish_overlay_menu_state()
+            if self._d3d_menu_visible:
+                self._update_menu_content()
+
+        if self._d3d_menu_visible and inj is not None:
+            try:
+                inj.set_dashboard_content(self._build_overlay_dashboard_lines())
+            except Exception:
+                pass
+
+        if self._d3d_menu_visible and key_escape_edge and now >= self._overlay_toggle_ready_at:
+            self._d3d_menu_visible = False
+            self._overlay_toggle_ready_at = now + 0.22
+            self.log("D3D menu closed via keyboard")
+            self._publish_overlay_menu_state()
+
+        if self._d3d_menu_visible and b_edge and now >= self._overlay_toggle_ready_at:
+            self._d3d_menu_visible = False
+            self._overlay_toggle_ready_at = now + 0.22
+            self.log("D3D menu closed via gamepad B")
+            self._publish_overlay_menu_state()
+
+        if self._d3d_menu_visible and now >= self._overlay_tab_ready_at:
+            if left_shoulder_edge or key_left_edge:
+                self._set_overlay_tab(self._overlay_tab_index - 1, "gamepad-l")
+                self._overlay_tab_ready_at = now + 0.14
+            elif right_shoulder_edge or key_right_edge:
+                self._set_overlay_tab(self._overlay_tab_index + 1, "gamepad-r")
+                self._overlay_tab_ready_at = now + 0.14
+
+        # DPAD up/down: navigate list items (with initial delay + repeat)
+        if self._d3d_menu_visible and self._overlay_item_count > 0:
+            dpad_up   = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            dpad_up_edge   = dpad_up   and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down_edge = dpad_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            nav_up = dpad_up or key_up_down
+            nav_down = dpad_down or key_down_down
+            if dpad_up_edge or key_up_edge:
+                self._navigate_menu_items(-1)
+                self._overlay_nav_repeat_at = now + 0.40
+            elif dpad_down_edge or key_down_edge:
+                self._navigate_menu_items(1)
+                self._overlay_nav_repeat_at = now + 0.40
+            elif (nav_up or nav_down) and now >= self._overlay_nav_repeat_at:
+                self._navigate_menu_items(-1 if nav_up else 1)
+                self._overlay_nav_repeat_at = now + 0.10
+            if key_pgup_edge:
+                self._navigate_menu_items(-self._overlay_visible_rows)
+            elif key_pgdn_edge:
+                self._navigate_menu_items(self._overlay_visible_rows)
+            elif key_home_edge:
+                self._set_menu_selection(0)
+            elif key_end_edge:
+                self._set_menu_selection(self._overlay_item_count - 1)
+            wheel_steps = self._overlay_mouse_wheel_steps
+            if wheel_steps:
+                self._overlay_mouse_wheel_steps = 0
+                self._navigate_menu_items(-wheel_steps * 3)
+
+            abs_ry = abs(int(stick_ry))
+            deadzone = 9000
+            if abs_ry > deadzone:
+                norm = min(1.0, float(abs_ry - deadzone) / float(32767 - deadzone))
+                step = max(1, int(round(1.0 + norm * 5.0)))
+                interval = max(0.04, 0.18 - (norm * 0.12))
+                if now >= self._overlay_gp_rstick_repeat_at:
+                    self._navigate_menu_items(-step if stick_ry > 0 else step)
+                    self._overlay_gp_rstick_repeat_at = now + interval
+            else:
+                self._overlay_gp_rstick_repeat_at = now
+
+        if self._d3d_menu_visible and (key_enter_edge or a_edge):
+            self._activate_overlay_selected_item("confirm")
+
+        self._overlay_f12_down = f12_down
+        self._overlay_up_down = key_up_down
+        self._overlay_down_down = key_down_down
+        self._overlay_left_down = key_left_down
+        self._overlay_right_down = key_right_down
+        self._overlay_escape_down = key_escape_down
+        self._overlay_pgup_down = key_pgup_down
+        self._overlay_pgdn_down = key_pgdn_down
+        self._overlay_home_down = key_home_down
+        self._overlay_end_down = key_end_down
+        self._overlay_enter_down = key_enter_down
+        self._overlay_gp_prev_buttons = gamepad_buttons
+
+        self._sync_d3d_menu_mouse_input(menu_input_fg)
+        if self._d3d_menu_visible:
+            self._best_effort_neutralize_game_keys()
+
+        # Auto-close if FIFA exits
+        if self._d3d_menu_visible and not self._fifa_hwnd:
+            self._d3d_menu_visible = False
+            self._publish_overlay_menu_state()
+
+    def _load_xinput_dll(self):
+        for dll_name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
+            try:
+                dll = ctypes.WinDLL(dll_name, use_last_error=True)
+                dll.XInputGetState.argtypes = [wintypes.DWORD, ctypes.POINTER(XINPUT_STATE)]
+                dll.XInputGetState.restype = wintypes.DWORD
+                self.log(f"XInput initialized from {dll_name}.dll")
+                return dll
+            except Exception:
+                continue
+        self.log("XInput unavailable; gamepad overlay controls disabled")
+        return None
+
+    def _get_gamepad_snapshot(self) -> tuple[int, int, int]:
+        if self._xinput is None:
+            return 0, 0, 0
+        indices = [self._active_gamepad_index] + [i for i in range(4) if i != self._active_gamepad_index]
+        for index in indices:
+            state = XINPUT_STATE()
+            try:
+                result = int(self._xinput.XInputGetState(index, ctypes.byref(state)))
+            except Exception:
+                continue
+            if result == XINPUT_SUCCESS:
+                self._active_gamepad_index = index
+                return int(state.Gamepad.wButtons), int(state.Gamepad.sThumbRX), int(state.Gamepad.sThumbRY)
+        self._active_gamepad_index = 0
+        return 0, 0, 0
+
+    def _get_gamepad_buttons(self) -> int:
+        buttons, _rx, _ry = self._get_gamepad_snapshot()
+        return buttons
+
+    def _set_overlay_tab(self, index: int, source: str) -> None:
+        if not self._overlay_tab_names:
+            return
+        normalized = index % len(self._overlay_tab_names)
+        if normalized == self._overlay_tab_index:
+            return
+        self._overlay_tab_index = normalized
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        self.log(f"Overlay menu tab changed to {tab_name} via {source}")
+        self._publish_overlay_menu_state()
+        if self._d3d_injector is not None:
+            try:
+                self._d3d_injector.push_menu_event(100 + self._overlay_tab_index)
+            except Exception:
+                pass
+            if self._d3d_menu_visible:
+                self._update_menu_content()
+
+    def _publish_overlay_menu_state(self) -> None:
+        if self._d3d_injector is None:
+            return
+        try:
+            self._d3d_injector.set_menu_state(self._d3d_menu_visible, self._overlay_tab_index)
+        except Exception:
+            pass
+
+    def _update_menu_content(self) -> None:
+        """Populate the D3D menu content list for the active tab."""
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        try:
+            inj.set_dashboard_content(self._build_overlay_dashboard_lines())
+        except Exception:
+            pass
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        items: list[str] = []
+        try:
+            from pathlib import Path
+
+            def _list_dirs(base) -> list[str]:
+                if base is None:
+                    return []
+                p = Path(base)
+                if not p.exists():
+                    return []
+                return sorted(d.name for d in p.iterdir() if d.is_dir())
+            if tab_name == "scoreboards":
+                items = _list_dirs(getattr(self, "ScoreBoard", None))
+            elif tab_name == "stadiums":
+                stadium_root = getattr(self, "targetpath", None)
+                items = discover_stadium_names(stadium_root) if stadium_root else []
+            elif tab_name == "movies":
+                items = _list_dirs(getattr(self, "Movies", None))
+            elif tab_name == "tvlogos":
+                items = _list_dirs(getattr(self, "TVLogo", None))
+            elif tab_name == "chants":
+                exedir = getattr(self, "exedir", None)
+                if exedir:
+                    items = _list_dirs(Path(exedir) / "FSV")
+        except Exception as exc:
+            self.log(f"Menu content error ({tab_name}): {exc}")
+        self._overlay_items = items
+        self._overlay_selected_index = 0
+        self._overlay_scroll_offset  = 0
+        self._overlay_item_count     = len(items)
+        try:
+            inj.set_menu_content(items, 0, 0)
+        except Exception:
+            pass
+
+    def _compute_d3d_menu_layout(self, vp_w: float, vp_h: float) -> dict[str, float]:
+        margin = _D3D_MENU_VIEW_MARGIN
+        avail_w = max(320.0, vp_w - (2.0 * margin))
+        avail_h = max(240.0, vp_h - (2.0 * margin))
+        menu_w = min(avail_w, max(_D3D_MENU_MIN_W, float(int(vp_w * _D3D_MENU_RATIO_W))))
+        menu_h = min(avail_h, max(_D3D_MENU_MIN_H, float(int(vp_h * _D3D_MENU_RATIO_H))))
+        tab_h = _D3D_MENU_TAB_H
+        dash_h = max(_D3D_MENU_DASH_MIN_H, min(_D3D_MENU_DASH_MAX_H, float(int(menu_h * 0.28))))
+        menu_x = float(int((vp_w - menu_w) // 2))
+        menu_y = float(int((vp_h - menu_h) // 2))
+        content_y = menu_y + tab_h
+        list_x = menu_x + 4.0
+        list_y = content_y + 4.0
+        scroll_w = 12.0
+        scroll_gap = 6.0
+        list_w = menu_w - 8.0 - scroll_w - scroll_gap
+        list_ymax = menu_y + menu_h - dash_h - 14.0
+        scroll_x = list_x + list_w + scroll_gap
+        scroll_y = list_y
+        scroll_h = max(1.0, list_ymax - list_y)
+        tab_w = float(int(menu_w // max(1, len(self._overlay_tab_names))))
+        return {
+            "menu_x": menu_x,
+            "menu_y": menu_y,
+            "menu_w": menu_w,
+            "menu_h": menu_h,
+            "tab_h": tab_h,
+            "tab_w": tab_w,
+            "dash_h": dash_h,
+            "list_x": list_x,
+            "list_y": list_y,
+            "list_w": list_w,
+            "list_ymax": list_ymax,
+            "scroll_x": scroll_x,
+            "scroll_y": scroll_y,
+            "scroll_w": scroll_w,
+            "scroll_h": scroll_h,
+            "item_h": _D3D_MENU_ITEM_H,
+        }
+
+    def _compute_overlay_visible_rows(self, viewport_w: float, viewport_h: float) -> int:
+        layout = self._compute_d3d_menu_layout(viewport_w, viewport_h)
+        usable = max(1.0, layout["list_ymax"] - layout["list_y"])
+        return max(1, int(usable // layout["item_h"]))
+
+    def _resolve_overlay_assignment_target(self, tab_name: str) -> tuple[str | None, str | None]:
+        if tab_name in {"scoreboards", "tvlogos"}:
+            scope = self.assignment_runtime.default_scope_for_scoreboard()
+            return self.assignment_runtime.resolve_assignment_target(
+                scope,
+                {
+                    "0": (self.TOURNAME, "Tournament"),
+                    "1": (self.TOURROUNDID, "Round"),
+                    "2": (self.HID, "Home Team"),
+                },
+            )
+        if tab_name == "movies":
+            scope = self.assignment_runtime.default_scope_for_movie()
+            return self.assignment_runtime.resolve_assignment_target(
+                scope,
+                {
+                    "0": (self.TOURNAME, "Tournament"),
+                    "1": (self.TOURROUNDID, "Round"),
+                    "2": (self.derby if self.HID and self.AID else "", "Derby"),
+                    "3": (self.HID, "Home Team"),
+                },
+            )
+        if tab_name == "stadiums":
+            scope = self.assignment_runtime.default_scope_for_stadium()
+            return self.assignment_runtime.resolve_assignment_target(
+                scope,
+                {
+                    "0": (self.HID, "Home Team"),
+                    "1": (self.TOURROUNDID, "Round"),
+                    "2": (self.HID, "Home Team"),
+                    "3": (self.TOURROUNDID, "Round"),
+                    "4": (self.TOURNAME, "Tournament"),
+                },
+            )
+        return None, None
+
+    def _write_overlay_assignment(self, key: str, comp: str, value: str, source: str) -> bool:
+        if not comp or not key:
+            return False
+        try:
+            self.settings_ini.write(comp, value, key)
+            self.settings_ini.save()
+            self.log(f"Overlay assignment ({source}): [{key}] {comp}={value}")
+            self.apply_all_runtime()
+            return True
+        except Exception as exc:
+            self.log(f"Overlay assignment failed ({source})", exc, exc_info=sys.exc_info())
+            return False
+
+    def _build_overlay_stadium_payload(self, selected_item: str, comp: str, key: str) -> str:
+        police = self.PoliceNum or "4"
+        pitch = "0"
+        net = "0"
+        try:
+            if comp and key and self.settings_ini.key_exists(comp, key):
+                existing = self.settings_ini.read(comp, key)
+                _stadiums, ex_police, ex_pitch, ex_net = self.stadium_runtime._parse_assignment(existing)
+                if ex_police:
+                    police = ex_police
+                if ex_pitch:
+                    pitch = ex_pitch
+                if ex_net:
+                    net = ex_net
+        except Exception:
+            pass
+        return ",".join([selected_item, police, pitch, net])
+
+    def _activate_overlay_selected_item(self, source: str) -> None:
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if not self._overlay_items:
+            return
+        sel = max(0, min(self._overlay_selected_index, len(self._overlay_items) - 1))
+        selected_item = (self._overlay_items[sel] or "").strip()
+        if not selected_item:
+            return
+
+        self.assignment_runtime.refresh_context_for_assignment()
+        comp, resolved = self._resolve_overlay_assignment_target(tab_name)
+        if not comp:
+            self.log(f"Overlay assign skipped ({source}): no usable context for tab={tab_name}")
+            return
+
+        if tab_name == "scoreboards":
+            key = "HomeTeamScoreBoard" if resolved == "Home Team" else "Scoreboard"
+            self._write_overlay_assignment(key, comp, selected_item, source)
+            return
+        if tab_name == "tvlogos":
+            key = "HomeTeamTvLogo" if resolved == "Home Team" else "TVLogo"
+            self._write_overlay_assignment(key, comp, selected_item, source)
+            return
+        if tab_name == "movies":
+            if resolved == "Home Team":
+                key = "TeamMovies"
+            elif resolved == "Derby":
+                key = "DerbyMatch"
+            else:
+                key = "movies"
+            self._write_overlay_assignment(key, comp, selected_item, source)
+            return
+        if tab_name == "stadiums":
+            key = "stadium" if resolved == "Home Team" else "comp"
+            payload = self._build_overlay_stadium_payload(selected_item, comp, key)
+            self._write_overlay_assignment(key, comp, payload, source)
+            return
+
+    def _build_overlay_dashboard_lines(self) -> list[str]:
+        def _label_text(key: str, fallback: str = "-") -> str:
+            label = self.labels.get(key)
+            if label is None:
+                return fallback
+            text = str(label.cget("text") or "").strip()
+            return text or fallback
+
+        return [
+            self.tr("card.assets.title"),
+            f"{self.tr('stat.tv_logo')}: {_label_text('tvlogo', 'default')}",
+            f"{self.tr('stat.scoreboard')}: {_label_text('scoreboard', 'default')}",
+            f"{self.tr('stat.movie')}: {_label_text('movie', 'default')}",
+            f"{self.tr('stat.status')}: {_label_text('status', self.display_value('idle'))}",
+            f"{self.tr('stat.tournament')}: {_label_text('tour')}",
+            f"{self.tr('stat.round_id')}: {_label_text('round')}",
+            f"{self.tr('stat.current_page')}: {_label_text('page')}",
+            f"{self.tr('stat.minute_second')}: {_label_text('match_clock_split', '00 / 00')}",
+            f"{self.tr('stat.current_stadium')}: {_label_text('stadium')}",
+        ]
+
+    def _navigate_menu_items(self, delta: int) -> None:
+        """Move selection up/down in the current tab list."""
+        count = self._overlay_item_count
+        if count == 0:
+            return
+        sel = (self._overlay_selected_index + delta) % count
+        self._overlay_selected_index = sel
+        # Keep selected item visible
+        scroll = self._overlay_scroll_offset
+        visible_rows = max(1, int(self._overlay_visible_rows))
+        if sel < scroll:
+            scroll = sel
+        elif sel >= scroll + visible_rows:
+            scroll = sel - visible_rows + 1
+        self._overlay_scroll_offset = scroll
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                inj.set_menu_selection(sel, scroll)
+            except Exception:
+                pass
+
+    def _set_menu_selection(self, index: int) -> None:
+        count = self._overlay_item_count
+        if count <= 0:
+            return
+        sel = max(0, min(int(index), count - 1))
+        self._overlay_selected_index = sel
+        scroll = self._overlay_scroll_offset
+        visible_rows = max(1, int(self._overlay_visible_rows))
+        if sel < scroll:
+            scroll = sel
+        elif sel >= scroll + visible_rows:
+            scroll = sel - visible_rows + 1
+        self._overlay_scroll_offset = scroll
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                inj.set_menu_selection(sel, scroll)
+            except Exception:
+                pass
+
+    def _sync_d3d_menu_mouse_input(self, menu_input_fg: bool) -> None:
+        # Use the flag set by the LL mouse hook — more reliable than GetAsyncKeyState
+        # when the hook consumes WM_LBUTTONDOWN before the OS updates key state.
+        left_edge = self._overlay_mouse_click_pending
+        self._overlay_mouse_click_pending = False
+
+        if not self._d3d_menu_visible:
+            return
+
+        input_hwnd = int(self._fifa_hwnd)
+        vp_w = 0
+        vp_h = 0
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                overlay_hwnd, overlay_vw, overlay_vh = inj.get_menu_metrics()
+                if overlay_hwnd:
+                    input_hwnd = int(overlay_hwnd)
+                if overlay_vw > 0 and overlay_vh > 0:
+                    vp_w = int(overlay_vw)
+                    vp_h = int(overlay_vh)
+            except Exception:
+                pass
+
+        if not input_hwnd:
+            return
+
+        client_rect = RECT()
+        cursor = POINT()
+        if not self.user32.GetClientRect(input_hwnd, ctypes.byref(client_rect)):
+            return
+
+        if self._overlay_mouse_screen_x is not None and self._overlay_mouse_screen_y is not None:
+            cursor.x = int(self._overlay_mouse_screen_x)
+            cursor.y = int(self._overlay_mouse_screen_y)
+        elif not self.user32.GetCursorPos(ctypes.byref(cursor)):
+            return
+        if not self.user32.ScreenToClient(input_hwnd, ctypes.byref(cursor)):
+            return
+
+        if vp_w <= 0:
+            vp_w = max(1, int(client_rect.right - client_rect.left))
+        if vp_h <= 0:
+            vp_h = max(1, int(client_rect.bottom - client_rect.top))
+        self._overlay_visible_rows = self._compute_overlay_visible_rows(float(vp_w), float(vp_h))
+        local_x = float(cursor.x)
+        local_y = float(cursor.y)
+        if local_x < 0 or local_y < 0 or local_x >= vp_w or local_y >= vp_h:
+            return
+
+        layout = self._compute_d3d_menu_layout(float(vp_w), float(vp_h))
+        menu_x = layout["menu_x"]
+        menu_y = layout["menu_y"]
+        tab_h = layout["tab_h"]
+        tab_w = layout["tab_w"]
+        list_x = layout["list_x"]
+        list_y = layout["list_y"]
+        list_w = layout["list_w"]
+        list_ymax = layout["list_ymax"]
+        scroll_x = layout["scroll_x"]
+        scroll_y = layout["scroll_y"]
+        scroll_w = layout["scroll_w"]
+        scroll_h = layout["scroll_h"]
+        item_h = layout["item_h"]
+
+        tab_strip_x = menu_x + 2.0
+        tab_strip_y = menu_y + 2.0
+        tab_strip_h = tab_h - 2.0
+        if left_edge and tab_strip_x <= local_x < (tab_strip_x + tab_w * len(self._overlay_tab_names)) and tab_strip_y <= local_y < (tab_strip_y + tab_strip_h):
+            tab_index = int((local_x - tab_strip_x) // tab_w)
+            if 0 <= tab_index < len(self._overlay_tab_names):
+                self._set_overlay_tab(tab_index, "mouse")
+                return
+
+        if left_edge and list_x <= local_x < (list_x + list_w) and list_y <= local_y < list_ymax and self._overlay_item_count > 0:
+            row = int((local_y - list_y) // item_h)
+            item_index = self._overlay_scroll_offset + row
+            if 0 <= item_index < self._overlay_item_count:
+                self._set_menu_selection(item_index)
+
+        if left_edge and scroll_x <= local_x < (scroll_x + scroll_w) and scroll_y <= local_y < (scroll_y + scroll_h) and self._overlay_item_count > 0:
+            visible_rows = max(1, int(self._overlay_visible_rows))
+            max_scroll = max(0, self._overlay_item_count - visible_rows)
+            if max_scroll <= 0:
+                return
+
+            track_h = max(1.0, scroll_h)
+            thumb_h = max(22.0, (track_h * float(visible_rows)) / float(self._overlay_item_count))
+            thumb_h = min(track_h, thumb_h)
+            thumb_range = max(1.0, track_h - thumb_h)
+            cur_scroll = max(0, min(self._overlay_scroll_offset, max_scroll))
+            thumb_top = scroll_y + (float(cur_scroll) / float(max_scroll)) * thumb_range
+
+            if local_y < thumb_top:
+                new_scroll = max(0, cur_scroll - visible_rows)
+            elif local_y > (thumb_top + thumb_h):
+                new_scroll = min(max_scroll, cur_scroll + visible_rows)
+            else:
+                rel = (local_y - scroll_y - (thumb_h * 0.5)) / thumb_range
+                rel = max(0.0, min(1.0, rel))
+                new_scroll = int(round(rel * max_scroll))
+
+            self._overlay_scroll_offset = new_scroll
+            sel = max(0, min(self._overlay_selected_index, self._overlay_item_count - 1))
+            if sel < new_scroll:
+                sel = new_scroll
+            elif sel >= (new_scroll + visible_rows):
+                sel = max(new_scroll, min(self._overlay_item_count - 1, new_scroll + visible_rows - 1))
+            self._overlay_selected_index = sel
+            if inj is not None:
+                try:
+                    inj.set_menu_selection(sel, new_scroll)
+                except Exception:
+                    pass
+
+    def _is_overlay_input_foreground(self) -> bool:
+        fg = int(self.user32.GetForegroundWindow() or 0)
+        if fg == 0:
+            return False
+        if fg in {int(self._fifa_hwnd or 0), int(self._overlay_hwnd or 0)}:
+            return True
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                overlay_hwnd, _vw, _vh = inj.get_menu_metrics()
+                if overlay_hwnd and fg == int(overlay_hwnd):
+                    return True
+            except Exception:
+                pass
+        return False
+
+    def _install_mouse_wheel_hook(self) -> None:
+        if self._mouse_hook is not None:
+            return
+
+        hook_type = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+
+        block_mouse_messages = {
+            WM_LBUTTONDOWN,
+            WM_LBUTTONUP,
+            WM_RBUTTONDOWN,
+            WM_RBUTTONUP,
+            WM_MBUTTONDOWN,
+            WM_MBUTTONUP,
+            WM_MOUSEWHEEL,
+        }
+
+        def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if n_code == HC_ACTION and self._d3d_menu_visible:
+                msg = int(w_param)
+                try:
+                    info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                    self._overlay_mouse_screen_x = int(info.pt.x)
+                    self._overlay_mouse_screen_y = int(info.pt.y)
+                except Exception:
+                    pass
+                if msg == WM_MOUSEWHEEL:
+                    try:
+                        info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
+                        delta = ctypes.c_short((int(info.mouseData) >> 16) & 0xFFFF).value
+                        if delta:
+                            self._overlay_mouse_wheel_steps += int(delta / 120)
+                    except Exception:
+                        pass
+                if msg == WM_LBUTTONDOWN:
+                    # Mark click here so _sync_d3d_menu_mouse_input can detect it
+                    # (GetAsyncKeyState is not reliable when the LL hook blocks the message)
+                    self._overlay_mouse_click_pending = True
+                if msg in block_mouse_messages:
+                    return 1
+            return int(self.user32.CallNextHookEx(self._mouse_hook, n_code, w_param, l_param))
+
+        self._mouse_hook_proc = hook_type(_mouse_proc)
+        module_handle = self.kernel32.GetModuleHandleW(None)
+        try:
+            self._mouse_hook = self.user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_hook_proc, module_handle, 0)
+        except Exception:
+            self._mouse_hook = None
+
+    def _uninstall_mouse_wheel_hook(self) -> None:
+        if self._mouse_hook is not None:
+            try:
+                self.user32.UnhookWindowsHookEx(self._mouse_hook)
+            except Exception:
+                pass
+            self._mouse_hook = None
+        self._mouse_hook_proc = None
+
+    def _install_keyboard_hook(self) -> None:
+        if self._keyboard_hook is not None:
+            return
+
+        hook_type = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
+        blocked_keys = {
+            VK_F12,
+            VK_ESCAPE,
+            VK_RETURN,
+            VK_SPACE,
+            VK_LEFT,
+            VK_RIGHT,
+            VK_UP,
+            VK_DOWN,
+            VK_PRIOR,
+            VK_NEXT,
+            VK_HOME,
+            VK_END,
+        }
+        key_messages = {WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP}
+
+        def _keyboard_proc(n_code: int, w_param: int, l_param: int) -> int:
+            if n_code == HC_ACTION and self._d3d_menu_visible:
+                msg = int(w_param)
+                if msg in key_messages:
+                    try:
+                        info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+                        vk = int(info.vkCode)
+                        if vk in blocked_keys:
+                            if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                                self._overlay_blocked_key_down.add(vk)
+                            elif msg in (WM_KEYUP, WM_SYSKEYUP):
+                                self._overlay_blocked_key_down.discard(vk)
+                            return 1
+                    except Exception:
+                        pass
+            return int(self.user32.CallNextHookEx(self._keyboard_hook, n_code, w_param, l_param))
+
+        self._keyboard_hook_proc = hook_type(_keyboard_proc)
+        module_handle = self.kernel32.GetModuleHandleW(None)
+        try:
+            self._keyboard_hook = self.user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._keyboard_hook_proc, module_handle, 0)
+        except Exception:
+            self._keyboard_hook = None
+
+    def _uninstall_keyboard_hook(self) -> None:
+        if self._keyboard_hook is not None:
+            try:
+                self.user32.UnhookWindowsHookEx(self._keyboard_hook)
+            except Exception:
+                pass
+            self._keyboard_hook = None
+        self._keyboard_hook_proc = None
+        self._overlay_blocked_key_down.clear()
+
+    def _is_overlay_key_down(self, vk: int, menu_input_fg: bool) -> bool:
+        if self._d3d_menu_visible and self._keyboard_hook is not None:
+            return vk in self._overlay_blocked_key_down
+        return bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
+
+    def _best_effort_neutralize_game_keys(self) -> None:
+        """Release common UI keys so FIFA is less likely to consume held inputs while menu is open."""
+        for vk in (VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_RETURN, VK_SPACE, VK_PRIOR, VK_NEXT, VK_HOME, VK_END):
+            if self.user32.GetAsyncKeyState(vk) & 0x8000:
+                self.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
     def _apply_noactivate_window_style(self, hwnd: int) -> None:
         if not hwnd:
@@ -3278,6 +4255,14 @@ class Server16App(tk.Tk):
         try:
             if self._d3d_injector is not None:
                 self._d3d_injector.destroy()
+        except Exception:
+            pass
+        try:
+            self._uninstall_mouse_wheel_hook()
+        except Exception:
+            pass
+        try:
+            self._uninstall_keyboard_hook()
         except Exception:
             pass
         try:

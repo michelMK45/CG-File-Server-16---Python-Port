@@ -39,8 +39,11 @@
 // Shared memory (same layout as Python _OverlayShared)
 // ---------------------------------------------------------------------------
 #define SHMEM_NAME  L"Local\\CGFS16_Overlay_v1"
-#define MAX_STR     256
-#define MAX_IMG     512
+#define MAX_STR          256
+#define MAX_IMG          512
+#define MAX_MENU_ITEM_LEN 80
+#define MAX_MENU_ITEMS    64
+#define MAX_DASH_ITEMS    10
 
 struct OverlayShared {
     volatile LONG visible;
@@ -48,10 +51,34 @@ struct OverlayShared {
     wchar_t stadium_name[MAX_STR];
     wchar_t detail_text[MAX_STR];
     wchar_t image_path[MAX_IMG];  // path to stadium preview image (PNG/JPG/BMP)
+    volatile LONG menu_visible;   // 0 = hidden, 1 = shown
+    volatile LONG active_tab;     // controlled by Python app loop for now
+    volatile LONG last_input_event;
+    volatile LONG reserved0;      // menu viewport width  (runtime telemetry)
+        volatile LONG menu_item_count;          // 0..MAX_MENU_ITEMS valid items
+        volatile LONG menu_selected_index;      // highlighted row (0-based)
+        volatile LONG menu_scroll_offset;       // first visible row
+        volatile LONG reserved1;                // menu viewport height (runtime telemetry)
+        volatile LONG dashboard_item_count;
+        volatile LONG reserved2;                // swapchain output HWND (runtime telemetry)
+        wchar_t dashboard_items[MAX_DASH_ITEMS][MAX_MENU_ITEM_LEN];
+        wchar_t  menu_items[MAX_MENU_ITEMS][MAX_MENU_ITEM_LEN];
 };
 
 static HANDLE        g_hMap  = NULL;
 static OverlayShared *g_data = NULL;
+static HMODULE       g_selfModule = NULL;
+static volatile LONG g_unloading = 0;
+
+// XInput hook removed — inline hooking XInputGetState is unsafe with DLL thunks.
+// Gamepad suppression while the overlay menu is open is handled by the Python host
+// which polls XInput directly and owns the input dispatch loop.
+
+// Forward declaration
+static void Log(const char *fmt, ...);
+
+// TryInstallXInputHook removed — see comment above.
+
 
 // ---------------------------------------------------------------------------
 // Log -> %TEMP%\cgfs16_overlay.log
@@ -81,26 +108,25 @@ static void Log(const char *fmt, ...) {
 
 // ---------------------------------------------------------------------------
 // Hook state
-// Strategy:
-//   Phase 1 (inline): We patch the first 14 bytes of the proxy dxgi.dll's Present
-//                     body so the VERY FIRST call reaches our hook.
-//   Phase 2 (vtable): On that first call we restore the original bytes, save the
-//                     real function pointer, and patch FIFA's actual IDXGISwapChain
-//                     vtable slot 8. All subsequent calls go through the vtable
-//                     hook with NO trampoline — we call the restored original fn.
+// Strategy (vtable-only, ReShade-safe):
+//   HookThread creates a temporary D3D11 device+swapchain to read vtable[8]
+//   (IDXGISwapChain::Present) and installs a vtable hook there.
+//   On the first HookedPresent call we also patch FIFA's real swapchain vtable
+//   if it differs from the temporary one.
+//   We NEVER write inline bytes to the Present function body, so we cannot
+//   conflict with ReShade (or any other injected DLL) that also hooks Present.
 // ---------------------------------------------------------------------------
 typedef HRESULT (WINAPI *PFN_Present)(IDXGISwapChain*, UINT, UINT);
 
-static uint8_t    *g_presentFnAddr       = nullptr;  // proxy Present body
-static uint8_t     g_origPresentBytes[14]= {};        // saved original bytes
-static uint8_t    *g_presentTrampoline   = nullptr;  // phase-1 trampoline (freed after switch)
-static PFN_Present g_OrigPresent         = nullptr;  // = g_presentFnAddr after restore
+static PFN_Present g_OrigPresent         = nullptr;  // original vtable[8] before our hook
 
-static void      **g_fifaVtbl            = nullptr;  // FIFA's swapchain vtable
-static bool        g_hookSwitched        = false;    // phase 1 -> phase 2 done
+static void      **g_tmpVtbl             = nullptr;  // vtable of the probe swapchain
+static void      **g_fifaVtbl            = nullptr;  // FIFA's swapchain vtable (may differ)
+static bool        g_hookSwitched        = false;    // set after first real-sc patch
 
 static CRITICAL_SECTION g_drawCs;
 static LONG g_frameCount = 0;
+static bool g_d3dInitDone = false;  // shared init flag for DrawOverlay11 + DrawMenuOverlay11
 
 // ---------------------------------------------------------------------------
 // D3D11 overlay resources
@@ -163,6 +189,23 @@ struct TextTex {
 static TextTex g_ttTitle;    // "Loading Stadium" label
 static TextTex g_ttName;     // stadium name
 static TextTex g_ttDetail;   // detail / progress message
+
+// ---------------------------------------------------------------------------
+// Menu overlay: per-tab text textures and tab metadata
+// ---------------------------------------------------------------------------
+#define NUM_MENU_TABS 5
+#undef NUM_MENU_TABS
+#define NUM_MENU_TABS 4
+static TextTex g_ttTab[NUM_MENU_TABS];
+static LONG    g_menuLastActiveTab = -1;
+
+// Content list textures
+static TextTex g_ttItems[MAX_MENU_ITEMS];
+static TextTex g_ttEmpty;
+
+static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
+    L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos"
+};
 
 // ---------------------------------------------------------------------------
 // Stadium preview image (WIC -> D3D11)
@@ -476,8 +519,295 @@ static void DrawTexQuad(ID3D11DeviceContext *ctx,
     ctx->Draw(4,0);
 }
 
+// ---------------------------------------------------------------------------
+// Menu overlay: full-screen panel with tab bar
+// ---------------------------------------------------------------------------
+static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
+    LONG activeTab = g_data ? InterlockedCompareExchange(&g_data->active_tab, 0, 0) : 0;
+    if (activeTab < 0 || activeTab >= NUM_MENU_TABS) activeTab = 0;
+
+    LONG itemCount = 0, selIdx = 0, scrollOffset = 0;
+    if (g_data) {
+        itemCount = InterlockedCompareExchange(&g_data->menu_item_count, 0, 0);
+        selIdx = InterlockedCompareExchange(&g_data->menu_selected_index, 0, 0);
+        scrollOffset = InterlockedCompareExchange(&g_data->menu_scroll_offset, 0, 0);
+        if (itemCount < 0 || itemCount > MAX_MENU_ITEMS) itemCount = 0;
+        if (selIdx < 0) selIdx = 0;
+        if (scrollOffset < 0) scrollOffset = 0;
+    }
+
+    DXGI_SWAP_CHAIN_DESC scd = {};
+    sc->GetDesc(&scd);
+    float vpW = (float)(scd.BufferDesc.Width ? scd.BufferDesc.Width : 1280);
+    float vpH = (float)(scd.BufferDesc.Height ? scd.BufferDesc.Height : 720);
+    if (scd.OutputWindow) {
+        RECT rc = {};
+        if (GetClientRect(scd.OutputWindow, &rc)) {
+            LONG cw = rc.right - rc.left;
+            LONG ch = rc.bottom - rc.top;
+            if (cw > 0) vpW = (float)cw;
+            if (ch > 0) vpH = (float)ch;
+        }
+    }
+
+    if (g_data) {
+        InterlockedExchange(&g_data->reserved0, (LONG)vpW);
+        InterlockedExchange(&g_data->reserved1, (LONG)vpH);
+        InterlockedExchange(&g_data->reserved2, (LONG)(LONG_PTR)scd.OutputWindow);
+    }
+
+    ID3D11Texture2D *bb = nullptr;
+    if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) return;
+    ID3D11RenderTargetView *rtv = nullptr;
+    dev->CreateRenderTargetView(bb, nullptr, &rtv);
+    bb->Release();
+    if (!rtv) return;
+
+    // D3D resources are shared with DrawOverlay11. Use the same global flag.
+    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
+    if (!g_vs || !g_ps || !g_il || !g_vb) { rtv->Release(); return; }
+
+    for (int i = 0; i < NUM_MENU_TABS; i++)
+        UpdateTextTex(dev, g_ttTab[i], kTabLabels[i], 14, false, RGB(0xFF, 0xFF, 0xFF), 170);
+
+    ID3D11RenderTargetView *oldRTV[8] = {};
+    ID3D11DepthStencilView *oldDSV = nullptr;
+    ctx->OMGetRenderTargets(8, oldRTV, &oldDSV);
+    D3D11_VIEWPORT oldVP = {};
+    UINT nVP = 1;
+    ctx->RSGetViewports(&nVP, &oldVP);
+    ID3D11BlendState *oldBS = nullptr;
+    float oldBF[4] = {};
+    UINT oldSM = 0;
+    ctx->OMGetBlendState(&oldBS, oldBF, &oldSM);
+    ID3D11RasterizerState *oldRS = nullptr;
+    ctx->RSGetState(&oldRS);
+    ID3D11DepthStencilState *oldDSS = nullptr;
+    UINT oldSRef = 0;
+    ctx->OMGetDepthStencilState(&oldDSS, &oldSRef);
+    ID3D11VertexShader *oldVS = nullptr;
+    ctx->VSGetShader(&oldVS, nullptr, nullptr);
+    ID3D11PixelShader *oldPS = nullptr;
+    ctx->PSGetShader(&oldPS, nullptr, nullptr);
+    ID3D11InputLayout *oldIL = nullptr;
+    ctx->IAGetInputLayout(&oldIL);
+    D3D11_PRIMITIVE_TOPOLOGY oldTopo;
+    ctx->IAGetPrimitiveTopology(&oldTopo);
+    ID3D11ShaderResourceView *oldSRV = nullptr;
+    ctx->PSGetShaderResources(0, 1, &oldSRV);
+    ID3D11SamplerState *oldSamp = nullptr;
+    ctx->PSGetSamplers(0, 1, &oldSamp);
+
+    ctx->OMSetRenderTargets(1, &rtv, nullptr);
+    D3D11_VIEWPORT vp = {0.f, 0.f, vpW, vpH, 0.f, 1.f};
+    ctx->RSSetViewports(1, &vp);
+    ctx->OMSetBlendState(g_bs, nullptr, 0xFFFFFFFF);
+    ctx->RSSetState(g_rs);
+    ctx->OMSetDepthStencilState(g_dss, 0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+    const float MENU_RATIO_W = 0.88f;
+    const float MENU_RATIO_H = 0.90f;
+    const float MENU_MIN_W = 1240.f;
+    const float MENU_MIN_H = 760.f;
+    const float VIEW_MARGIN = 20.f;
+    const float availW = (std::max)(320.f, vpW - (2.f * VIEW_MARGIN));
+    const float availH = (std::max)(240.f, vpH - (2.f * VIEW_MARGIN));
+    const float MW = (std::min)(availW, (std::max)(MENU_MIN_W, floorf(vpW * MENU_RATIO_W)));
+    const float MH = (std::min)(availH, (std::max)(MENU_MIN_H, floorf(vpH * MENU_RATIO_H)));
+    const float mx = floorf((vpW - MW) / 2.f);
+    const float my = floorf((vpH - MH) / 2.f);
+    const float TAB_H = 56.f;
+    const float TAB_W = floorf(MW / NUM_MENU_TABS);
+    const float DASH_H = (std::max)(220.f, (std::min)(320.f, floorf(MH * 0.28f)));
+    const float CONT_Y = my + TAB_H;
+    const float CONT_H = MH - TAB_H;
+    const float ITEM_H = 28.f;
+    const float LIST_X = mx + 4.f;
+    const float LIST_Y = CONT_Y + 4.f;
+    const float SCROLL_W = 12.f;
+    const float SCROLL_GAP = 6.f;
+    const float LIST_W = MW - 8.f - SCROLL_W - SCROLL_GAP;
+    const float LIST_YMAX = my + MH - DASH_H - 14.f;
+    const float SCROLL_X = LIST_X + LIST_W + SCROLL_GAP;
+    const float SCROLL_Y = LIST_Y;
+    const float SCROLL_H = (std::max)(1.f, LIST_YMAX - LIST_Y);
+    const float DASH_X = mx + 10.f;
+    const float DASH_Y = my + MH - DASH_H - 6.f;
+    const float DASH_W = MW - 20.f;
+
+    const int visibleRows = (std::max)(1, (int)floorf((LIST_YMAX - LIST_Y) / ITEM_H));
+    const int maxScroll = (std::max)(0, (int)itemCount - visibleRows);
+    if (scrollOffset > maxScroll) scrollOffset = maxScroll;
+
+    ctx->VSSetShader(g_vs, nullptr, 0);
+    ctx->PSSetShader(g_ps, nullptr, 0);
+    ctx->IASetInputLayout(g_il);
+    UINT stride = sizeof(Vtx11), offset = 0;
+    ctx->IASetVertexBuffers(0, 1, &g_vb, &stride, &offset);
+
+    Vtx11 verts[512];
+    int n = 0;
+    auto R = [&](float x, float y, float w, float h, DWORD col) {
+        PushQuad(verts, n, x, y, w, h, vpW, vpH, col);
+    };
+
+    R(0.f, 0.f, vpW, vpH, 0x99040B13);
+    R(mx, my, MW, MH, 0xF4101828);
+    R(mx, my, MW, 2.f, 0xFF3399FF);
+    R(mx, my + MH - 2.f, MW, 2.f, 0xFF3399FF);
+    R(mx, my, 2.f, MH, 0xFF3399FF);
+    R(mx + MW - 2.f, my, 2.f, MH, 0xFF3399FF);
+
+    for (int i = 0; i < NUM_MENU_TABS; i++) {
+        float tx = mx + 2.f + i * TAB_W;
+        bool active = (i == (int)activeTab);
+        R(tx, my + 2.f, TAB_W, TAB_H - 2.f, active ? 0xFF1C3E60 : 0xFF0C1620);
+        if (i > 0) R(tx, my + 2.f, 1.f, TAB_H - 2.f, 0xFF243654);
+        if (active) R(tx + 6.f, my + TAB_H - 4.f, TAB_W - 12.f, 4.f, 0xFF3399FF);
+    }
+
+    R(mx + 2.f, my + TAB_H, MW - 4.f, 2.f, 0xFF3399FF);
+    R(mx + 2.f, CONT_Y + 2.f, MW - 4.f, CONT_H - 4.f, 0xF2080E18);
+    R(mx + 8.f, my + MH - DASH_H - 12.f, MW - 16.f, 2.f, 0xFF2A537D);
+    R(DASH_X, DASH_Y, DASH_W, DASH_H, 0xE40C1622);
+    R(DASH_X, DASH_Y, DASH_W, 2.f, 0xFF3399FF);
+
+    for (LONG i = scrollOffset; i < itemCount; i++) {
+        float iy = LIST_Y + (float)(i - scrollOffset) * ITEM_H;
+        if (iy + ITEM_H > LIST_YMAX) break;
+        if (i == selIdx) {
+            R(LIST_X, iy, LIST_W, ITEM_H - 2.f, 0xFF1C3E60);
+            R(LIST_X, iy, 3.f, ITEM_H - 2.f, 0xFF3399FF);
+        }
+    }
+
+    R(SCROLL_X, SCROLL_Y, SCROLL_W, SCROLL_H, 0xCC0E1A26);
+    R(SCROLL_X, SCROLL_Y, SCROLL_W, 1.f, 0xFF2A537D);
+    R(SCROLL_X, SCROLL_Y + SCROLL_H - 1.f, SCROLL_W, 1.f, 0xFF2A537D);
+    R(SCROLL_X, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
+    R(SCROLL_X + SCROLL_W - 1.f, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
+
+    if (maxScroll > 0) {
+        float thumbH = (std::max)(22.f, SCROLL_H * ((float)visibleRows / (float)itemCount));
+        if (thumbH > SCROLL_H) thumbH = SCROLL_H;
+        float thumbRange = (std::max)(1.f, SCROLL_H - thumbH);
+        float thumbY = SCROLL_Y + ((float)scrollOffset / (float)maxScroll) * thumbRange;
+        R(SCROLL_X + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
+        R(SCROLL_X + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
+    }
+
+    D3D11_MAPPED_SUBRESOURCE ms = {};
+    if (SUCCEEDED(ctx->Map(g_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
+        memcpy(ms.pData, verts, n * sizeof(Vtx11));
+        ctx->Unmap(g_vb, 0);
+    }
+    for (int i = 0; i < n; i += 4) ctx->Draw(4, i);
+
+    if (g_vsT && g_psT && g_ilT && g_vbT && g_samp) {
+        ctx->VSSetShader(g_vsT, nullptr, 0);
+        ctx->PSSetShader(g_psT, nullptr, 0);
+        ctx->IASetInputLayout(g_ilT);
+        ctx->PSSetSamplers(0, 1, &g_samp);
+
+        for (int i = 0; i < NUM_MENU_TABS; i++) {
+            if (!g_ttTab[i].srv) continue;
+            float tx = mx + 2.f + i * TAB_W;
+            float lx = tx + floorf((TAB_W - (float)g_ttTab[i].width) / 2.f);
+            float ly = my + 2.f + floorf((TAB_H - 2.f - (float)g_ttTab[i].height) / 2.f);
+            DrawTexQuad(ctx, lx, ly, (float)g_ttTab[i].width, (float)g_ttTab[i].height, vpW, vpH, g_ttTab[i].srv);
+        }
+
+        if (activeTab != g_menuLastActiveTab) {
+            for (int i = 0; i < MAX_MENU_ITEMS; i++) {
+                if (g_ttItems[i].tex) { g_ttItems[i].tex->Release(); g_ttItems[i].tex = nullptr; }
+                if (g_ttItems[i].srv) { g_ttItems[i].srv->Release(); g_ttItems[i].srv = nullptr; }
+                g_ttItems[i].width = g_ttItems[i].height = 0;
+                g_ttItems[i].content[0] = L'\0';
+            }
+        }
+        g_menuLastActiveTab = activeTab;
+
+        for (int i = (int)itemCount; i < MAX_MENU_ITEMS; i++) {
+            if (g_ttItems[i].tex) { g_ttItems[i].tex->Release(); g_ttItems[i].tex = nullptr; }
+            if (g_ttItems[i].srv) { g_ttItems[i].srv->Release(); g_ttItems[i].srv = nullptr; }
+            g_ttItems[i].width = g_ttItems[i].height = 0;
+            g_ttItems[i].content[0] = L'\0';
+        }
+
+        for (LONG i = 0; i < itemCount; i++) {
+            if (!g_data) break;
+            wchar_t item[MAX_MENU_ITEM_LEN] = {};
+            wcsncpy_s(item, g_data->menu_items[i], MAX_MENU_ITEM_LEN - 1);
+            UpdateTextTex(dev, g_ttItems[i], item, 14, false, RGB(0xCC, 0xDD, 0xEE), (int)(LIST_W - 20.f));
+        }
+
+        for (LONG i = scrollOffset; i < itemCount; i++) {
+            if (!g_ttItems[i].srv) continue;
+            float iy = LIST_Y + (float)(i - scrollOffset) * ITEM_H;
+            if (iy + ITEM_H > LIST_YMAX) break;
+            float ty = iy + floorf((ITEM_H - 2.f - (float)g_ttItems[i].height) / 2.f);
+            DrawTexQuad(ctx, LIST_X + 12.f, ty, (float)g_ttItems[i].width, (float)g_ttItems[i].height, vpW, vpH, g_ttItems[i].srv);
+        }
+
+        // Dedicated lower dashboard container (persistent across all tabs)
+        LONG dashCount = 0;
+        if (g_data) {
+            dashCount = InterlockedCompareExchange(&g_data->dashboard_item_count, 0, 0);
+            if (dashCount < 0) dashCount = 0;
+            if (dashCount > MAX_DASH_ITEMS) dashCount = MAX_DASH_ITEMS;
+        }
+        float y = DASH_Y + 10.f;
+        for (LONG i = 0; i < dashCount; i++) {
+            wchar_t line[MAX_MENU_ITEM_LEN] = {};
+            if (g_data)
+                wcsncpy_s(line, g_data->dashboard_items[i], MAX_MENU_ITEM_LEN - 1);
+            UpdateTextTex(dev, g_ttItems[MAX_MENU_ITEMS - 1], line, 14, false,
+                          RGB(0xC6, 0xDA, 0xED), (int)(DASH_W - 24.f));
+            if (g_ttItems[MAX_MENU_ITEMS - 1].srv) {
+                DrawTexQuad(ctx, DASH_X + 12.f, y,
+                            (float)g_ttItems[MAX_MENU_ITEMS - 1].width,
+                            (float)g_ttItems[MAX_MENU_ITEMS - 1].height,
+                            vpW, vpH, g_ttItems[MAX_MENU_ITEMS - 1].srv);
+                y += (float)g_ttItems[MAX_MENU_ITEMS - 1].height + 3.f;
+            }
+        }
+
+        if (itemCount == 0) {
+            UpdateTextTex(dev, g_ttEmpty, L"No items available", 14, false, RGB(0x66, 0x88, 0xAA), 400);
+            if (g_ttEmpty.srv) {
+                float ex = mx + floorf((MW - (float)g_ttEmpty.width) / 2.f);
+                float ey = CONT_Y + floorf((CONT_H - (float)g_ttEmpty.height) / 2.f);
+                DrawTexQuad(ctx, ex, ey, (float)g_ttEmpty.width, (float)g_ttEmpty.height, vpW, vpH, g_ttEmpty.srv);
+            }
+        }
+    }
+
+    ctx->OMSetRenderTargets(8, oldRTV, oldDSV);
+    ctx->RSSetViewports(1, &oldVP);
+    ctx->OMSetBlendState(oldBS, oldBF, oldSM);
+    ctx->RSSetState(oldRS);
+    ctx->OMSetDepthStencilState(oldDSS, oldSRef);
+    ctx->VSSetShader(oldVS, nullptr, 0);
+    ctx->PSSetShader(oldPS, nullptr, 0);
+    ctx->IASetInputLayout(oldIL);
+    ctx->IASetPrimitiveTopology(oldTopo);
+    ctx->PSSetShaderResources(0, 1, &oldSRV);
+    ctx->PSSetSamplers(0, 1, &oldSamp);
+    for (auto *r : oldRTV) if (r) r->Release();
+    if (oldDSV) oldDSV->Release();
+    if (oldBS) oldBS->Release();
+    if (oldRS) oldRS->Release();
+    if (oldDSS) oldDSS->Release();
+    if (oldVS) oldVS->Release();
+    if (oldPS) oldPS->Release();
+    if (oldIL) oldIL->Release();
+    if (oldSRV) oldSRV->Release();
+    if (oldSamp) oldSamp->Release();
+    rtv->Release();
+}
+
 static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
-    // ── Read shared memory ─────────────────────────────────────────────────
     wchar_t stadium[MAX_STR]={}, detail[MAX_STR]={}, imgPath[MAX_IMG]={};
     float pct=0.f;
     if (g_data) {
@@ -499,8 +829,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     if (!rtv) return;
 
     // ── Init D3D resources once ────────────────────────────────────────────
-    static bool s_init=false;
-    if (!s_init) s_init=InitD3D11Overlay(dev);
+    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
     if (!g_vs||!g_ps||!g_il||!g_vb) { rtv->Release(); return; }
 
     // ── Init COM once (for WIC) on this thread ─────────────────────────────
@@ -654,55 +983,67 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
 // Hooked IDXGISwapChain::Present
 // ---------------------------------------------------------------------------
 static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT flags) {
-    // Phase 1 -> Phase 2 switch: on the very first call we:
-    //   a) restore the inline hook bytes (so g_presentFnAddr is the clean original again),
-    //   b) patch FIFA's real swapchain vtable[8] -> HookedPresent (vtable hook),
-    //   c) record g_OrigPresent = original function pointer (no trampoline needed).
+    if (InterlockedCompareExchange(&g_unloading, 0, 0) != 0)
+        return g_OrigPresent ? g_OrigPresent(sc, syncInterval, flags) : S_OK;
+
+    // If FIFA's real swapchain differs from our probe swapchain, patch its vtable too.
     if (!g_hookSwitched) {
         g_hookSwitched = true;
-
-        // Restore inline hook (original bytes back in place)
-        DWORD old = 0;
-        if (VirtualProtect(g_presentFnAddr, 14, PAGE_EXECUTE_READWRITE, &old)) {
-            memcpy(g_presentFnAddr, g_origPresentBytes, 14);
-            VirtualProtect(g_presentFnAddr, 14, old, &old);
-            FlushInstructionCache(GetCurrentProcess(), g_presentFnAddr, 14);
+        void **scVtbl = *reinterpret_cast<void***>(sc);
+        if (scVtbl != g_tmpVtbl) {
+            g_fifaVtbl = scVtbl;
+            DWORD old = 0;
+            if (VirtualProtect(&g_fifaVtbl[8], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+                g_fifaVtbl[8] = reinterpret_cast<void*>(HookedPresent);
+                VirtualProtect(&g_fifaVtbl[8], sizeof(void*), old, &old);
+            }
+            Log("[Present] patched FIFA vtable sc=%p vtbl=%p origFn=%p",
+                sc, g_fifaVtbl, g_OrigPresent);
+        } else {
+            g_fifaVtbl = g_tmpVtbl;
+            Log("[Present] FIFA uses same vtable as probe sc=%p", sc);
         }
-        if (g_presentTrampoline) {
-            VirtualFree(g_presentTrampoline, 0, MEM_RELEASE);
-            g_presentTrampoline = nullptr;
-        }
-        // Original function pointer = the (now restored) proxy Present body
-        g_OrigPresent = reinterpret_cast<PFN_Present>(g_presentFnAddr);
-
-        // Patch FIFA's actual swapchain vtable
-        g_fifaVtbl = *reinterpret_cast<void***>(sc);
-        if (VirtualProtect(&g_fifaVtbl[8], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
-            g_fifaVtbl[8] = reinterpret_cast<void*>(HookedPresent);
-            VirtualProtect(&g_fifaVtbl[8], sizeof(void*), old, &old);
-        }
-        Log("[Present] switched to vtable hook sc=%p vtbl=%p origFn=%p",
-            sc, g_fifaVtbl, g_OrigPresent);
     }
 
     LONG n = InterlockedIncrement(&g_frameCount);
     if (n==1 || (n%600)==0)
-        Log("[Present] frame=%ld visible=%d", n, g_data?(int)g_data->visible:-1);
+        Log("[Present] frame=%ld visible=%d menu=%d", n,
+            g_data?(int)g_data->visible:-1,
+            g_data?(int)g_data->menu_visible:-1);
 
-    if (g_data && InterlockedCompareExchange(&g_data->visible,0,0) != 0) {
-        ID3D11Device *dev=nullptr;
-        if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device),(void**)&dev))) {
-            ID3D11DeviceContext *ctx=nullptr;
-            dev->GetImmediateContext(&ctx);
-            EnterCriticalSection(&g_drawCs);
-            __try { DrawOverlay11(sc,dev,ctx); }
-            __except(EXCEPTION_EXECUTE_HANDLER){ Log("[Present] EXCEPTION DrawOverlay11"); }
-            LeaveCriticalSection(&g_drawCs);
-            ctx->Release(); dev->Release();
+    // XInput hook is installed once from HookThread — no per-frame call needed.
+
+    EnterCriticalSection(&g_drawCs);
+    HRESULT presentResult = S_OK;
+    __try {
+        if (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0) {
+            ID3D11Device *dev = nullptr;
+            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
+                ID3D11DeviceContext *ctx = nullptr;
+                dev->GetImmediateContext(&ctx);
+                DrawOverlay11(sc, dev, ctx);
+                ctx->Release(); dev->Release();
+            }
         }
+        if (g_data && InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0) {
+            ID3D11Device *dev = nullptr;
+            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
+                ID3D11DeviceContext *ctx = nullptr;
+                dev->GetImmediateContext(&ctx);
+                DrawMenuOverlay11(sc, dev, ctx);
+                ctx->Release(); dev->Release();
+            }
+        }
+        // Call original Present inside the SEH guard so any AV in the
+        // chain below is caught and logged rather than crashing silently.
+        presentResult = g_OrigPresent(sc, syncInterval, flags);
     }
-    // Call the RESTORED original proxy Present (no trampoline, no RIP-relative issues)
-    return g_OrigPresent(sc, syncInterval, flags);
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        Log("[Present] EXCEPTION (code=0x%08lX)", GetExceptionCode());
+        presentResult = DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+    }
+    LeaveCriticalSection(&g_drawCs);
+    return presentResult;
 }
 
 // ---------------------------------------------------------------------------
@@ -739,8 +1080,10 @@ static void RemoveInlineHook(uint8_t *fn, uint8_t *tramp, const uint8_t *saved) 
     VirtualFree(tramp,0,MEM_RELEASE);
 }
 
+static bool TryInstallXInputHook() { return false; }
+
 // ---------------------------------------------------------------------------
-// Hook setup: temp D3D11 device+swapchain -> get Present addr -> inline hook
+// Hook setup: temp D3D11 device+swapchain -> vtable hook (NO inline bytes)
 // ---------------------------------------------------------------------------
 static DWORD WINAPI HookThread(LPVOID) {
     Log("[HookThread] started pid=%lu", GetCurrentProcessId());
@@ -777,25 +1120,37 @@ static DWORD WINAPI HookThread(LPVOID) {
         return 0;
     }
 
-    void **vt=*reinterpret_cast<void***>(tmpSC);
-    g_presentFnAddr=reinterpret_cast<uint8_t*>(vt[8]); // IDXGISwapChain::Present = slot 8
+    // Install vtable hook on the probe swapchain — no inline byte patching.
+    // This is safe with ReShade and any other injected hook because we never
+    // overwrite function body bytes that another hook may have already patched.
+    void **vt = *reinterpret_cast<void***>(tmpSC);
+    g_tmpVtbl = vt;
 
+    // Log where Present lives (for diagnostics)
+    uint8_t *presentAddr = reinterpret_cast<uint8_t*>(vt[8]);
     MEMORY_BASIC_INFORMATION mbi={};
-    VirtualQuery(g_presentFnAddr,&mbi,sizeof(mbi));
+    VirtualQuery(presentAddr,&mbi,sizeof(mbi));
     char modPath[MAX_PATH]="(unknown)";
     GetModuleFileNameA((HMODULE)mbi.AllocationBase,modPath,MAX_PATH);
-    Log("[HookThread] SwapChain::Present at %p in %s", g_presentFnAddr, modPath);
+    Log("[HookThread] SwapChain::Present at %p in %s", presentAddr, modPath);
 
+    // Save original vtable[8] then replace with our hook
+    g_OrigPresent = reinterpret_cast<PFN_Present>(vt[8]);
+    DWORD old = 0;
+    if (VirtualProtect(&vt[8], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+        vt[8] = reinterpret_cast<void*>(HookedPresent);
+        VirtualProtect(&vt[8], sizeof(void*), old, &old);
+        Log("[HookThread] vtable hook installed on probe sc=%p vt=%p origFn=%p",
+            tmpSC, vt, g_OrigPresent);
+    } else {
+        Log("[HookThread] VirtualProtect vtable failed err=%lu", GetLastError());
+        g_OrigPresent = nullptr;
+    }
+
+    // Keep probe SC alive until FIFA's first Present (then g_hookSwitched handles the rest).
+    // Release device; the SC holds its own ref on the device internally.
     tmpSC->Release(); if (tmpDev) tmpDev->Release();
     DestroyWindow(hw); UnregisterClassW(wc.lpszClassName,wc.hInstance);
-
-    g_presentTrampoline=InstallInlineHook(g_presentFnAddr,(void*)HookedPresent,g_origPresentBytes);
-    if (g_presentTrampoline) {
-        g_OrigPresent=reinterpret_cast<PFN_Present>(g_presentTrampoline);
-        Log("[HookThread] Present inline hook installed ok (tramp=%p)",g_presentTrampoline);
-    } else {
-        Log("[HookThread] Present inline hook FAILED");
-    }
 
     Log("[HookThread] done");
     return 0;
@@ -804,12 +1159,24 @@ static DWORD WINAPI HookThread(LPVOID) {
 // ---------------------------------------------------------------------------
 // DllMain
 // ---------------------------------------------------------------------------
-BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
+BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hInst);
         InitializeCriticalSection(&g_drawCs);
+        InterlockedExchange(&g_unloading, 0);
         InitLog();
         Log("[DllMain] ATTACH pid=%lu", GetCurrentProcessId());
+
+        HMODULE selfModule = NULL;
+        if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                               GET_MODULE_HANDLE_EX_FLAG_PIN,
+                               reinterpret_cast<LPCWSTR>(&DllMain),
+                               &selfModule)) {
+            g_selfModule = selfModule;
+            Log("[DllMain] module pinned hmod=%p", g_selfModule);
+        } else {
+            Log("[DllMain] module pin failed err=%lu", GetLastError());
+        }
 
         g_hMap=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,
             PAGE_READWRITE,0,sizeof(OverlayShared),SHMEM_NAME);
@@ -823,28 +1190,14 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID) {
         if (ht) CloseHandle(ht);
 
     } else if (reason==DLL_PROCESS_DETACH) {
-        Log("[DllMain] DETACH");
-        if (g_hookSwitched) {
-            // Restore vtable hook
-            if (g_fifaVtbl) {
-                DWORD old = 0;
-                if (VirtualProtect(&g_fifaVtbl[8], sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
-                    g_fifaVtbl[8] = reinterpret_cast<void*>(g_OrigPresent);
-                    VirtualProtect(&g_fifaVtbl[8], sizeof(void*), old, &old);
-                }
-            }
-        } else {
-            // Still in phase 1 — restore inline hook
-            RemoveInlineHook(g_presentFnAddr, g_presentTrampoline, g_origPresentBytes);
-        }
-        // Do NOT release D3D11 resources — FIFA is shutting down, releasing COM
-        // objects owned by its device here can cause secondary crashes.
-        EnterCriticalSection(&g_drawCs);
-        if (g_data){ UnmapViewOfFile(g_data); g_data=nullptr; }
-        if (g_hMap){ CloseHandle(g_hMap);     g_hMap=nullptr; }
-        LeaveCriticalSection(&g_drawCs);
-        DeleteCriticalSection(&g_drawCs);
-        DeleteCriticalSection(&g_logCs);
+        Log("[DllMain] DETACH reserved=%p", reserved);
+        InterlockedExchange(&g_unloading, 1);
+        // Do NOT restore hooks during DETACH — game threads may still be
+        // executing through them, causing a race condition crash. The process
+        // is dying; the OS will reclaim all memory and handles automatically.
+        // Null g_data first so any concurrent HookedPresent/HookedXInput call
+        // becomes a safe no-op.
+        g_data = nullptr;
     }
     return TRUE;
 }

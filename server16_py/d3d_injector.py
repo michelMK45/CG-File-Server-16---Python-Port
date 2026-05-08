@@ -29,6 +29,9 @@ log = logging.getLogger(__name__)
 _SHMEM_NAME = "Local\\CGFS16_Overlay_v1"
 _MAX_STR    = 256
 _MAX_IMG    = 512
+_MAX_MENU_ITEM_LEN = 80
+_MAX_MENU_ITEMS    = 64
+_MAX_DASH_ITEMS    = 10
 
 
 class _OverlayShared(ctypes.Structure):
@@ -38,6 +41,18 @@ class _OverlayShared(ctypes.Structure):
         ("stadium_name",  ctypes.c_wchar * _MAX_STR),
         ("detail_text",   ctypes.c_wchar * _MAX_STR),
         ("image_path",    ctypes.c_wchar * _MAX_IMG),  # abs path to preview image
+        ("menu_visible",  ctypes.c_long),           # 0 = menu hidden, 1 = menu shown
+        ("active_tab",    ctypes.c_long),           # overlay tab index
+        ("last_input_event", ctypes.c_long),        # app-defined input event id
+        ("reserved0",     ctypes.c_long),           # menu viewport width telemetry
+            ("menu_item_count",     ctypes.c_long),    # 0..MAX_MENU_ITEMS valid items
+            ("menu_selected_index", ctypes.c_long),    # highlighted row
+            ("menu_scroll_offset",  ctypes.c_long),    # first visible row
+            ("reserved1",           ctypes.c_long),    # menu viewport height telemetry
+            ("dashboard_item_count", ctypes.c_long),
+            ("reserved2",            ctypes.c_long),    # menu swapchain output hwnd telemetry
+            ("dashboard_items",      (ctypes.c_wchar * _MAX_MENU_ITEM_LEN) * _MAX_DASH_ITEMS),
+            ("menu_items",          (ctypes.c_wchar * _MAX_MENU_ITEM_LEN) * _MAX_MENU_ITEMS),
     ]
 
 
@@ -180,6 +195,76 @@ class D3DOverlayInjector:
         if self._shared is not None:
             self._shared.visible = 0
 
+    def set_menu_state(self, visible: bool, active_tab: int) -> None:
+        if not self._ready or self._shared is None:
+            return
+        self._shared.active_tab = max(0, int(active_tab))
+        self._shared.menu_visible = 1 if visible else 0
+
+    def push_menu_event(self, event_id: int) -> None:
+        if not self._ready or self._shared is None:
+            return
+        self._shared.last_input_event = int(event_id)
+
+    def set_menu_content(self, items: list, selected: int = 0, scroll: int = 0) -> None:
+        if not self._ready or self._shared is None:
+            return
+        count = min(len(items), _MAX_MENU_ITEMS)
+        for i in range(count):
+            text = str(items[i])[:_MAX_MENU_ITEM_LEN - 1]
+            self._shared.menu_items[i].value = text
+        for i in range(count, _MAX_MENU_ITEMS):
+            self._shared.menu_items[i].value = ""
+        self._shared.menu_item_count = count
+        if count <= 0:
+            self._shared.menu_selected_index = 0
+            self._shared.menu_scroll_offset = 0
+            return
+        max_selected = count - 1
+        safe_selected = max(0, min(int(selected), max_selected))
+        safe_scroll = max(0, min(int(scroll), safe_selected))
+        self._shared.menu_selected_index = safe_selected
+        self._shared.menu_scroll_offset = safe_scroll
+
+    def set_menu_selection(self, selected: int, scroll: int) -> None:
+        if not self._ready or self._shared is None:
+            return
+        count = int(self._shared.menu_item_count)
+        if count <= 0:
+            self._shared.menu_selected_index = 0
+            self._shared.menu_scroll_offset = 0
+            return
+        max_selected = count - 1
+        safe_selected = max(0, min(int(selected), max_selected))
+        safe_scroll = max(0, min(int(scroll), safe_selected))
+        self._shared.menu_selected_index = safe_selected
+        self._shared.menu_scroll_offset = safe_scroll
+
+    def set_dashboard_content(self, items: list[str]) -> None:
+        if not self._ready or self._shared is None:
+            return
+        count = min(len(items), _MAX_DASH_ITEMS)
+        for i in range(count):
+            text = str(items[i])[:_MAX_MENU_ITEM_LEN - 1]
+            self._shared.dashboard_items[i].value = text
+        for i in range(count, _MAX_DASH_ITEMS):
+            self._shared.dashboard_items[i].value = ""
+        self._shared.dashboard_item_count = count
+
+    def get_menu_metrics(self) -> tuple[int, int, int]:
+        """Return runtime menu telemetry as (output_hwnd, viewport_w, viewport_h)."""
+        if not self._ready or self._shared is None:
+            return (0, 0, 0)
+        vw = int(self._shared.reserved0)
+        vh = int(self._shared.reserved1)
+        # Shared from x86 DLL as LONG; normalize into an unsigned handle value.
+        hwnd = int(ctypes.c_uint32(int(self._shared.reserved2)).value)
+        if vw < 0:
+            vw = 0
+        if vh < 0:
+            vh = 0
+        return (hwnd, vw, vh)
+
     def reset_injected(self) -> None:
         """Call when FIFA exits so we re-inject on the next launch."""
         with self._lock:
@@ -227,11 +312,25 @@ class D3DOverlayInjector:
         self._shared_ptr = ptr
         self._shared     = _OverlayShared.from_address(ptr)
         # Reset to hidden on startup
-        self._shared.visible       = 0
-        self._shared.progress_x100 = 0
-        self._shared.stadium_name  = ""
-        self._shared.detail_text   = ""
-        self._shared.image_path    = ""
+        self._shared.visible          = 0
+        self._shared.progress_x100    = 0
+        self._shared.stadium_name     = ""
+        self._shared.detail_text      = ""
+        self._shared.image_path       = ""
+        self._shared.menu_visible     = 0
+        self._shared.active_tab       = 0
+        self._shared.last_input_event = 0
+        self._shared.reserved0        = 0
+        self._shared.menu_item_count = 0
+        self._shared.menu_selected_index = 0
+        self._shared.menu_scroll_offset = 0
+        self._shared.reserved1 = 0
+        self._shared.dashboard_item_count = 0
+        self._shared.reserved2 = 0
+        for i in range(_MAX_DASH_ITEMS):
+            self._shared.dashboard_items[i].value = ""
+        for i in range(_MAX_MENU_ITEMS):
+            self._shared.menu_items[i].value = ""
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))

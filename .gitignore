@@ -24,6 +24,7 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+.github/
 
 # Local packaging leftovers
 *.toc

@@ -77,5 +77,11 @@ if %ERRORLEVEL% neq 0 (
     exit /b %ERRORLEVEL%
 )
 echo BUILD OK: %OUT2%
+REM ── Copy outputs to bin/ (used by the Python app at runtime) ────────────────
+set "BINDIR=%~dp0..\..\bin"
+if not exist "%BINDIR%" mkdir "%BINDIR%"
+echo Copying outputs to %BINDIR% ...
+copy /Y "%OUTDIR%\cgfs16_overlay.dll" "%BINDIR%\cgfs16_overlay.dll" > nul
+copy /Y "%OUTDIR%\cgfs16_inject.exe"  "%BINDIR%\cgfs16_inject.exe"  > nul
 echo.
 exit /b 0
