@@ -1,5 +1,9 @@
 # CGFS 16 Server 16 Python Port
 
+<span style="color:red">
+This is a fork from the orignal project, as the original author stopped developing the tool. So the community can continue.
+</span>
+
 Python conversion of the original CGFS 16 Server 16 tool for FIFA 16.
 
 This project is a community-friendly, public rewrite of the classic FIFA 16 Server 16 workflow. It provides a Windows desktop control panel and in-game overlay for managing stadium assignments, scoreboards, TV logos, movies, chants, and camera packages while FIFA 16 is running.
