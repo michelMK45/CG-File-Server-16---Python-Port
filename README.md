@@ -1,8 +1,6 @@
 # CGFS 16 Server 16 Python Port
 
-<span style="color:red">
-This is a fork from the orignal project, as the original author stopped developing the tool. So the community can continue.
-</span>
+⚠This is a fork from the orignal project, as the original author stopped developing the tool. So the community can continue.
 
 Python conversion of the original CGFS 16 Server 16 tool for FIFA 16.
 
