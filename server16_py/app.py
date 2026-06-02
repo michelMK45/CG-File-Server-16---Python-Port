@@ -69,7 +69,7 @@ KEYEVENTF_KEYUP = 0x0002
 
 
 class Server16App(tk.Tk):
-    UPDATE_REPO_OWNER = "igor1043"
+    UPDATE_REPO_OWNER = "michelMK45"
     UPDATE_REPO_NAME = "CG-File-Server-16---Python-Port"
 
     def __init__(self) -> None:

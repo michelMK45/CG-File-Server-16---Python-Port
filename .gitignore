@@ -40,3 +40,4 @@ localpycs/
 *.ilk
 *.exp
 *.lib
+.github/agents/copilot-instructions.md.agent.md
