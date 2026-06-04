@@ -314,6 +314,7 @@ class StadiumRuntime:
             ("Copying day textures", lambda: copy_if_exists(stad / "texture_day.rx3", dest / "stadium" / f"stadium_{injid}_1_textures.rx3")),
             ("Copying night textures", lambda: copy_if_exists(stad / "texture_night.rx3", dest / "stadium" / f"stadium_{injid}_3_textures.rx3")),
             ("Copying entrance scene", lambda: copy_if_exists(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat", app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")),
+            ("Copying gameplay camera", lambda: (copy_if_exists(stad / "GameplayCamGBD" / "bcgameplay_176.dat", app.exedir / "data" / "bcdata" / "camera" / "bcgameplay_176.dat"), copy_if_exists(stad / "GameplayCamGBD" / "bcgameplay_261.dat", app.exedir / "data" / "bcdata" / "camera" / "bcgameplay_261.dat"))),
             ("Copying crowd day", lambda: copy_if_exists(stad / "crowd_day.dat", dest / "crowdplacement" / f"crowd_{injid}_1.dat")),
             ("Copying crowd night", lambda: copy_if_exists(stad / "crowd_night.dat", dest / "crowdplacement" / f"crowd_{injid}_3.dat")),
         ]
