@@ -84,20 +84,11 @@ class SessionIniFile:
         self._sections: dict[str, dict[str, str]] = {}
         self._section_names: dict[str, str] = {}
         self._last_mtime_ns: int | None = None
-        # Pending deletions: set of (canonical_section, normalized_key) pairs.
-        # Populated by delete_key() and consumed (cleared) by save().
-        # This ensures that if _reload_if_needed() runs between delete_key()
-        # and save() — e.g. via the editor's 3-second auto-refresh — the
-        # deleted keys are not silently re-introduced from disk.
-        self._pending_deletes: set[tuple[str, str]] = set()
         self._load()
 
     def _load(self) -> None:
         self._sections = {}
         self._section_names = {}
-        # Do NOT clear _pending_deletes here. Deletions are an in-flight intent
-        # that must survive disk reloads until save() actually commits them.
-        # _pending_deletes is only cleared in save() after the file is written.
         if not self.path.exists():
             self._last_mtime_ns = None
             return
@@ -144,18 +135,13 @@ class SessionIniFile:
     def _reload_if_needed(self, force: bool = False) -> None:
         if force:
             self._load()
-        else:
-            try:
-                current_mtime = self.path.stat().st_mtime_ns
-            except OSError:
-                current_mtime = None
-            if current_mtime == self._last_mtime_ns:
-                return
+            return
+        try:
+            current_mtime = self.path.stat().st_mtime_ns
+        except OSError:
+            current_mtime = None
+        if current_mtime != self._last_mtime_ns:
             self._load()
-        # Re-apply any pending deletes so that in-memory state stays consistent
-        # even after a disk reload triggered between delete_key() and save().
-        for canonical, normalized_key in self._pending_deletes:
-            self._sections.get(canonical, {}).pop(normalized_key, None)
 
     def _resolve_section_name(self, section: str) -> str | None:
         self._reload_if_needed()
@@ -185,9 +171,6 @@ class SessionIniFile:
         pending: dict[str, dict[str, str]] = {}
         for section, values in self._sections.items():
             pending[section] = dict(values)
-        # Snapshot pending deletions so the merge step below can skip them
-        # even if _load() re-reads them from disk.
-        pending_deletes = set(self._pending_deletes)
         try:
             current_mtime = self.path.stat().st_mtime_ns
         except OSError:
@@ -203,14 +186,7 @@ class SessionIniFile:
                     self._section_names[section_key] = section
                     self._sections[section] = {}
                 for key, value in values.items():
-                    # Skip keys that were explicitly deleted — do not let a
-                    # stale disk version resurrect them during the merge.
-                    if (canonical, key) not in pending_deletes:
-                        self._sections.setdefault(canonical, {})[key] = value
-        # Apply any remaining pending deletes against the (possibly reloaded) state.
-        for canonical, normalized_key in pending_deletes:
-            self._sections.get(canonical, {}).pop(normalized_key, None)
-        self._pending_deletes.clear()
+                    self._sections.setdefault(canonical, {})[key] = value
         lines: list[str] = []
         for section, values in self._sections.items():
             lines.append(f"[{section}]")
@@ -226,26 +202,12 @@ class SessionIniFile:
             self._last_mtime_ns = None
 
     def delete_key(self, key: str, section: str) -> None:
-        # Do NOT force-reload here. A force-reload updates _last_mtime_ns,
-        # which causes save() to think the disk is up-to-date and skip its
-        # own merge step — but if _reload_if_needed() fires again between
-        # this call and save() (e.g. the editor's 3-second auto-refresh),
-        # the just-deleted key gets silently re-read from disk and ends up
-        # back in _sections before save() runs.
-        #
-        # Instead, remove the key from the in-memory state immediately and
-        # record it in _pending_deletes so that _reload_if_needed() and
-        # save() both know to keep it absent even after a disk reload.
-        self._reload_if_needed()
-        normalized = _normalize_key(key)
-        # Resolve the section directly from the already-loaded cache to avoid
-        # a second _reload_if_needed() call inside _resolve_section_name(),
-        # which could trigger another _load() and briefly wipe _pending_deletes
-        # before the fix in _load() re-applies them.
-        resolved_section = self._section_names.get(section.lower())
+        # Force reload from disk so we work with the latest state,
+        # then remove the key. The caller must still call save() afterward.
+        self._reload_if_needed(force=True)
+        resolved_section = self._resolve_section_name(section)
         if resolved_section:
-            self._sections.get(resolved_section, {}).pop(normalized, None)
-            self._pending_deletes.add((resolved_section, normalized))
+            self._sections.get(resolved_section, {}).pop(_normalize_key(key), None)
 
     def delete_section(self, section: str) -> None:
         self._reload_if_needed()

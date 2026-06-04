@@ -84,7 +84,6 @@ class Server16App(tk.Tk):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
-        self.log_file_enabled_var = tk.BooleanVar(value=self.settings.log_file_enabled)
         self.localization = LocalizationManager(self.base_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
@@ -104,10 +103,6 @@ class Server16App(tk.Tk):
         self.PoliceNum = "4"
         self.HID = ""
         self.AID = ""
-        self._last_known_hid = ""
-        self._last_known_aid = ""
-        self._active_stad_token = 0
-        self._written_stad_slots: list = []
         self.STADID = ""
         self.TOURNAME = ""
         self.TOURROUNDID = ""
@@ -136,6 +131,7 @@ class Server16App(tk.Tk):
         self._worker_poll_job = None
         self._stadium_task_running = False
         self._stadium_task_signature = None
+        self._stadium_task_request_key = None
         self._last_stadium_applied_signature = None
         self.labels = {}
         self.stat_title_labels = {}
@@ -146,7 +142,6 @@ class Server16App(tk.Tk):
         self.log_widget = None
         self.logs_frame = None
         self.check_update_button = None
-        self.toggle_logs_button = None
         self.locate_fifa_button = None
         self.launch_fifa_button = None
         self.assign_scoreboard_button = None
@@ -155,7 +150,6 @@ class Server16App(tk.Tk):
         self.start_overlay_button = None
         self.log_status_label = None
         self.log_follow_button = None
-        self.log_file_toggle = None
         self.language_label = None
         self.language_combo = None
         self.language_var = tk.StringVar(value=self.settings.language)
@@ -245,7 +239,7 @@ class Server16App(tk.Tk):
         self.chants_runtime = ChantsRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
-        # Initialize Discord RPC (loads from settings.json)
+        # Initialize DiscordRPC (loads from settings.json)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)
@@ -326,11 +320,11 @@ class Server16App(tk.Tk):
         self._overlay_job = self.after(80, self.overlay_loop)
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
-        # Log Discord RPC initialization status
+        # Log DiscordRPC initialization status
         if self._discord_rpc_enabled:
-            self.log("Discord RPC initialized (enabled in settings)")
+            self.log("DiscordRPC initialized (enabled in settings)")
         else:
-            self.log("Discord RPC initialized (disabled in settings)")
+            self.log("DiscordRPC initialized (disabled in settings)")
 
     def tr(self, key: str, **kwargs) -> str:
         return self.localization.translate(key, **kwargs)
@@ -460,7 +454,7 @@ class Server16App(tk.Tk):
             "Autorun": "module.autorun",
             "StadiumNet": "module.stadiumnet",
             "Chants": "module.chants",
-            "Discord RPC": "module.discord_rpc",
+            "DiscordRPC": "module.discord_rpc",
         }
         for name, check in self.module_checks.items():
             check.configure(text=self.tr(module_map.get(name, name)))
@@ -676,8 +670,6 @@ class Server16App(tk.Tk):
         ) + "\n"
 
     def _prepare_runtime_log(self) -> None:
-        if not self.settings.log_file_enabled:
-            return
         header = self._build_runtime_log_header()
         try:
             if self.log_path.exists():
@@ -697,12 +689,11 @@ class Server16App(tk.Tk):
             line = f"{line}\n{''.join(traceback.format_exception(*exc_info)).strip()}"
         elif error is not None:
             line = f"{line}\n{traceback.format_exc().strip()}" if traceback.format_exc().strip() != "NoneType: None" else line
-        if getattr(self.settings, "log_file_enabled", True):
-            try:
-                with self.log_path.open("a", encoding="utf-8") as handle:
-                    handle.write(line + "\n")
-            except Exception:
-                pass
+        try:
+            with self.log_path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+        except Exception:
+            pass
         if self.log_widget is not None:
             if self._log_widget_is_near_bottom():
                 self._log_autofollow = True
@@ -712,24 +703,6 @@ class Server16App(tk.Tk):
                 self.log_widget.see("end")
             self.log_widget.configure(state="disabled")
             self._update_log_follow_ui()
-
-    def _toggle_log_file_enabled(self) -> None:
-        enabled = bool(self.log_file_enabled_var.get())
-        if enabled:
-            self.settings.log_file_enabled = True
-            self.settings.save()
-            self._prepare_runtime_log()
-            self.log("File logging enabled")
-        else:
-            self.log("File logging disabled")
-            self.settings.log_file_enabled = False
-            self.settings.save()
-        self._update_log_file_toggle_ui()
-
-    def _update_log_file_toggle_ui(self) -> None:
-        if self.log_file_toggle is not None:
-            state_text = "ON" if self.log_file_enabled_var.get() else "OFF"
-            self.log_file_toggle.configure(text=f"Write .log file: {state_text}")
 
     def _log_widget_is_near_bottom(self) -> bool:
         if self.log_widget is None:
@@ -1124,6 +1097,7 @@ class Server16App(tk.Tk):
         if self._stadium_loading_visible:
             self._position_stadium_loading_modal()
             self.stadium_loading_modal.update_idletasks()
+            self.stadium_loading_modal.update()
 
     def _position_stadium_loading_modal(self) -> None:
         if self.stadium_loading_modal is None:
@@ -1514,10 +1488,10 @@ class Server16App(tk.Tk):
             "StadiumName",
             "AwayChants",
             "AwayClubSong",
-            "Discord RPC",
+            "DiscordRPC",
         ]
         for idx, name in enumerate(module_names):
-            initial = self._discord_rpc_enabled if name == "Discord RPC" else False
+            initial = self._discord_rpc_enabled if name == "DiscordRPC" else False
             var = tk.BooleanVar(value=initial)
             self.module_vars[name] = var
             check = ttk.Checkbutton(
@@ -1540,8 +1514,8 @@ class Server16App(tk.Tk):
         notification_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
-        """Toggle Discord RPC on/off and save to settings."""
-        new_state = self.module_vars["Discord RPC"].get()
+        """Toggle DiscordRPC on/off and save to settings."""
+        new_state = self.module_vars["DiscordRPC"].get()
         
         # Update internal state first
         self._discord_rpc_enabled = new_state
@@ -1551,33 +1525,33 @@ class Server16App(tk.Tk):
         discord_config["enabled"] = new_state
         self.settings.data["discord_rpc"] = discord_config
         self.settings.save()
-        self.module_states["Discord RPC"] = new_state
-        self.settings_ini.write("discordRP", "1" if new_state else "0", "Modules")
+        self.module_states["DiscordRPC"] = new_state
+        self.settings_ini.write("DiscordRPC", "1" if new_state else "0", "Modules")
         self.settings_ini.save()
         
         # Connect or disconnect based on new state
         try:
             if new_state:
-                # Enable Discord RPC
+                # Enable DiscordRPC
                 success = self.discord_rpc.connect()
                 if success:
-                    self.log("Discord RPC enabled and connected")
+                    self.log("DiscordRPC enabled and connected")
                 else:
-                    self.log("Discord RPC enabled but failed to connect (Discord may not be running)")
+                    self.log("DiscordRPC enabled but failed to connect (Discord may not be running)")
             else:
-                # Disable Discord RPC - disconnect and clear presence
+                # Disable DiscordRPC - disconnect and clear presence
                 self.discord_rpc.disconnect()
-                self.log("Discord RPC disabled and presence cleared")
+                self.log("DiscordRPC disabled and presence cleared")
         except Exception as exc:
-            self.log("Error toggling Discord RPC", exc, exc_info=sys.exc_info())
+            self.log("Error toggling DiscordRPC", exc, exc_info=sys.exc_info())
             # Revert checkbox if there was an error
             self._discord_rpc_enabled = not new_state
-            self.module_states["Discord RPC"] = not new_state
-            self.module_vars["Discord RPC"].set(not new_state)
+            self.module_states["DiscordRPC"] = not new_state
+            self.module_vars["DiscordRPC"].set(not new_state)
             discord_config["enabled"] = not new_state
             self.settings.data["discord_rpc"] = discord_config
             self.settings.save()
-            self.settings_ini.write("discordRP", "1" if not new_state else "0", "Modules")
+            self.settings_ini.write("DiscordRPC", "1" if not new_state else "0", "Modules")
             self.settings_ini.save()
 
     def _toggle_stadium_loading_visibility(self) -> None:
@@ -1759,14 +1733,6 @@ class Server16App(tk.Tk):
         self.log_status_label.pack(side="left")
         self.log_follow_button = ttk.Button(header, text=self.tr("button.jump_latest"), command=self._jump_logs_to_latest)
         self.log_follow_button.pack(side="right")
-        self.log_file_toggle = ttk.Checkbutton(
-            header,
-            style="Switch.TCheckbutton",
-            variable=self.log_file_enabled_var,
-            command=self._toggle_log_file_enabled,
-        )
-        self.log_file_toggle.pack(side="right", padx=(0, 10))
-        self._update_log_file_toggle_ui()
         logs_body = tk.Frame(logs, bg=self.panel)
         logs_body.pack(fill="both", expand=True)
         self.log_widget = tk.Text(
@@ -2148,15 +2114,15 @@ class Server16App(tk.Tk):
         module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong"]
         self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
         previous_rpc_state = self._discord_rpc_enabled
-        discord_ini_value = self.settings_ini.read("discordRP", "Modules")
+        discord_ini_value = self.settings_ini.read("DiscordRPC", "Modules")
         if discord_ini_value in {"0", "1"}:
             self._discord_rpc_enabled = discord_ini_value == "1"
         else:
             # Avoid creating FSW/settings.ini on first app start when FIFA is not linked yet.
             if self.fifaEXE != "default" or self.settings_ini.path.exists():
-                self.settings_ini.write("discordRP", "1" if self._discord_rpc_enabled else "0", "Modules")
+                self.settings_ini.write("DiscordRPC", "1" if self._discord_rpc_enabled else "0", "Modules")
                 self.settings_ini.save()
-        self.module_states["Discord RPC"] = self._discord_rpc_enabled
+        self.module_states["DiscordRPC"] = self._discord_rpc_enabled
         loaded = ", ".join(
             f"{name}={'1' if enabled else '0'}"
             for name, enabled in self.module_states.items()
@@ -2169,12 +2135,12 @@ class Server16App(tk.Tk):
         elif previous_rpc_state or self.discord_rpc.is_connected():
             self.discord_rpc.disconnect()
 
-        discord_var = self.module_vars.get("Discord RPC")
+        discord_var = self.module_vars.get("DiscordRPC")
         if discord_var is not None:
             discord_var.set(self._discord_rpc_enabled)
 
     def module_enabled(self, name: str) -> bool:
-        if name == "Discord RPC":
+        if name == "DiscordRPC":
             return self._discord_rpc_enabled
         if not hasattr(self, "settings_ini") or self.settings_ini is None:
             return self.module_states.get(name, False)
@@ -2628,7 +2594,7 @@ class Server16App(tk.Tk):
     def refresh_modules(self) -> None:
         self._load_module_states()
         for name, var in self.module_vars.items():
-            if name == "Discord RPC":
+            if name == "DiscordRPC":
                 var.set(self._discord_rpc_enabled)
             else:
                 var.set(self.module_enabled(name))
@@ -2691,7 +2657,7 @@ class Server16App(tk.Tk):
                 no_signature = self._last_runtime_signature is None
                 if (missing_ids or no_signature) and self._page_can_have_match_context(page_name):
                     self.refresh_live_context(page_name)
-            # Update Discord RPC presence
+            # Update DiscordRPC presence
             if self._discord_rpc_enabled:
                 self._update_discord_presence()
         except Exception as exc:
@@ -2719,8 +2685,6 @@ class Server16App(tk.Tk):
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None
             self.pagechange = True
-            self._active_stad_token += 1
-            self._written_stad_slots = []
             self.skillgamechange = False
             self.bumperpagechange = False
             self._clear_live_context()
@@ -2754,22 +2718,6 @@ class Server16App(tk.Tk):
         self.pagechange = False
         self.bumperpagechange = False
         self.skillgamechange = False
-
-    def _write_active_stad_name(self, std_name: str) -> bool:
-        """Write stadium name directly via STDNAMEOFFSET176/261 pointer chain."""
-        if not self.memory.is_open():
-            return False
-        nb = std_name.encode("utf-8") + b"\x00"
-        written = False
-        for offsets in [self.offsets.STDNAMEOFFSET176, self.offsets.STDNAMEOFFSET261]:
-            try:
-                addr = self.memory.resolve_pointer(self.offsets.STDNAMEBASE, offsets)
-                self.memory.write_process_memory(addr, nb)
-                self.log(f"Stad name written @ 0x{addr:X}: {std_name}")
-                written = True
-            except Exception as exc:
-                self.log(f"Stad name write error ({offsets}): {exc}")
-        return written
 
     def _clear_live_context(self) -> None:
         self.HID = ""
@@ -2824,13 +2772,6 @@ class Server16App(tk.Tk):
         if self.HID not in {"", "0"} and self.AID not in {"", "0"}:
             self._kickoff_retry_remaining = 0
             self.log(f"KickOffHub context captured HID={self.HID} AID={self.AID}")
-            if self.curstad:
-                if self.settings_ini.key_exists(self.curstad, "scoreboardstdname"):
-                    _raw = self.settings_ini.read(self.curstad, "scoreboardstdname")
-                    _display = _raw.split(",")[0].strip() or self.curstad
-                else:
-                    _display = self.curstad
-                self._write_active_stad_name(_display)
             return
         if self._kickoff_retry_remaining > 0:
             self._kickoff_retry_remaining -= 1
@@ -2867,10 +2808,6 @@ class Server16App(tk.Tk):
                 if friendly_aid != "0":
                     aid = friendly_aid
             return hid, aid
-        except MemoryAccessError:
-            # Null pointer is expected while the game is in menus / not in a match yet.
-            # Return silently — callers already log "Context not ready" with the address.
-            return None, None
         except Exception as exc:
             self.log("Legacy team context read failed", exc, exc_info=sys.exc_info())
             return None, None
@@ -2917,10 +2854,8 @@ class Server16App(tk.Tk):
         round_id = self._try_read_context_int("T-ROUND", self.offsets.ORITOURIDBASE, self.offsets.T[:4] + [self.offsets.T[5]], page_name)
         if hid not in {None, "0"}:
             self.HID = hid
-            self._last_known_hid = hid
         if aid not in {None, "0"}:
             self.AID = aid
-            self._last_known_aid = aid
         if stadid not in {None, "0"}:
             self.STADID = stadid
         if tour not in {None, "0"}:
@@ -3042,13 +2977,13 @@ class Server16App(tk.Tk):
 
     def _on_stadium_preview_uploaded(self, stadium_name: str, url: str) -> None:
         """Called after a stadium preview is uploaded to Discord webhook.
-        Forces a Discord RPC refresh so the new image URL is applied immediately."""
+        Forces a DiscordRPC refresh so the new image URL is applied immediately."""
         self.log(f"Discord stadium preview uploaded: {stadium_name} -> {url}")
         self._discord_rpc_last_presence = None
 
     def _update_discord_presence(self) -> None:
         """Update Discord Rich Presence with current match state."""
-        # Only update if Discord RPC is enabled
+        # Only update if DiscordRPC is enabled
         if not self._discord_rpc_enabled:
             return
         
@@ -3135,16 +3070,16 @@ class Server16App(tk.Tk):
             if presence != self._discord_rpc_last_presence:
                 sent = self.discord_rpc.update_presence(**presence)
                 self._discord_rpc_last_presence = presence
-                # Log Discord RPC updates for debugging
-                self.log(f"Discord RPC updated: {presence.get('state', 'N/A')}")
-                self.log(f"Discord RPC image key: {presence.get('large_image', '')}")
-                self.log(f"Discord RPC external image mode: {stadium_preview_mode}")
+                # Log DiscordRPC updates for debugging
+                self.log(f"DiscordRPC updated: {presence.get('state', 'N/A')}")
+                self.log(f"DiscordRPC image key: {presence.get('large_image', '')}")
+                self.log(f"DiscordRPC external image mode: {stadium_preview_mode}")
                 if stadium_preview_override_url:
-                    self.log(f"Discord RPC external image override URL: {stadium_preview_override_url}")
+                    self.log(f"DiscordRPC external image override URL: {stadium_preview_override_url}")
                 if sent:
-                    self.log("Discord RPC update_presence result: ok")
+                    self.log("DiscordRPC update_presence result: ok")
                 else:
-                    self.log("Discord RPC update_presence result: failed")
+                    self.log("DiscordRPC update_presence result: failed")
         except Exception as exc:
             self.log("Discord RPC update error", exc, exc_info=sys.exc_info())
 
@@ -3302,7 +3237,7 @@ class Server16App(tk.Tk):
         self._closing = True
         self._chants_stop.set()
         self._reset_chants_state()
-        # Disconnect Discord RPC and clear presence
+        # Disconnect DiscordRPC and clear presence
         try:
             self.discord_rpc.disconnect()
         except Exception:
