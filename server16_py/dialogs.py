@@ -49,7 +49,7 @@ class BaseDialog(tk.Toplevel):
         owner = master._window() if hasattr(master, "_window") else master
         super().__init__(owner)
         self.app = master
-        self.title(title)
+        self.title(self.tr(title))
         self.resizable(True, True)
         self.transient(owner)
         self.grab_set()
@@ -119,7 +119,7 @@ class BaseDialog(tk.Toplevel):
 
 class ScoreboardDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
-        super().__init__(master, self.tr("dialog.assignment.title.scoreboard"))
+        super().__init__(master, "dialog.assignment.title.scoreboard")
         self.scope_labels = {key: self.tr(label_key) for key, label_key in SCOREBOARD_SCOPE_OPTIONS}
         self.scope_ids = {self.tr(label_key): key for key, label_key in SCOREBOARD_SCOPE_OPTIONS}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.scope_labels["0"]))
@@ -165,7 +165,7 @@ class ScoreboardDialog(BaseDialog):
 
 class MovieDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
-        super().__init__(master, self.tr("dialog.assignment.title.movie"))
+        super().__init__(master, "dialog.assignment.title.movie")
         self.scope_labels = {key: self.tr(label_key) for key, label_key in MOVIE_SCOPE_OPTIONS}
         self.scope_ids = {self.tr(label_key): key for key, label_key in MOVIE_SCOPE_OPTIONS}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.scope_labels["0"]))
@@ -198,7 +198,7 @@ class MovieDialog(BaseDialog):
 
 class StadiumDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
-        super().__init__(master, self.tr("dialog.assignment.title.stadium"))
+        super().__init__(master, "dialog.assignment.title.stadium")
         self.geometry("1180x760")
         self.minsize(1060, 700)
         pitch_values = self._file_stems(self._first_existing(exedir / "FSW" / "Images" / "PitchMowPattern", exedir / "FSW" / "PitchMowPattern"))
@@ -216,6 +216,7 @@ class StadiumDialog(BaseDialog):
         self.selectedstadium = tk.StringVar()
         self._preview_images: dict[str, ImageTk.PhotoImage] = {}
         self._preview_labels: dict[str, tk.Label] = {}
+        self._preview_frames: dict[str, tk.Frame] = {}
         self.stadium_source = exedir / "StadiumGBD"
         self.pitch_source = self._first_existing(exedir / "FSW" / "Images" / "PitchMowPattern", exedir / "FSW" / "PitchMowPattern")
         self.net_source = self._first_existing(exedir / "FSW" / "Images" / "Nets", exedir / "FSW" / "Nets")
@@ -320,9 +321,9 @@ class StadiumDialog(BaseDialog):
         )
         right_body = tk.Frame(right_canvas, bg=self.card)
         right_body.grid_columnconfigure(0, weight=1)
+        right_body.grid_rowconfigure(1, weight=1)
         right_body.grid_rowconfigure(2, weight=1)
         right_body.grid_rowconfigure(3, weight=1)
-        right_body.grid_rowconfigure(4, weight=1)
         right_body.bind(
             "<Configure>",
             lambda _event: right_canvas.configure(scrollregion=right_canvas.bbox("all")),
@@ -337,38 +338,21 @@ class StadiumDialog(BaseDialog):
         )
         self._bind_mousewheel_target(right_canvas, right_body, scroll_callback=lambda steps: right_canvas.yview_scroll(steps, "units"))
 
-        controls = tk.Frame(right_body, bg=self.card)
-        controls.grid(row=0, column=0, sticky="ew")
-        controls.grid_columnconfigure(0, weight=1)
-
-        self._combo(controls, 0, "Pitch Mow Pattern", pitch_values, self.selectedpitch, self._on_pitch_changed)
-        self._combo(controls, 2, "Net Pattern", net_values, self.selectednet, self._on_net_changed)
-        self._dark_label(controls, "Police Pattern", muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=4, column=0, sticky="w", pady=(12, 0))
-        police_combo = ttk.Combobox(
-            controls,
-            state="readonly",
-            textvariable=self.selectedpolice,
-            values=tuple(label for _, label in POLICE_PATTERN_OPTIONS),
-            style="Server16.TCombobox",
-        )
-        police_combo.grid(row=5, column=0, sticky="ew", pady=(6, 0))
-        police_combo.bind("<<ComboboxSelected>>", self._on_police_changed)
-
         selected_card = tk.Frame(right_body, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
-        selected_card.grid(row=1, column=0, sticky="ew", pady=(14, 14))
+        selected_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         selected_card.grid_columnconfigure(0, weight=1)
         self._dark_label(selected_card, self.tr("dialog.stadium.current_selection"), bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
         self.selection_value = self._dark_label(selected_card, "None", bg=self.card_soft, font=("Consolas", 11, "bold"), anchor="w", justify="left", wraplength=420)
         self.selection_value.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
 
         stadium_preview_row = tk.Frame(right_body, bg=self.card)
-        stadium_preview_row.grid(row=2, column=0, sticky="nsew", pady=(0, 12))
+        stadium_preview_row.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
         stadium_preview_row.grid_columnconfigure(0, weight=1)
         self._preview_frames["stadium"] = stadium_preview_row
         self._build_preview(stadium_preview_row, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(520, 420), height=24)
 
         preview_top = tk.Frame(right_body, bg=self.card)
-        preview_top.grid(row=3, column=0, sticky="nsew")
+        preview_top.grid(row=2, column=0, sticky="nsew")
         preview_top.grid_columnconfigure(0, weight=1)
         preview_top.grid_columnconfigure(1, weight=1)
         pitch_wrap = tk.Frame(preview_top, bg=self.card)
@@ -384,7 +368,7 @@ class StadiumDialog(BaseDialog):
         self._build_preview(net_wrap, 0, self.tr("dialog.stadium.preview.net"), "net", image_size=(420, 360), height=22, row=2)
 
         preview_bottom = tk.Frame(right_body, bg=self.card)
-        preview_bottom.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        preview_bottom.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
         preview_bottom.grid_columnconfigure(0, weight=1)
         self._combo(
             preview_bottom,
@@ -581,9 +565,10 @@ class StadiumDialog(BaseDialog):
         key: str,
         image_size: tuple[int, int] = (280, 220),
         height: int = 13,
+        row: int = 0,
     ) -> None:
         frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
-        frame.grid(row=0, column=column, padx=(0 if column == 0 else 6, 0), sticky="nsew")
+        frame.grid(row=row, column=column, padx=(0 if column == 0 else 6, 0), sticky="nsew")
         self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).pack(anchor="w", padx=10, pady=(10, 6))
         preview = tk.Label(
             frame,
@@ -658,6 +643,6 @@ class StadiumDialog(BaseDialog):
 
 class ExcludeDialog(BaseDialog):
     def __init__(self, master: tk.Misc) -> None:
-        super().__init__(master, self.tr("dialog.assignment.title.exclude"))
+        super().__init__(master, "dialog.assignment.title.exclude")
         ttk.Button(self, text=self.tr("button.comp_id"), command=lambda: self.close_ok("COMP ID")).pack(fill="x", padx=12, pady=8)
         ttk.Button(self, text=self.tr("button.comp_round_id"), command=lambda: self.close_ok("COMP ROUND ID")).pack(fill="x", padx=12, pady=(0, 12))
