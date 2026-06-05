@@ -208,6 +208,29 @@ static TextTex g_ttItems[MAX_MENU_ITEMS];
 static TextTex g_ttEmpty;
 static TextTex g_ttDash;  // scratch slot for dashboard lines (separate from g_ttItems)
 
+// ---------------------------------------------------------------------------
+// Hint bar: button badge textures (static, created once)
+// ---------------------------------------------------------------------------
+#define NUM_HINT_ITEMS 5
+
+struct HintDef {
+    const wchar_t *badgeLabel;
+    const wchar_t *description;
+    DWORD          badgeColor;   // ARGB
+};
+
+static const HintDef kHints[NUM_HINT_ITEMS] = {
+    { L"Up/Dn", L"Navigate", 0xFF606060 },
+    { L"RS",    L"Scroll",   0xFF3A5070 },
+    { L"LB/RB", L"Tab",      0xFF707070 },
+    { L"A",     L"Select",   0xFF22AA44 },
+    { L"B",     L"Close",    0xFFCC2222 },
+};
+
+static TextTex g_ttHintBadge[NUM_HINT_ITEMS];
+static TextTex g_ttHintDesc[NUM_HINT_ITEMS];
+static bool    g_hintTexReady = false;
+
 static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
     L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos"
 };
@@ -580,6 +603,16 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     for (int i = 0; i < NUM_MENU_TABS; i++)
         UpdateTextTex(dev, g_ttTab[i], kTabLabels[i], 14, false, RGB(0xFF, 0xFF, 0xFF), 170);
 
+    if (!g_hintTexReady) {
+        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
+            UpdateTextTex(dev, g_ttHintBadge[i], kHints[i].badgeLabel,
+                          12, true, RGB(0xFF, 0xFF, 0xFF), 80);
+            UpdateTextTex(dev, g_ttHintDesc[i], kHints[i].description,
+                          12, false, RGB(0xCC, 0xDD, 0xEE), 160);
+        }
+        g_hintTexReady = true;
+    }
+
     ID3D11RenderTargetView *oldRTV[8] = {};
     ID3D11DepthStencilView *oldDSV = nullptr;
     ctx->OMGetRenderTargets(8, oldRTV, &oldDSV);
@@ -629,6 +662,8 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     const float my = floorf((vpH - MH) / 2.f);
     const float TAB_H = 56.f;
     const float TAB_W = floorf(MW / NUM_MENU_TABS);
+    const float HINT_H    = 38.f;
+    const float HINT_ZONE = HINT_H + 5.f;  // separator + padding
     const float DASH_H = (std::max)(220.f, (std::min)(320.f, floorf(MH * 0.28f)));
     const float CONT_Y = my + TAB_H;
     const float CONT_H = MH - TAB_H;
@@ -638,13 +673,16 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     const float SCROLL_W = 12.f;
     const float SCROLL_GAP = 6.f;
     const float LIST_W = MW - 8.f - SCROLL_W - SCROLL_GAP;
-    const float LIST_YMAX = my + MH - DASH_H - 14.f;
+    const float LIST_YMAX = my + MH - DASH_H - HINT_ZONE - 14.f;
     const float SCROLL_X = LIST_X + LIST_W + SCROLL_GAP;
     const float SCROLL_Y = LIST_Y;
     const float SCROLL_H = (std::max)(1.f, LIST_YMAX - LIST_Y);
     const float DASH_X = mx + 10.f;
-    const float DASH_Y = my + MH - DASH_H - 6.f;
+    const float DASH_Y = my + MH - DASH_H - HINT_ZONE - 6.f;
     const float DASH_W = MW - 20.f;
+    const float HINT_Y = my + MH - 2.f - HINT_H;
+    const float HINT_X = mx + 2.f;
+    const float HINT_W = MW - 4.f;
 
     const int visibleRows = (std::max)(1, (int)floorf((LIST_YMAX - LIST_Y) / ITEM_H));
     const int maxScroll = (std::max)(0, (int)itemCount - visibleRows);
@@ -655,6 +693,9 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     ctx->IASetInputLayout(g_il);
     UINT stride = sizeof(Vtx11), offset = 0;
     ctx->IASetVertexBuffers(0, 1, &g_vb, &stride, &offset);
+
+    float hintBadgeX[NUM_HINT_ITEMS] = {};
+    float hintBadgeW[NUM_HINT_ITEMS] = {};
 
     Vtx11 verts[512];
     int n = 0;
@@ -680,7 +721,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
 
     R(mx + 2.f, my + TAB_H, MW - 4.f, 2.f, 0xFF3399FF);
     R(mx + 2.f, CONT_Y + 2.f, MW - 4.f, CONT_H - 4.f, 0xF2080E18);
-    R(mx + 8.f, my + MH - DASH_H - 12.f, MW - 16.f, 2.f, 0xFF2A537D);
+    R(mx + 8.f, DASH_Y - 6.f, MW - 16.f, 2.f, 0xFF2A537D);
     R(DASH_X, DASH_Y, DASH_W, DASH_H, 0xE40C1622);
     R(DASH_X, DASH_Y, DASH_W, 2.f, 0xFF3399FF);
 
@@ -709,6 +750,34 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         float thumbY = SCROLL_Y + ((float)realScroll / (float)maxScrollTotal) * thumbRange;
         R(SCROLL_X + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
         R(SCROLL_X + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
+    }
+
+    // --- Hint bar ---
+    R(HINT_X, HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);   // separator line
+    R(HINT_X, HINT_Y, HINT_W, HINT_H, 0xCC0E1A26);        // dark background
+    {
+        const float BADGE_H    = 20.f;
+        const float BADGE_VPAD = 9.f;
+        const float BADGE_HPAD = 6.f;
+        const float GAP_BD     = 5.f;
+        const float GAP_INTER  = 22.f;
+        float totalW = 0.f;
+        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
+            float tw = (float)(g_ttHintBadge[i].width > 0 ? g_ttHintBadge[i].width : 20);
+            float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
+            float bw = tw + BADGE_HPAD * 2.f;
+            totalW += bw + GAP_BD + dw + (i < NUM_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
+        }
+        float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
+        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
+            float tw = (float)(g_ttHintBadge[i].width > 0 ? g_ttHintBadge[i].width : 20);
+            float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
+            float bw = tw + BADGE_HPAD * 2.f;
+            hintBadgeX[i] = bx;
+            hintBadgeW[i] = bw;
+            R(bx, HINT_Y + BADGE_VPAD, bw, BADGE_H, kHints[i].badgeColor);
+            bx += bw + GAP_BD + dw + GAP_INTER;
+        }
     }
 
     D3D11_MAPPED_SUBRESOURCE ms = {};
@@ -796,6 +865,30 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
                 float ex = mx + floorf((MW - (float)g_ttEmpty.width) / 2.f);
                 float ey = CONT_Y + floorf((CONT_H - (float)g_ttEmpty.height) / 2.f);
                 DrawTexQuad(ctx, ex, ey, (float)g_ttEmpty.width, (float)g_ttEmpty.height, vpW, vpH, g_ttEmpty.srv);
+            }
+        }
+
+        // --- Hint bar textures ---
+        {
+            const float BADGE_H    = 20.f;
+            const float BADGE_VPAD = 9.f;
+            const float BADGE_HPAD = 6.f;
+            const float GAP_BD     = 5.f;
+            for (int i = 0; i < NUM_HINT_ITEMS; i++) {
+                if (g_ttHintBadge[i].srv) {
+                    float tlx = hintBadgeX[i] + floorf((hintBadgeW[i] - (float)g_ttHintBadge[i].width) / 2.f);
+                    float tly = HINT_Y + BADGE_VPAD + floorf((BADGE_H - (float)g_ttHintBadge[i].height) / 2.f);
+                    DrawTexQuad(ctx, tlx, tly,
+                                (float)g_ttHintBadge[i].width, (float)g_ttHintBadge[i].height,
+                                vpW, vpH, g_ttHintBadge[i].srv);
+                }
+                if (g_ttHintDesc[i].srv) {
+                    float dlx = hintBadgeX[i] + hintBadgeW[i] + GAP_BD;
+                    float dly = HINT_Y + floorf((HINT_H - (float)g_ttHintDesc[i].height) / 2.f);
+                    DrawTexQuad(ctx, dlx, dly,
+                                (float)g_ttHintDesc[i].width, (float)g_ttHintDesc[i].height,
+                                vpW, vpH, g_ttHintDesc[i].srv);
+                }
             }
         }
     }
@@ -1052,21 +1145,21 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
     EnterCriticalSection(&g_drawCs);
     HRESULT presentResult = S_OK;
     __try {
-        if (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0) {
-            ID3D11Device *dev = nullptr;
-            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
-                ID3D11DeviceContext *ctx = nullptr;
-                dev->GetImmediateContext(&ctx);
-                DrawOverlay11(sc, dev, ctx);
-                ctx->Release(); dev->Release();
-            }
-        }
         if (g_data && InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0) {
             ID3D11Device *dev = nullptr;
             if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
                 ID3D11DeviceContext *ctx = nullptr;
                 dev->GetImmediateContext(&ctx);
                 DrawMenuOverlay11(sc, dev, ctx);
+                ctx->Release(); dev->Release();
+            }
+        }
+        if (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0) {
+            ID3D11Device *dev = nullptr;
+            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
+                ID3D11DeviceContext *ctx = nullptr;
+                dev->GetImmediateContext(&ctx);
+                DrawOverlay11(sc, dev, ctx);
                 ctx->Release(); dev->Release();
             }
         }
