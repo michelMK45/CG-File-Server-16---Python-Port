@@ -1,5 +1,7 @@
 # CGFS 16 Server 16 Python Port
 
+⚠This is a fork from the orignal project, as the original author stopped developing the tool. So the community can continue.
+
 Python conversion of the original CGFS 16 Server 16 tool for FIFA 16.
 
 This project is a community-friendly, public rewrite of the classic FIFA 16 Server 16 workflow. It provides a Windows desktop control panel and in-game overlay for managing stadium assignments, scoreboards, TV logos, movies, chants, and camera packages while FIFA 16 is running.
@@ -204,6 +206,7 @@ Optional files supported by the runtime:
 
 - `NoSeats.rx3` for crowd-chair replacement.
 - `StadiumMovie.vp8` and `StadiumBumper.big` for stadium-specific movies.
+- `GameplayCamGBD/bcgameplay_176.dat` and `GameplayCamGBD/bcgameplay_261.dat` for per-stadium gameplay camera overrides.
 
 Archive extraction is used only for loading the stadium files. Preview lookup does not extract archives, so preview images are resolved from `StadiumGBD/render/thumbnail/stadium/<stadium name>.*`.
 
@@ -232,6 +235,46 @@ Anth's FIFA 16 AIO Camera Mod Package
 The folder must contain `Instructions.txt`. Each camera preset is discovered from a child folder with a `data/` directory, and any `.png` files in that preset folder are used as preview images.
 
 When a camera is applied, the preset's `data/` contents are synced into the FIFA `data/` folder. If `REGENERATOR.exe` is found next to the selected FIFA install, the app attempts to launch it after copying the files.
+
+## Gameplay Camera Files
+
+The app supports per-stadium gameplay camera overrides using `bcgameplay_176.dat` and `bcgameplay_261.dat`. These files control the **Broadcast camera height and position** during a match, allowing each stadium to have a camera angle tuned to its specific geometry and stand layout.
+
+### Prerequisites
+
+- The in-game camera must be set to **Broadcast** in FIFA 16's camera settings.
+- The `musedata-match.big` file must be the original or only modified for zoom changes. Free-position adjustments (height, lateral offset) are driven exclusively by the `bcgameplay_*` files and do not require modifying `musedata-match.big`.
+
+### Per-Stadium Setup
+
+Create a `GameplayCamGBD/` folder inside each stadium folder in `StadiumGBD/` and place both files inside it:
+
+```text
+StadiumGBD/
+  ENG - Luton Town - Kenilworth Road/
+    GameplayCamGBD/
+      bcgameplay_176.dat
+      bcgameplay_261.dat
+    EntranceScene/
+    1/
+    3/
+    model.rx3
+    texture_day.rx3
+    ...
+```
+
+Both files must be present. They should contain identical content — the game assigns injection ID 176 or 261 at runtime and reads the matching file, so both need to carry the same camera data.
+
+### Automatic Application
+
+When a stadium loads, the app copies both files from the stadium's `GameplayCamGBD/` folder to:
+
+```text
+data/bcdata/camera/bcgameplay_176.dat
+data/bcdata/camera/bcgameplay_261.dat
+```
+
+No manual action is needed. If the stadium folder does not contain `GameplayCamGBD/`, the files in `data/bcdata/camera/` are left unchanged.
 
 ## Building The EXE
 
