@@ -197,6 +197,7 @@ class ChantsRuntime:
         fade_in_ms: int = 300,
         fade_out_ms: int = 500,
         minimum_hold_seconds: float = 8.0,
+        chants_memory: "Memory | None" = None,
     ) -> bool:
         app = self.app
         player = MciAudioPlayer()
@@ -219,12 +220,72 @@ class ChantsRuntime:
             app._set_display_async("audio_next", next_text)
             app.log(f"Goal audio started: {track.name} duration={duration_ms}ms hold={hold_seconds:.1f}s")
             hard_until = time.time() + max(hold_seconds + 2.0, duration_seconds + 2.0 if duration_seconds > 0 else 180.0)
+            non_running_count = 0
+            player_paused = False
+            speed_hits = 0
+            last_game_time: int | None = None
+            last_real_time: float | None = None
+            started_at = time.time()
             while not app._chants_stop.is_set() and not getattr(app, "_chants_reset_requested", False) and app.module_enabled("Chants"):
                 mode_state = player.mode()
                 if mode_state in {"stopped", "closed"} and time.time() >= hold_until:
                     break
                 if time.time() >= hard_until:
                     break
+                if chants_memory is not None:
+                    is_running = app._is_game_running_with(chants_memory)
+                    if not is_running:
+                        # Pause menu: game stopped — pause and reset timer tracking
+                        non_running_count += 1
+                        last_game_time = None
+                        last_real_time = None
+                        speed_hits = 0
+                        if non_running_count >= 3 and not player_paused and player.is_playing():
+                            self.fade_player(player, volume, 0, 400)
+                            player.pause()
+                            player_paused = True
+                            app._set_display_async("audio_crowd_mode", "Paused")
+                            app._set_display_async("audio_next", "Resume on return")
+                    else:
+                        non_running_count = 0
+                        if player_paused and player.is_paused():
+                            player.resume()
+                            self.fade_player(player, 0, volume, 300)
+                            player_paused = False
+                            app._set_display_async("audio_crowd_mode", mode)
+                            app._set_display_async("audio_next", next_text)
+                        # Kick-off detection via timer speed (same logic as v1.1.0)
+                        # After 6s protection window, normal gameplay runs at ~8-10 timer units/sec
+                        # while celebration runs at ~1 timer unit/sec
+                        now = time.time()
+                        elapsed = now - started_at
+                        if elapsed >= 6.0:
+                            try:
+                                game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+                            except Exception:
+                                game_time = None
+                            if game_time is not None and last_game_time is not None and last_real_time is not None:
+                                real_delta = max(0.001, now - last_real_time)
+                                timer_delta = abs(game_time - last_game_time)
+                                speed = timer_delta / real_delta
+                                if speed >= 6.0 and timer_delta >= 1:
+                                    speed_hits += 1
+                                else:
+                                    speed_hits = 0
+                                if speed_hits >= 3:
+                                    app.log(f"Goal audio cut: kick-off detected speed={speed:.1f} hits={speed_hits}")
+                                    time.sleep(0.5)
+                                    break
+                            last_game_time = game_time
+                            last_real_time = now
+                        else:
+                            # Within protection window — record baseline but don't cut
+                            try:
+                                last_game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+                            except Exception:
+                                last_game_time = None
+                            last_real_time = now
+                            speed_hits = 0
                 time.sleep(0.2)
             self.fade_player(player, volume, 0, fade_out_ms)
             app.log(f"Goal audio finished: {track.name}")
@@ -323,9 +384,9 @@ class ChantsRuntime:
                     app._set_display_async("audio_next", "Club song, then crowd")
                     if scorer:
                         time.sleep(2.0)
-                        club_song_played = self._play_club_song(scorer)
+                        club_song_played = self._play_club_song(scorer, chants_memory=chants_memory)
                         if scorer == aid and away_chants and app.module_enabled("AwayChants"):
-                            self._play_away_reaction(away_chants, score_home, score_away, skip_random=club_song_played)
+                            self._play_away_reaction(away_chants, score_home, score_away, skip_random=club_song_played, chants_memory=chants_memory)
                     else:
                         app.log(f"Goal club song skipped: scorer unavailable for score {score_home} x {score_away} (hid={hid or '-'}, aid={aid or '-'})")
                     cooldown_until = time.time() + 4.5
@@ -459,7 +520,7 @@ class ChantsRuntime:
         app.chants_thread_started = False
         app.log("Chants monitor stopped")
 
-    def _play_club_song(self, team_id: str) -> bool:
+    def _play_club_song(self, team_id: str, chants_memory: "Memory | None" = None) -> bool:
         """Play the goal club song and hold the chants loop until it finishes."""
         app = self.app
         if self._special_audio_locked():
@@ -494,6 +555,7 @@ class ChantsRuntime:
                 f"Club anthem {team_id}",
                 "Return to crowd after anthem",
                 minimum_hold_seconds=12.0,
+                chants_memory=chants_memory,
             )
             app._set_display_async("audio_current", "ClubSong")
             app._set_display_async("audio_clubsong", team_id)
@@ -544,7 +606,7 @@ class ChantsRuntime:
         except Exception as exc:
             app.log("Away chant failed", exc, exc_info=sys.exc_info())
 
-    def _play_away_reaction(self, away_chants: str, score_home: int, score_away: int, skip_random: bool = False) -> bool:
+    def _play_away_reaction(self, away_chants: str, score_home: int, score_away: int, skip_random: bool = False, chants_memory: "Memory | None" = None) -> bool:
         """Play away reaction after an away goal and hold the chants loop until it finishes."""
         app = self.app
         if self._special_audio_locked():
@@ -570,6 +632,7 @@ class ChantsRuntime:
                 "Return to crowd after reaction",
                 fade_in_ms=250,
                 fade_out_ms=350,
+                chants_memory=chants_memory,
             )
             return played
         except Exception as exc:
