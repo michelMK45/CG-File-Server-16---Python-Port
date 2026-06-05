@@ -26,11 +26,11 @@ log = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared memory layout — MUST match OverlayShared in cgfs16_overlay.cpp
 # ─────────────────────────────────────────────────────────────────────────────
-_SHMEM_NAME = "Local\\CGFS16_Overlay_v1"
+_SHMEM_NAME = "Local\\CGFS16_Overlay_v2"
 _MAX_STR    = 256
 _MAX_IMG    = 512
 _MAX_MENU_ITEM_LEN = 80
-_MAX_MENU_ITEMS    = 64
+_MAX_MENU_ITEMS    = 256  # must match MAX_MENU_ITEMS in the compiled DLL
 _MAX_DASH_ITEMS    = 10
 
 
@@ -53,6 +53,9 @@ class _OverlayShared(ctypes.Structure):
             ("reserved2",            ctypes.c_long),    # menu swapchain output hwnd telemetry
             ("dashboard_items",      (ctypes.c_wchar * _MAX_MENU_ITEM_LEN) * _MAX_DASH_ITEMS),
             ("menu_items",          (ctypes.c_wchar * _MAX_MENU_ITEM_LEN) * _MAX_MENU_ITEMS),
+            # Virtual-scroll telemetry: written by Python, read by C++ for scrollbar.
+            ("menu_total_count",    ctypes.c_long),    # real list size (may exceed MAX_MENU_ITEMS)
+            ("menu_window_base",    ctypes.c_long),    # real index of menu_items[0]
     ]
 
 
@@ -225,6 +228,13 @@ class D3DOverlayInjector:
         safe_scroll = max(0, min(int(scroll), safe_selected))
         self._shared.menu_selected_index = safe_selected
         self._shared.menu_scroll_offset = safe_scroll
+
+    def set_window_info(self, total_count: int, window_base: int) -> None:
+        """Write virtual-scroll metadata so the C++ scrollbar reflects the real list size."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.menu_total_count = int(total_count)
+        self._shared.menu_window_base = int(window_base)
 
     def set_menu_selection(self, selected: int, scroll: int) -> None:
         if not self._ready or self._shared is None:

@@ -27,6 +27,7 @@
 #include <stdint.h>
 #include <algorithm>
 #include <vector>
+#include <tlhelp32.h>
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
@@ -38,11 +39,11 @@
 // ---------------------------------------------------------------------------
 // Shared memory (same layout as Python _OverlayShared)
 // ---------------------------------------------------------------------------
-#define SHMEM_NAME  L"Local\\CGFS16_Overlay_v1"
+#define SHMEM_NAME  L"Local\\CGFS16_Overlay_v2"
 #define MAX_STR          256
 #define MAX_IMG          512
 #define MAX_MENU_ITEM_LEN 80
-#define MAX_MENU_ITEMS    64
+#define MAX_MENU_ITEMS    256
 #define MAX_DASH_ITEMS    10
 
 struct OverlayShared {
@@ -63,6 +64,9 @@ struct OverlayShared {
         volatile LONG reserved2;                // swapchain output HWND (runtime telemetry)
         wchar_t dashboard_items[MAX_DASH_ITEMS][MAX_MENU_ITEM_LEN];
         wchar_t  menu_items[MAX_MENU_ITEMS][MAX_MENU_ITEM_LEN];
+        // Virtual-scroll fields: written by Python, read by C++ for scrollbar.
+        volatile LONG menu_total_count;   // real list size (may exceed MAX_MENU_ITEMS)
+        volatile LONG menu_window_base;   // real index of menu_items[0]
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -202,6 +206,7 @@ static LONG    g_menuLastActiveTab = -1;
 // Content list textures
 static TextTex g_ttItems[MAX_MENU_ITEMS];
 static TextTex g_ttEmpty;
+static TextTex g_ttDash;  // scratch slot for dashboard lines (separate from g_ttItems)
 
 static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
     L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos"
@@ -527,13 +532,18 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     if (activeTab < 0 || activeTab >= NUM_MENU_TABS) activeTab = 0;
 
     LONG itemCount = 0, selIdx = 0, scrollOffset = 0;
+    LONG totalCount = 0, windowBase = 0;
     if (g_data) {
         itemCount = InterlockedCompareExchange(&g_data->menu_item_count, 0, 0);
         selIdx = InterlockedCompareExchange(&g_data->menu_selected_index, 0, 0);
         scrollOffset = InterlockedCompareExchange(&g_data->menu_scroll_offset, 0, 0);
+        totalCount = InterlockedCompareExchange(&g_data->menu_total_count, 0, 0);
+        windowBase = InterlockedCompareExchange(&g_data->menu_window_base, 0, 0);
         if (itemCount < 0 || itemCount > MAX_MENU_ITEMS) itemCount = 0;
         if (selIdx < 0) selIdx = 0;
         if (scrollOffset < 0) scrollOffset = 0;
+        if (totalCount < itemCount) totalCount = itemCount;  // backward compat
+        if (windowBase < 0) windowBase = 0;
     }
 
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -664,6 +674,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         bool active = (i == (int)activeTab);
         R(tx, my + 2.f, TAB_W, TAB_H - 2.f, active ? 0xFF1C3E60 : 0xFF0C1620);
         if (i > 0) R(tx, my + 2.f, 1.f, TAB_H - 2.f, 0xFF243654);
+        if (i == NUM_MENU_TABS - 1) R(mx + MW - 2.f, my + 2.f, 2.f, TAB_H - 2.f, 0xFF3399FF);
         if (active) R(tx + 6.f, my + TAB_H - 4.f, TAB_W - 12.f, 4.f, 0xFF3399FF);
     }
 
@@ -688,11 +699,14 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     R(SCROLL_X, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
     R(SCROLL_X + SCROLL_W - 1.f, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
 
-    if (maxScroll > 0) {
-        float thumbH = (std::max)(22.f, SCROLL_H * ((float)visibleRows / (float)itemCount));
+    // Use totalCount and real scroll position for an accurate scrollbar.
+    const int maxScrollTotal = (std::max)(0, (int)totalCount - visibleRows);
+    if (maxScrollTotal > 0) {
+        LONG realScroll = scrollOffset + windowBase;
+        float thumbH = (std::max)(22.f, SCROLL_H * ((float)visibleRows / (float)totalCount));
         if (thumbH > SCROLL_H) thumbH = SCROLL_H;
         float thumbRange = (std::max)(1.f, SCROLL_H - thumbH);
-        float thumbY = SCROLL_Y + ((float)scrollOffset / (float)maxScroll) * thumbRange;
+        float thumbY = SCROLL_Y + ((float)realScroll / (float)maxScrollTotal) * thumbRange;
         R(SCROLL_X + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
         R(SCROLL_X + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
     }
@@ -735,7 +749,10 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             g_ttItems[i].content[0] = L'\0';
         }
 
-        for (LONG i = 0; i < itemCount; i++) {
+        // Only create textures for the currently visible window — avoids a
+        // first-frame stutter when the list has hundreds of items.
+        LONG visEnd = (LONG)(scrollOffset + visibleRows + 1);
+        for (LONG i = scrollOffset; i < itemCount && i < visEnd; i++) {
             if (!g_data) break;
             wchar_t item[MAX_MENU_ITEM_LEN] = {};
             wcsncpy_s(item, g_data->menu_items[i], MAX_MENU_ITEM_LEN - 1);
@@ -762,14 +779,14 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             wchar_t line[MAX_MENU_ITEM_LEN] = {};
             if (g_data)
                 wcsncpy_s(line, g_data->dashboard_items[i], MAX_MENU_ITEM_LEN - 1);
-            UpdateTextTex(dev, g_ttItems[MAX_MENU_ITEMS - 1], line, 14, false,
+            UpdateTextTex(dev, g_ttDash, line, 14, false,
                           RGB(0xC6, 0xDA, 0xED), (int)(DASH_W - 24.f));
-            if (g_ttItems[MAX_MENU_ITEMS - 1].srv) {
+            if (g_ttDash.srv) {
                 DrawTexQuad(ctx, DASH_X + 12.f, y,
-                            (float)g_ttItems[MAX_MENU_ITEMS - 1].width,
-                            (float)g_ttItems[MAX_MENU_ITEMS - 1].height,
-                            vpW, vpH, g_ttItems[MAX_MENU_ITEMS - 1].srv);
-                y += (float)g_ttItems[MAX_MENU_ITEMS - 1].height + 3.f;
+                            (float)g_ttDash.width,
+                            (float)g_ttDash.height,
+                            vpW, vpH, g_ttDash.srv);
+                y += (float)g_ttDash.height + 3.f;
             }
         }
 
@@ -980,6 +997,14 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
 }
 
 // ---------------------------------------------------------------------------
+// XInput suppression — forward declarations (defined after HookThread helpers)
+// ---------------------------------------------------------------------------
+typedef void (WINAPI *PFN_XInputEnable_t)(BOOL);
+static PFN_XInputEnable_t g_XInputEnable      = nullptr;
+static LONG               g_menuWasSuppressed = -1;
+static void InitXInputEnable();
+
+// ---------------------------------------------------------------------------
 // Hooked IDXGISwapChain::Present
 // ---------------------------------------------------------------------------
 static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT flags) {
@@ -1011,7 +1036,18 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
             g_data?(int)g_data->visible:-1,
             g_data?(int)g_data->menu_visible:-1);
 
-    // XInput hook is installed once from HookThread — no per-frame call needed.
+    // Suppress / restore gamepad input for FIFA when the overlay menu opens or closes.
+    // XInputEnable(FALSE) sets a flag inside xinput*.dll that makes all XInputGetState
+    // calls in this process return zero — covers IAT, cached GetProcAddress, and any
+    // other call path.  Python runs in a separate process and is unaffected.
+    if (!g_XInputEnable) InitXInputEnable();
+    if (g_XInputEnable && g_data) {
+        LONG menuVis = InterlockedCompareExchange(&g_data->menu_visible, 0, 0) ? 1 : 0;
+        if (InterlockedExchange(&g_menuWasSuppressed, menuVis) != menuVis) {
+            g_XInputEnable(menuVis == 0 ? TRUE : FALSE);
+            Log("[XInput] XInputEnable(%s) menu_visible=%d", menuVis ? "FALSE" : "TRUE", menuVis);
+        }
+    }
 
     EnterCriticalSection(&g_drawCs);
     HRESULT presentResult = S_OK;
@@ -1080,7 +1116,110 @@ static void RemoveInlineHook(uint8_t *fn, uint8_t *tramp, const uint8_t *saved) 
     VirtualFree(tramp,0,MEM_RELEASE);
 }
 
-static bool TryInstallXInputHook() { return false; }
+// ---------------------------------------------------------------------------
+// XInput IAT hook — zeroes gamepad state for FIFA while the overlay menu is open.
+//
+// Strategy: scan the IAT of EVERY loaded module (main EXE + all DLLs) and
+// replace every XInputGetState pointer with our hook.  This covers both
+// static-link imports and DLLs that statically import XInput on FIFA's behalf.
+// Each replacement is a single aligned pointer write — atomic on x64, no
+// trampoline, no inline-byte patching, no crash risk.
+// Struct defined inline so xinput.h / xinput.lib are not required.
+// ---------------------------------------------------------------------------
+struct CGFS_XINPUT_GAMEPAD {
+    WORD  wButtons;
+    BYTE  bLeftTrigger, bRightTrigger;
+    SHORT sThumbLX, sThumbLY, sThumbRX, sThumbRY;
+};
+struct CGFS_XINPUT_STATE {
+    DWORD dwPacketNumber;
+    CGFS_XINPUT_GAMEPAD Gamepad;
+};
+typedef DWORD (WINAPI *PFN_XInputGetState_t)(DWORD, CGFS_XINPUT_STATE*);
+static PFN_XInputGetState_t g_origXInputGetState = nullptr;
+
+static DWORD WINAPI HookedXInputGetState(DWORD idx, CGFS_XINPUT_STATE *pState) {
+    DWORD r = g_origXInputGetState(idx, pState);
+    // While the overlay menu is open, zero all buttons/axes so FIFA doesn't
+    // see the same inputs the user sends to the overlay.
+    // dwPacketNumber is left intact so the game still sees a live controller.
+    if (r == 0 && pState && g_data &&
+        InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0)
+        pState->Gamepad = {};
+    return r;
+}
+
+static void TryInstallXInputIATHook() {
+    // Enumerate every module currently loaded in this process and patch any
+    // IAT entry that imports XInputGetState from an xinput*.dll.
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, GetCurrentProcessId());
+    if (snap == INVALID_HANDLE_VALUE) {
+        Log("[XInput] CreateToolhelp32Snapshot failed err=%lu", GetLastError());
+        return;
+    }
+    int patches = 0;
+    MODULEENTRY32 me = { sizeof(me) };
+    if (Module32First(snap, &me)) {
+        do {
+            HMODULE hMod = me.hModule;
+            __try {
+                auto *dos = reinterpret_cast<IMAGE_DOS_HEADER*>(hMod);
+                if (dos->e_magic != IMAGE_DOS_SIGNATURE) continue;
+                auto *nt = reinterpret_cast<IMAGE_NT_HEADERS*>((BYTE*)hMod + dos->e_lfanew);
+                auto &imp = nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+                if (!imp.VirtualAddress) continue;
+                auto *desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>((BYTE*)hMod + imp.VirtualAddress);
+                for (; desc->Name; ++desc) {
+                    const char *dn = reinterpret_cast<const char*>((BYTE*)hMod + desc->Name);
+                    if (_strnicmp(dn, "xinput", 6) != 0) continue;
+                    if (!desc->OriginalFirstThunk) continue;
+                    auto *orig = reinterpret_cast<IMAGE_THUNK_DATA*>((BYTE*)hMod + desc->OriginalFirstThunk);
+                    auto *iat  = reinterpret_cast<IMAGE_THUNK_DATA*>((BYTE*)hMod + desc->FirstThunk);
+                    for (; orig->u1.AddressOfData; ++orig, ++iat) {
+                        if (IMAGE_SNAP_BY_ORDINAL(orig->u1.Ordinal)) continue;
+                        auto *ibn = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>((BYTE*)hMod + orig->u1.AddressOfData);
+                        if (strcmp(ibn->Name, "XInputGetState") != 0) continue;
+                        auto existing = reinterpret_cast<PFN_XInputGetState_t>(iat->u1.Function);
+                        if (existing == HookedXInputGetState) continue; // already patched
+                        if (!g_origXInputGetState) g_origXInputGetState = existing;
+                        DWORD old = 0;
+                        if (VirtualProtect(&iat->u1.Function, sizeof(void*), PAGE_EXECUTE_READWRITE, &old)) {
+                            iat->u1.Function = reinterpret_cast<ULONG_PTR>(HookedXInputGetState);
+                            VirtualProtect(&iat->u1.Function, sizeof(void*), old, &old);
+                            ++patches;
+                            Log("[XInput] patched %s in module %s", dn, me.szModule);
+                        }
+                    }
+                }
+            } __except (EXCEPTION_EXECUTE_HANDLER) {
+                // Skip modules whose PE headers are not readable
+            }
+        } while (Module32Next(snap, &me));
+    }
+    CloseHandle(snap);
+    if (patches > 0)
+        Log("[XInput] %d XInputGetState IAT patch(es) installed", patches);
+    else
+        Log("[XInput] XInputGetState not found in any module IAT");
+}
+
+// XInputEnable(FALSE/TRUE) — process-wide XInput suppression.
+// Works regardless of how FIFA loaded XInput (IAT, GetProcAddress cache, etc.)
+// because the flag lives inside xinput*.dll and is checked by every XInputGetState call.
+static void InitXInputEnable() {
+    static const char * const kNames[] = {
+        "xinput1_4.dll", "xinput1_3.dll", "xinput9_1_0.dll", nullptr
+    };
+    for (int i = 0; kNames[i]; ++i) {
+        HMODULE h = GetModuleHandleA(kNames[i]);
+        if (!h) continue;
+        auto fn = reinterpret_cast<PFN_XInputEnable_t>(GetProcAddress(h, "XInputEnable"));
+        if (!fn) continue;
+        g_XInputEnable = fn;
+        Log("[XInput] XInputEnable found in %s at %p", kNames[i], fn);
+        return;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Hook setup: temp D3D11 device+swapchain -> vtable hook (NO inline bytes)
@@ -1152,6 +1291,11 @@ static DWORD WINAPI HookThread(LPVOID) {
     tmpSC->Release(); if (tmpDev) tmpDev->Release();
     DestroyWindow(hw); UnregisterClassW(wc.lpszClassName,wc.hInstance);
 
+    // Patch FIFA's XInputGetState IAT entry so gamepad input is suppressed
+    // while the overlay menu is open.  Must run after FIFA has finished
+    // loading its import table, hence inside HookThread (500 ms after attach).
+    TryInstallXInputIATHook();
+
     Log("[HookThread] done");
     return 0;
 }
@@ -1180,11 +1324,18 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
 
         g_hMap=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,
             PAGE_READWRITE,0,sizeof(OverlayShared),SHMEM_NAME);
-        if (g_hMap)
+        DWORD shmemErr=GetLastError();
+        if (g_hMap) {
             g_data=reinterpret_cast<OverlayShared*>(
                 MapViewOfFile(g_hMap,FILE_MAP_ALL_ACCESS,0,0,sizeof(OverlayShared)));
-        Log("[DllMain] shmem hMap=%p data=%p visible=%d",
-            g_hMap,g_data,g_data?(int)g_data->visible:-1);
+            if (!g_data)
+                Log("[DllMain] MapViewOfFile failed err=%lu (shmem size mismatch? expected %zu bytes)",
+                    GetLastError(), sizeof(OverlayShared));
+        } else {
+            Log("[DllMain] CreateFileMappingW failed err=%lu", shmemErr);
+        }
+        Log("[DllMain] shmem hMap=%p data=%p visible=%d (struct=%zu bytes)",
+            g_hMap,g_data,g_data?(int)g_data->visible:-1, sizeof(OverlayShared));
 
         HANDLE ht=CreateThread(nullptr,0,HookThread,nullptr,0,nullptr);
         if (ht) CloseHandle(ht);

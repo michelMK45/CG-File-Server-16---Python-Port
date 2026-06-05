@@ -157,6 +157,18 @@ _D3D_MENU_TAB_H               = 56.0
 _D3D_MENU_DASH_MIN_H          = 220.0
 _D3D_MENU_DASH_MAX_H          = 320.0
 _D3D_MENU_ITEM_H              = 28.0
+WM_QUIT = 0x0012
+
+
+class MSG(ctypes.Structure):
+    _fields_ = [
+        ("hwnd", wintypes.HWND),
+        ("message", wintypes.UINT),
+        ("wParam", wintypes.WPARAM),
+        ("lParam", wintypes.LPARAM),
+        ("time", wintypes.DWORD),
+        ("pt", POINT),
+    ]
 
 
 class Server16App(tk.Tk):
@@ -229,9 +241,13 @@ class Server16App(tk.Tk):
         self._overlay_mouse_click_pending = False
         self._overlay_mouse_screen_x = None
         self._overlay_mouse_screen_y = None
+        self._overlay_dblclick_last_time = 0.0
+        self._overlay_dblclick_last_index = -1
         self._overlay_blocked_key_down = set()
         self._mouse_hook = None
         self._mouse_hook_proc = None
+        self._mouse_hook_thread: threading.Thread | None = None
+        self._mouse_hook_thread_id = 0
         self._keyboard_hook = None
         self._keyboard_hook_proc = None
         self._overlay_toggle_ready_at = 0.0
@@ -252,6 +268,7 @@ class Server16App(tk.Tk):
         self._overlay_item_count     = 0
         self._overlay_selected_index = 0
         self._overlay_scroll_offset  = 0
+        self._overlay_window_base    = 0
         self._overlay_visible_rows   = 20
         self._overlay_nav_ready_at   = 0.0
         self._overlay_nav_repeat_at  = 0.0
@@ -450,12 +467,14 @@ class Server16App(tk.Tk):
         self.user32.CallNextHookEx.restype = wintypes.LPARAM
         self.user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
         self.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
+        self.user32.WindowFromPoint.argtypes = [POINT]
+        self.user32.WindowFromPoint.restype = wintypes.HWND
+        self.user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+        self.user32.GetAncestor.restype = wintypes.HWND
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         self.kernel32.GetModuleHandleW.restype = wintypes.HMODULE
         self._xinput = self._load_xinput_dll()
-        self._install_mouse_wheel_hook()
-        self._install_keyboard_hook()
         self._apply_window_icon(self)
         self._configure_theme()
         self._build_ui()
@@ -2699,7 +2718,12 @@ class Server16App(tk.Tk):
             self.log(f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}")
             self._publish_overlay_menu_state()
             if self._d3d_menu_visible:
+                self._install_mouse_wheel_hook()
+                self._install_keyboard_hook()
                 self._update_menu_content()
+            else:
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
 
         if self._d3d_menu_visible and inj is not None:
             try:
@@ -2711,12 +2735,16 @@ class Server16App(tk.Tk):
             self._d3d_menu_visible = False
             self._overlay_toggle_ready_at = now + 0.22
             self.log("D3D menu closed via keyboard")
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
 
         if self._d3d_menu_visible and b_edge and now >= self._overlay_toggle_ready_at:
             self._d3d_menu_visible = False
             self._overlay_toggle_ready_at = now + 0.22
             self.log("D3D menu closed via gamepad B")
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
 
         if self._d3d_menu_visible and now >= self._overlay_tab_ready_at:
@@ -2792,6 +2820,8 @@ class Server16App(tk.Tk):
         # Auto-close if FIFA exits
         if self._d3d_menu_visible and not self._fifa_hwnd:
             self._d3d_menu_visible = False
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
 
     def _load_xinput_dll(self):
@@ -2893,8 +2923,42 @@ class Server16App(tk.Tk):
         self._overlay_selected_index = 0
         self._overlay_scroll_offset  = 0
         self._overlay_item_count     = len(items)
+        self._overlay_window_base    = 0
+        self._refresh_d3d_window()
+
+    def _refresh_d3d_window(self) -> None:
+        """Write a sliding window of the current tab's items to shared memory.
+
+        Only _MAX_MENU_ITEMS entries fit in shared memory at once. This method
+        picks a window that covers the visible area and syncs it to the DLL,
+        along with the real total count so the scrollbar stays accurate.
+        This gives unlimited list length with no visible seam.
+        """
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        items = self._overlay_items
+        total = len(items)
+        scroll = self._overlay_scroll_offset
+        sel = self._overlay_selected_index
+
+        from .d3d_injector import _MAX_MENU_ITEMS as _WIN
+        # Align window so that the scroll position sits in the lower quarter.
+        base = max(0, scroll - _WIN // 4)
+        base = min(base, max(0, total - _WIN))
+        # Ensure the selection is always inside the window.
+        if sel < base:
+            base = max(0, sel)
+        elif sel >= base + _WIN:
+            base = max(0, sel - _WIN + 1)
+
+        self._overlay_window_base = base
+        window_items = items[base : base + _WIN]
+        window_scroll = max(0, scroll - base)
+        window_sel = max(0, sel - base)
         try:
-            inj.set_menu_content(items, 0, 0)
+            inj.set_menu_content(window_items, window_sel, window_scroll)
+            inj.set_window_info(total, base)
         except Exception:
             pass
 
@@ -3076,7 +3140,6 @@ class Server16App(tk.Tk):
             return
         sel = (self._overlay_selected_index + delta) % count
         self._overlay_selected_index = sel
-        # Keep selected item visible
         scroll = self._overlay_scroll_offset
         visible_rows = max(1, int(self._overlay_visible_rows))
         if sel < scroll:
@@ -3084,12 +3147,7 @@ class Server16App(tk.Tk):
         elif sel >= scroll + visible_rows:
             scroll = sel - visible_rows + 1
         self._overlay_scroll_offset = scroll
-        inj = self._d3d_injector
-        if inj is not None:
-            try:
-                inj.set_menu_selection(sel, scroll)
-            except Exception:
-                pass
+        self._refresh_d3d_window()
 
     def _set_menu_selection(self, index: int) -> None:
         count = self._overlay_item_count
@@ -3104,12 +3162,7 @@ class Server16App(tk.Tk):
         elif sel >= scroll + visible_rows:
             scroll = sel - visible_rows + 1
         self._overlay_scroll_offset = scroll
-        inj = self._d3d_injector
-        if inj is not None:
-            try:
-                inj.set_menu_selection(sel, scroll)
-            except Exception:
-                pass
+        self._refresh_d3d_window()
 
     def _sync_d3d_menu_mouse_input(self, menu_input_fg: bool) -> None:
         # Use the flag set by the LL mouse hook — more reliable than GetAsyncKeyState
@@ -3189,7 +3242,16 @@ class Server16App(tk.Tk):
             row = int((local_y - list_y) // item_h)
             item_index = self._overlay_scroll_offset + row
             if 0 <= item_index < self._overlay_item_count:
-                self._set_menu_selection(item_index)
+                now = time.monotonic()
+                if (item_index == self._overlay_dblclick_last_index
+                        and now - self._overlay_dblclick_last_time < 0.5):
+                    self._activate_overlay_selected_item("dblclick")
+                    self._overlay_dblclick_last_time = 0.0
+                    self._overlay_dblclick_last_index = -1
+                else:
+                    self._set_menu_selection(item_index)
+                    self._overlay_dblclick_last_time = now
+                    self._overlay_dblclick_last_index = item_index
 
         if left_edge and scroll_x <= local_x < (scroll_x + scroll_w) and scroll_y <= local_y < (scroll_y + scroll_h) and self._overlay_item_count > 0:
             visible_rows = max(1, int(self._overlay_visible_rows))
@@ -3220,11 +3282,7 @@ class Server16App(tk.Tk):
             elif sel >= (new_scroll + visible_rows):
                 sel = max(new_scroll, min(self._overlay_item_count - 1, new_scroll + visible_rows - 1))
             self._overlay_selected_index = sel
-            if inj is not None:
-                try:
-                    inj.set_menu_selection(sel, new_scroll)
-                except Exception:
-                    pass
+            self._refresh_d3d_window()
 
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)
@@ -3243,11 +3301,20 @@ class Server16App(tk.Tk):
         return False
 
     def _install_mouse_wheel_hook(self) -> None:
-        if self._mouse_hook is not None:
+        if self._mouse_hook_thread is not None and self._mouse_hook_thread.is_alive():
             return
+        t = threading.Thread(target=self._mouse_hook_thread_func, name="mouse-hook", daemon=True)
+        t.start()
+        self._mouse_hook_thread = t
 
+    def _mouse_hook_thread_func(self) -> None:
+        """Dedicated Win32 message-pump thread for WH_MOUSE_LL.
+
+        Running the hook in its own thread with a tight GetMessage loop means
+        mouse callbacks are dispatched immediately, without waiting for Tkinter's
+        event loop — this eliminates cursor lag when the overlay menu is open.
+        """
         hook_type = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-
         block_mouse_messages = {
             WM_LBUTTONDOWN,
             WM_LBUTTONUP,
@@ -3261,13 +3328,32 @@ class Server16App(tk.Tk):
         def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
             if n_code == HC_ACTION and self._d3d_menu_visible:
                 msg = int(w_param)
+                mouse_x = mouse_y = -1
                 try:
                     info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
-                    self._overlay_mouse_screen_x = int(info.pt.x)
-                    self._overlay_mouse_screen_y = int(info.pt.y)
+                    mouse_x = int(info.pt.x)
+                    mouse_y = int(info.pt.y)
+                    self._overlay_mouse_screen_x = mouse_x
+                    self._overlay_mouse_screen_y = mouse_y
                 except Exception:
                     pass
-                if msg == WM_MOUSEWHEEL:
+                # Only intercept events targeting the FIFA window.
+                # WindowFromPoint respects z-order so fullscreen, taskbar, and
+                # other overlapping windows are handled correctly.
+                over_fifa = False
+                try:
+                    fifa_hwnd = int(self._fifa_hwnd or 0)
+                    if fifa_hwnd and mouse_x >= 0:
+                        pt = POINT()
+                        pt.x = mouse_x
+                        pt.y = mouse_y
+                        hwnd_at = self.user32.WindowFromPoint(pt)
+                        if hwnd_at:
+                            root = self.user32.GetAncestor(hwnd_at, 2)  # GA_ROOT
+                            over_fifa = (int(root or hwnd_at) == fifa_hwnd)
+                except Exception:
+                    pass
+                if msg == WM_MOUSEWHEEL and over_fifa:
                     try:
                         info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                         delta = ctypes.c_short((int(info.mouseData) >> 16) & 0xFFFF).value
@@ -3275,29 +3361,41 @@ class Server16App(tk.Tk):
                             self._overlay_mouse_wheel_steps += int(delta / 120)
                     except Exception:
                         pass
-                if msg == WM_LBUTTONDOWN:
-                    # Mark click here so _sync_d3d_menu_mouse_input can detect it
-                    # (GetAsyncKeyState is not reliable when the LL hook blocks the message)
-                    self._overlay_mouse_click_pending = True
-                if msg in block_mouse_messages:
+                if msg in block_mouse_messages and over_fifa:
+                    if msg == WM_LBUTTONDOWN:
+                        self._overlay_mouse_click_pending = True
                     return 1
-            return int(self.user32.CallNextHookEx(self._mouse_hook, n_code, w_param, l_param))
+            return int(self.user32.CallNextHookEx(self._mouse_hook or 0, n_code, w_param, l_param))
 
-        self._mouse_hook_proc = hook_type(_mouse_proc)
+        proc = hook_type(_mouse_proc)
+        self._mouse_hook_proc = proc
         module_handle = self.kernel32.GetModuleHandleW(None)
-        try:
-            self._mouse_hook = self.user32.SetWindowsHookExW(WH_MOUSE_LL, self._mouse_hook_proc, module_handle, 0)
-        except Exception:
-            self._mouse_hook = None
+        hook = self.user32.SetWindowsHookExW(WH_MOUSE_LL, proc, module_handle, 0)
+        self._mouse_hook = hook
+        self._mouse_hook_thread_id = self.kernel32.GetCurrentThreadId()
 
-    def _uninstall_mouse_wheel_hook(self) -> None:
-        if self._mouse_hook is not None:
+        win_msg = MSG()
+        while self.user32.GetMessageW(ctypes.byref(win_msg), None, 0, 0) > 0:
+            self.user32.TranslateMessage(ctypes.byref(win_msg))
+            self.user32.DispatchMessageW(ctypes.byref(win_msg))
+
+        if hook:
             try:
-                self.user32.UnhookWindowsHookEx(self._mouse_hook)
+                self.user32.UnhookWindowsHookEx(hook)
             except Exception:
                 pass
-            self._mouse_hook = None
+        self._mouse_hook = None
         self._mouse_hook_proc = None
+        self._mouse_hook_thread_id = 0
+
+    def _uninstall_mouse_wheel_hook(self) -> None:
+        tid = self._mouse_hook_thread_id
+        if tid:
+            self.user32.PostThreadMessageW(tid, WM_QUIT, 0, 0)
+        t = self._mouse_hook_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._mouse_hook_thread = None
 
     def _install_keyboard_hook(self) -> None:
         if self._keyboard_hook is not None:
