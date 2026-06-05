@@ -328,6 +328,8 @@ class Server16App(tk.Tk):
         self._d3d_injector = None  # D3DOverlayInjector, created lazily
         self._d3d_overlay_shown_at = 0.0   # monotonic time when overlay was shown
         self._d3d_overlay_hide_job = None  # pending after() job for deferred hide
+        self._home_crest_png: str = ""     # path to temp PNG sent to overlay
+        self._away_crest_png: str = ""     # path to temp PNG sent to overlay
         self._stadium_loading_hide_job = None
         self.status_pill = None
         self.dashboard_canvas = None
@@ -1526,6 +1528,31 @@ class Server16App(tk.Tk):
                 return candidate
         return None
 
+    def _to_overlay_crest_png(self, team_id: str, prefix: str) -> str:
+        """Convert a team DDS crest to a temp PNG for the D3D overlay. Returns path or ''."""
+        import tempfile
+        import os
+        attr = f"_crest_tmp_{prefix}"
+        old = getattr(self, attr, "")
+        if old:
+            try:
+                os.unlink(old)
+            except OSError:
+                pass
+        setattr(self, attr, "")
+        dds_path = self._resolve_team_logo_path(team_id)
+        if not dds_path:
+            return ""
+        try:
+            img = Image.open(dds_path).convert("RGBA")
+            tmp = tempfile.NamedTemporaryFile(suffix=".png", delete=False)
+            img.save(tmp.name, "PNG")
+            tmp.close()
+            setattr(self, attr, tmp.name)
+            return tmp.name
+        except Exception:
+            return ""
+
     def _update_team_logo(self, prefix: str, team_id: str) -> None:
         label = self._team_logo_labels.get(prefix)
         if label is None:
@@ -1546,6 +1573,15 @@ class Server16App(tk.Tk):
             label.configure(text="", compound="center")
         label.configure(image=image_ref)
         self._team_logo_images[prefix] = image_ref
+        # Sync crest to D3D overlay dashboard
+        inj = self._d3d_injector
+        if inj and inj.is_ready():
+            png = self._to_overlay_crest_png(team_id, prefix)
+            if prefix == "home":
+                self._home_crest_png = png
+            else:
+                self._away_crest_png = png
+            inj.set_team_crests(self._home_crest_png, self._away_crest_png)
 
     def _build_matchup_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.matchup.title", "card.matchup.subtitle")

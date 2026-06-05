@@ -56,6 +56,9 @@ class _OverlayShared(ctypes.Structure):
             # Virtual-scroll telemetry: written by Python, read by C++ for scrollbar.
             ("menu_total_count",    ctypes.c_long),    # real list size (may exceed MAX_MENU_ITEMS)
             ("menu_window_base",    ctypes.c_long),    # real index of menu_items[0]
+            # Team crest image paths (PNG) for dashboard panel — written by Python
+            ("home_crest_path",     ctypes.c_wchar * _MAX_IMG),
+            ("away_crest_path",     ctypes.c_wchar * _MAX_IMG),
     ]
 
 
@@ -235,6 +238,13 @@ class D3DOverlayInjector:
             return
         self._shared.menu_total_count = int(total_count)
         self._shared.menu_window_base = int(window_base)
+
+    def set_team_crests(self, home_path: str = "", away_path: str = "") -> None:
+        """Write team crest PNG paths so the C++ dashboard panel can render them."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.home_crest_path = home_path[:_MAX_IMG - 1]
+        self._shared.away_crest_path = away_path[:_MAX_IMG - 1]
 
     def set_menu_selection(self, selected: int, scroll: int) -> None:
         if not self._ready or self._shared is None:

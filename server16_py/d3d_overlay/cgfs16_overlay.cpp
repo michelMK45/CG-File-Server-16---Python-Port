@@ -67,6 +67,9 @@ struct OverlayShared {
         // Virtual-scroll fields: written by Python, read by C++ for scrollbar.
         volatile LONG menu_total_count;   // real list size (may exceed MAX_MENU_ITEMS)
         volatile LONG menu_window_base;   // real index of menu_items[0]
+    // Team crest image paths — written by Python, read by C++ for dashboard render
+    wchar_t home_crest_path[MAX_IMG];  // PNG path for home team crest (empty = none)
+    wchar_t away_crest_path[MAX_IMG];  // PNG path for away team crest (empty = none)
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -243,6 +246,15 @@ static ID3D11ShaderResourceView *g_previewSRV          = nullptr;
 static wchar_t                   g_previewLoadedPath[MAX_IMG] = {};
 static int                       g_previewNatW          = 0;
 static int                       g_previewNatH          = 0;
+
+// Team crest textures for dashboard panel (WIC -> D3D11)
+static ID3D11Texture2D          *g_homeCrestTex        = nullptr;
+static ID3D11ShaderResourceView *g_homeCrestSRV        = nullptr;
+static wchar_t                   g_homeLoadedPath[MAX_IMG] = {};
+
+static ID3D11Texture2D          *g_awayCrestTex        = nullptr;
+static ID3D11ShaderResourceView *g_awayCrestSRV        = nullptr;
+static wchar_t                   g_awayLoadedPath[MAX_IMG] = {};
 
 static bool InitD3D11Overlay(ID3D11Device *dev) {
     ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *err = nullptr;
@@ -463,14 +475,17 @@ static void UpdateTextTex(ID3D11Device *dev, TextTex &tt,
 }
 
 // ---------------------------------------------------------------------------
-// WIC -> D3D11 texture for stadium preview
-// Returns true if the texture was (re)loaded successfully
+// WIC -> D3D11 texture (generic, reused for preview and team crests)
+// Releases *outTex/*outSRV before loading. outW/outH are optional.
 // ---------------------------------------------------------------------------
-static bool LoadPreviewImageWIC(ID3D11Device *dev, const wchar_t *path)
+static bool LoadWICTexture(ID3D11Device *dev, const wchar_t *path,
+    ID3D11Texture2D **outTex, ID3D11ShaderResourceView **outSRV,
+    int *outW = nullptr, int *outH = nullptr)
 {
-    if (g_previewTex) { g_previewTex->Release(); g_previewTex = nullptr; }
-    if (g_previewSRV) { g_previewSRV->Release(); g_previewSRV = nullptr; }
-    g_previewNatW = g_previewNatH = 0;
+    if (*outTex) { (*outTex)->Release(); *outTex = nullptr; }
+    if (*outSRV) { (*outSRV)->Release(); *outSRV = nullptr; }
+    if (outW) *outW = 0;
+    if (outH) *outH = 0;
 
     IWICImagingFactory *wicF = nullptr;
     HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
@@ -520,11 +535,11 @@ static bool LoadPreviewImageWIC(ID3D11Device *dev, const wchar_t *path)
     srd.pSysMem     = pixels.data();
     srd.SysMemPitch = w * 4;
 
-    hr = dev->CreateTexture2D(&td, &srd, &g_previewTex);
+    hr = dev->CreateTexture2D(&td, &srd, outTex);
     if (FAILED(hr)) { Log("[WIC] CreateTexture2D hr=0x%08X", (unsigned)hr); return false; }
-    dev->CreateShaderResourceView(g_previewTex, nullptr, &g_previewSRV);
-    g_previewNatW = (int)w;
-    g_previewNatH = (int)h;
+    dev->CreateShaderResourceView(*outTex, nullptr, outSRV);
+    if (outW) *outW = (int)w;
+    if (outH) *outH = (int)h;
     Log("[WIC] loaded '%ls' %dx%d", path, w, h);
     return true;
 }
@@ -567,6 +582,41 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         if (scrollOffset < 0) scrollOffset = 0;
         if (totalCount < itemCount) totalCount = itemCount;  // backward compat
         if (windowBase < 0) windowBase = 0;
+    }
+
+    // ── Load / reload team crest textures when paths change ──────────────────
+    {
+        wchar_t homePath[MAX_IMG] = {}, awayPath[MAX_IMG] = {};
+        if (g_data) {
+            wcsncpy_s(homePath, g_data->home_crest_path, MAX_IMG - 1);
+            wcsncpy_s(awayPath, g_data->away_crest_path, MAX_IMG - 1);
+        }
+        if (wcscmp(homePath, g_homeLoadedPath) != 0) {
+            wcscpy_s(g_homeLoadedPath, homePath);
+            if (homePath[0]) {
+                ID3D11Device *dev2 = nullptr;
+                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
+                    LoadWICTexture(dev2, homePath, &g_homeCrestTex, &g_homeCrestSRV);
+                    dev2->Release();
+                }
+            } else {
+                if (g_homeCrestTex) { g_homeCrestTex->Release(); g_homeCrestTex = nullptr; }
+                if (g_homeCrestSRV) { g_homeCrestSRV->Release(); g_homeCrestSRV = nullptr; }
+            }
+        }
+        if (wcscmp(awayPath, g_awayLoadedPath) != 0) {
+            wcscpy_s(g_awayLoadedPath, awayPath);
+            if (awayPath[0]) {
+                ID3D11Device *dev2 = nullptr;
+                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
+                    LoadWICTexture(dev2, awayPath, &g_awayCrestTex, &g_awayCrestSRV);
+                    dev2->Release();
+                }
+            } else {
+                if (g_awayCrestTex) { g_awayCrestTex->Release(); g_awayCrestTex = nullptr; }
+                if (g_awayCrestSRV) { g_awayCrestSRV->Release(); g_awayCrestSRV = nullptr; }
+            }
+        }
     }
 
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -843,21 +893,36 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             if (dashCount < 0) dashCount = 0;
             if (dashCount > MAX_DASH_ITEMS) dashCount = MAX_DASH_ITEMS;
         }
+        const float CREST_SIZE = 72.f;
+        const float CREST_PAD  = 10.f;
+        float dashTextX = DASH_X + (g_homeCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f);
+        float dashTextW = DASH_W
+                        - (g_homeCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f)
+                        - (g_awayCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f);
+        if (dashTextW < 100.f) dashTextW = 100.f;
         float y = DASH_Y + 10.f;
         for (LONG i = 0; i < dashCount; i++) {
             wchar_t line[MAX_MENU_ITEM_LEN] = {};
             if (g_data)
                 wcsncpy_s(line, g_data->dashboard_items[i], MAX_MENU_ITEM_LEN - 1);
             UpdateTextTex(dev, g_ttDash, line, 14, false,
-                          RGB(0xC6, 0xDA, 0xED), (int)(DASH_W - 24.f));
+                          RGB(0xC6, 0xDA, 0xED), (int)dashTextW);
             if (g_ttDash.srv) {
-                DrawTexQuad(ctx, DASH_X + 12.f, y,
+                DrawTexQuad(ctx, dashTextX, y,
                             (float)g_ttDash.width,
                             (float)g_ttDash.height,
                             vpW, vpH, g_ttDash.srv);
                 y += (float)g_ttDash.height + 3.f;
             }
         }
+        // --- Team crests ---
+        const float crestCy = DASH_Y + (DASH_H - CREST_SIZE) / 2.f;
+        if (g_homeCrestSRV)
+            DrawTexQuad(ctx, DASH_X + CREST_PAD, crestCy,
+                        CREST_SIZE, CREST_SIZE, vpW, vpH, g_homeCrestSRV);
+        if (g_awayCrestSRV)
+            DrawTexQuad(ctx, DASH_X + DASH_W - CREST_PAD - CREST_SIZE, crestCy,
+                        CREST_SIZE, CREST_SIZE, vpW, vpH, g_awayCrestSRV);
 
         if (itemCount == 0) {
             UpdateTextTex(dev, g_ttEmpty, L"No items available", 14, false, RGB(0x66, 0x88, 0xAA), 400);
@@ -964,7 +1029,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     if (wcscmp(imgPath, g_previewLoadedPath) != 0) {
         wcscpy_s(g_previewLoadedPath, imgPath);
         if (imgPath[0] != L'\0') {
-            LoadPreviewImageWIC(dev, imgPath);
+            LoadWICTexture(dev, imgPath, &g_previewTex, &g_previewSRV, &g_previewNatW, &g_previewNatH);
         } else {
             if (g_previewTex) { g_previewTex->Release(); g_previewTex = nullptr; }
             if (g_previewSRV) { g_previewSRV->Release(); g_previewSRV = nullptr; }
