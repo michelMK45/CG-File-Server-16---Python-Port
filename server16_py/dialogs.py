@@ -135,8 +135,8 @@ class ScoreboardDialog(BaseDialog):
         ).grid(
             row=0, column=0, columnspan=2, padx=12, pady=12, sticky="ew"
         )
-        ttk.Label(self, text=self.tr("dialog.tvlogos")).grid(row=1, column=0, padx=12, sticky="w")
-        ttk.Label(self, text=self.tr("dialog.scoreboards")).grid(row=1, column=1, padx=12, sticky="w")
+        tk.Label(self, text=self.tr("dialog.tvlogos"), bg=self.bg, fg=self.muted, font=("Bahnschrift", 10)).grid(row=1, column=0, padx=12, sticky="w")
+        tk.Label(self, text=self.tr("dialog.scoreboards"), bg=self.bg, fg=self.muted, font=("Bahnschrift", 10)).grid(row=1, column=1, padx=12, sticky="w")
         self._build_listbox(2, 0, exedir / "TVLogoGBD", "default", self.tvlogo)
         self._build_listbox(2, 1, exedir / "ScoreBoardGBD", "default", self.scoreboard)
         ttk.Button(
@@ -152,7 +152,7 @@ class ScoreboardDialog(BaseDialog):
         ).grid(row=3, column=0, columnspan=2, padx=12, pady=12, sticky="ew")
 
     def _build_listbox(self, row: int, column: int, base: Path, default: str, target: tk.StringVar) -> None:
-        listbox = tk.Listbox(self, exportselection=False, width=28, height=16)
+        listbox = self._dark_listbox(self, exportselection=False, width=28, height=16, font=("Consolas", 10))
         listbox.grid(row=row, column=column, padx=12, pady=8)
         listbox.insert("end", default)
         if base.exists():
@@ -177,7 +177,7 @@ class MovieDialog(BaseDialog):
             values=tuple(self.tr(label_key) for _, label_key in MOVIE_SCOPE_OPTIONS),
             style="Server16.TCombobox",
         ).pack(fill="x", padx=12, pady=12)
-        listbox = tk.Listbox(self, exportselection=False, width=36, height=16)
+        listbox = self._dark_listbox(self, exportselection=False, width=36, height=16, font=("Consolas", 10))
         listbox.pack(padx=12, pady=8)
         listbox.insert("end", "None")
         movie_dir = exedir / "MoviesGBD"
