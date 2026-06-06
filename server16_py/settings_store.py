@@ -27,6 +27,7 @@ class SettingsStore:
         # Backward-compatible: keep this key available even if current UI
         # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
+        "SHOW_OVERLAY": True,
         "LANGUAGE": "en",
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
@@ -91,6 +92,15 @@ class SettingsStore:
     @show_stadium_loading_notification.setter
     def show_stadium_loading_notification(self, value: bool) -> None:
         self.data["SHOW_STADIUM_LOADING_NOTIFICATION"] = bool(value)
+        self.save()
+
+    @property
+    def show_overlay(self) -> bool:
+        return bool(self.data.get("SHOW_OVERLAY", True))
+
+    @show_overlay.setter
+    def show_overlay(self, value: bool) -> None:
+        self.data["SHOW_OVERLAY"] = bool(value)
         self.save()
 
     @property

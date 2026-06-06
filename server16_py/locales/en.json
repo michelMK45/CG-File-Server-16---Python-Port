@@ -104,6 +104,7 @@
   "stat.home_goals": "Home Goals",
   "stat.away_goals": "Away Goals",
   "toggle.show_loading_notification": "Show loading notification",
+  "toggle.show_overlay": "Enable in-game overlay",
   "module.stadium": "Stadium",
   "module.tvlogo": "TvLogo",
   "module.scoreboard": "ScoreBoard",

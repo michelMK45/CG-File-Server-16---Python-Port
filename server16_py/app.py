@@ -187,6 +187,7 @@ class Server16App(tk.Tk):
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
+        self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.localization = LocalizationManager(self.base_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
@@ -1746,7 +1747,16 @@ class Server16App(tk.Tk):
             variable=self.show_stadium_loading_var,
             command=self._toggle_stadium_loading_visibility,
         )
-        notification_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        notification_switch.pack(anchor="w", padx=12, pady=(0, 4))
+
+        overlay_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.show_overlay"),
+            variable=self.show_overlay_var,
+            command=self._toggle_overlay_enabled,
+        )
+        overlay_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
         """Toggle DiscordRPC on/off and save to settings."""
@@ -1795,6 +1805,18 @@ class Server16App(tk.Tk):
         if self.show_stadium_loading_var.get():
             return
         self._hide_stadium_loading_modal()
+
+    def _toggle_overlay_enabled(self) -> None:
+        self.settings.show_overlay = self.show_overlay_var.get()
+        self.settings.save()
+        if not self.show_overlay_var.get():
+            if self._overlay_visible:
+                self._hide_overlay()
+            if self._d3d_menu_visible:
+                self._d3d_menu_visible = False
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
+                self._publish_overlay_menu_state()
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "card.chants.title", "card.chants.subtitle")
@@ -2619,7 +2641,7 @@ class Server16App(tk.Tk):
 
     def _sync_overlay_hotkey(self) -> None:
         """Manages the Tkinter overlay window toggle (Space key, _overlay_enabled guard)."""
-        if not self._overlay_enabled:
+        if not self._overlay_enabled or not self.show_overlay_var.get():
             return
         now = perf_counter()
         foreground = int(self.user32.GetForegroundWindow() or 0)
@@ -2645,6 +2667,13 @@ class Server16App(tk.Tk):
             return
         inj = self._d3d_injector
         if inj is None:
+            return
+        if not self.show_overlay_var.get():
+            if self._d3d_menu_visible:
+                self._d3d_menu_visible = False
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
+                self._publish_overlay_menu_state()
             return
         now = perf_counter()
         self._refresh_fifa_hwnd_if_needed(now)
@@ -3158,15 +3187,16 @@ class Server16App(tk.Tk):
 
         return [
             self.tr("card.assets.title"),
-            f"{self.tr('stat.tv_logo')}: {_label_text('tvlogo', 'default')}",
+            f"{self.tr('stat.current_stadium')}: {_label_text('stadium')}",
             f"{self.tr('stat.scoreboard')}: {_label_text('scoreboard', 'default')}",
+            f"{self.tr('stat.tv_logo')}: {_label_text('tvlogo', 'default')}",
             f"{self.tr('stat.movie')}: {_label_text('movie', 'default')}",
-            f"{self.tr('stat.status')}: {_label_text('status', self.display_value('idle'))}",
-            f"{self.tr('stat.tournament')}: {_label_text('tour')}",
-            f"{self.tr('stat.round_id')}: {_label_text('round')}",
+            self.tr("card.match.title"),
             f"{self.tr('stat.current_page')}: {_label_text('page')}",
             f"{self.tr('stat.minute_second')}: {_label_text('match_clock_split', '00 / 00')}",
-            f"{self.tr('stat.current_stadium')}: {_label_text('stadium')}",
+            f"{self.tr('stat.tournament')}: {_label_text('tour')}",
+            f"{self.tr('stat.round_id')}: {_label_text('round')}",
+            f"{self.tr('stat.status')}: {_label_text('status', self.display_value('idle'))}",
         ]
 
     def _navigate_menu_items(self, delta: int) -> None:

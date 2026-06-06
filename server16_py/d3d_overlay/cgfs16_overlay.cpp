@@ -224,7 +224,7 @@ struct HintDef {
 
 static const HintDef kHints[NUM_HINT_ITEMS] = {
     { L"Up/Dn", L"Navigate", 0xFF606060 },
-    { L"RS",    L"Scroll",   0xFF3A5070 },
+    { L"R-Stick",    L"Scroll",   0xFF3A5070 },
     { L"LB/RB", L"Tab",      0xFF707070 },
     { L"A",     L"Select",   0xFF22AA44 },
     { L"B",     L"Close",    0xFFCC2222 },

@@ -86,6 +86,7 @@
   "stat.home_goals": "Goles local",
   "stat.away_goals": "Goles visitante",
   "toggle.show_loading_notification": "Mostrar notificación de carga",
+  "toggle.show_overlay": "Activar overlay en el juego",
   "camera.no_package_selected": "Ningún paquete de cámara seleccionado",
   "camera.no_camera_selected": "Ninguna cámara seleccionada",
   "camera.no_preview": "Sin vista previa",
