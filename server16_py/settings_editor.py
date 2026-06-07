@@ -281,17 +281,96 @@ class SettingsSectionFrame(tk.Frame):
         self.silence_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_prob"])
         self.silence_max_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_max"])
         self.away_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["away_prob"])
+
+        self.body.grid_columnconfigure(0, weight=0)
+        self.body.grid_columnconfigure(1, weight=0)
+        self.body.grid_columnconfigure(2, weight=1)
+
         folder_choices = self._available_choices()
-        self._add_combo_row(self.body, 0, "Chants Folder", self.chants_folder_var, folder_choices or [""])
-        self._add_entry_row(self.body, 1, "Vol. Empate", self.default_var)
-        self._add_entry_row(self.body, 2, "Vol. Ganando", self.winning_var)
-        self._add_entry_row(self.body, 3, "Vol. Perdiendo -1", self.lose1_var)
-        self._add_entry_row(self.body, 4, "Vol. Perdiendo -2", self.lose2_var)
-        self._add_entry_row(self.body, 5, "Vol. Complaint -3+", self.lose3_var)
-        self._add_entry_row(self.body, 6, "Vol. ClubSong (gol)", self.goal_var)
-        self._add_entry_row(self.body, 7, "Prob. Silencio (0-1)", self.silence_prob_var)
-        self._add_entry_row(self.body, 8, "Max. Silencio (seg)", self.silence_max_var)
-        self._add_entry_row(self.body, 9, "Prob. Away Crowd (0-1)", self.away_prob_var)
+        tk.Label(self.body, text=self.tr("dialog.editor.field.chants_folder"), bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", pady=4, padx=(0, 8))
+        ttk.Combobox(self.body, textvariable=self.chants_folder_var, values=folder_choices or [""], font=("Consolas", 10), style="Server16.TCombobox").grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+
+        self._add_chants_field_row(self.body, 1, self.tr("dialog.editor.field.vol_draw"), self.default_var)
+        self._add_chants_field_row(self.body, 2, self.tr("dialog.editor.field.vol_winning"), self.winning_var)
+        self._add_chants_field_row(self.body, 3, self.tr("dialog.editor.field.vol_losing1"), self.lose1_var)
+        self._add_chants_field_row(self.body, 4, self.tr("dialog.editor.field.vol_losing2"), self.lose2_var)
+        self._add_chants_field_row(self.body, 5, self.tr("dialog.editor.field.vol_complaint"), self.lose3_var)
+        self._add_chants_field_row(self.body, 6, self.tr("dialog.editor.field.vol_goal"), self.goal_var)
+        self._add_chants_field_row(self.body, 7, self.tr("dialog.editor.field.prob_silence"), self.silence_prob_var)
+        self._add_chants_field_row(self.body, 8, self.tr("dialog.editor.field.max_silence"), self.silence_max_var, to=30.0, resolution=0.5)
+        self._add_chants_field_row(self.body, 9, self.tr("dialog.editor.field.prob_away_crowd"), self.away_prob_var)
+
+    def _add_chants_field_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, from_: float = 0.0, to: float = 1.0, resolution: float = 0.01) -> tk.Entry:
+        tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
+
+        entry = tk.Entry(
+            parent,
+            textvariable=variable,
+            bg=self.app.panel_alt,
+            fg=self.app.fg,
+            insertbackground=self.app.fg,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+            font=("Consolas", 11),
+            width=7,
+        )
+        entry.grid(row=row, column=1, sticky="ew", pady=2, padx=(0, 8))
+
+        _guard = [False]
+
+        def _parse(s: str) -> float | None:
+            try:
+                return float(s)
+            except ValueError:
+                return None
+
+        initial = _parse(variable.get())
+        initial = max(from_, min(to, initial)) if initial is not None else from_
+        scale_var = tk.DoubleVar(value=initial)
+
+        def on_scale(val: str) -> None:
+            if _guard[0]:
+                return
+            _guard[0] = True
+            try:
+                fmt = f"{float(val):.2f}" if resolution < 1.0 else f"{float(val):.1f}"
+                if variable.get() != fmt:
+                    variable.set(fmt)
+            finally:
+                _guard[0] = False
+
+        def on_entry(*_) -> None:
+            if _guard[0]:
+                return
+            _guard[0] = True
+            try:
+                v = _parse(variable.get())
+                if v is not None:
+                    scale_var.set(max(from_, min(to, v)))
+            finally:
+                _guard[0] = False
+
+        scale = tk.Scale(
+            parent,
+            from_=from_,
+            to=to,
+            resolution=resolution,
+            orient="horizontal",
+            variable=scale_var,
+            command=on_scale,
+            bg=self.app.card,
+            fg=self.app.fg,
+            troughcolor=self.app.panel_alt,
+            activebackground=self.app.accent,
+            highlightthickness=0,
+            bd=0,
+            showvalue=False,
+            sliderlength=16,
+        )
+        scale.grid(row=row, column=2, sticky="ew", pady=2)
+        variable.trace_add("write", on_entry)
+        return entry
 
     def _add_entry_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, readonly: bool = False):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
