@@ -70,6 +70,7 @@ struct OverlayShared {
     // Team crest image paths — written by Python, read by C++ for dashboard render
     wchar_t home_crest_path[MAX_IMG];  // PNG path for home team crest (empty = none)
     wchar_t away_crest_path[MAX_IMG];  // PNG path for away team crest (empty = none)
+    wchar_t list_header[MAX_STR];      // wizard step header text shown above list (empty = hidden)
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -255,6 +256,15 @@ static wchar_t                   g_homeLoadedPath[MAX_IMG] = {};
 static ID3D11Texture2D          *g_awayCrestTex        = nullptr;
 static ID3D11ShaderResourceView *g_awayCrestSRV        = nullptr;
 static wchar_t                   g_awayLoadedPath[MAX_IMG] = {};
+
+// Menu overlay preview image (stadiums tab + wizard phases — loaded from image_path)
+static ID3D11Texture2D          *g_menuPrevTex         = nullptr;
+static ID3D11ShaderResourceView *g_menuPrevSRV         = nullptr;
+static wchar_t                   g_menuPrevPath[MAX_IMG] = {};
+static int                       g_menuPrevNatW         = 0;
+static int                       g_menuPrevNatH         = 0;
+// Wizard-phase list header text texture (rendered above list items)
+static TextTex g_ttListHeader;
 
 static bool InitD3D11Overlay(ID3D11Device *dev) {
     ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *err = nullptr;
@@ -627,6 +637,16 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         }
     }
 
+    // ── Read wizard header text and menu preview image path ────────────────────
+    wchar_t imgPathMenu[MAX_IMG] = {};
+    wchar_t listHeader[MAX_STR] = {};
+    if (g_data) {
+        wcsncpy_s(imgPathMenu, g_data->image_path,  MAX_IMG - 1);
+        wcsncpy_s(listHeader,  g_data->list_header, MAX_STR - 1);
+    }
+    const bool showSplit  = (activeTab == 1);  // Stadiums tab: list + preview side-by-side
+    const bool showHeader = (listHeader[0] != L'\0');  // wizard step indicator above list
+
     DXGI_SWAP_CHAIN_DESC scd = {};
     sc->GetDesc(&scd);
     float vpW = (float)(scd.BufferDesc.Width ? scd.BufferDesc.Width : 1280);
@@ -645,6 +665,30 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         InterlockedExchange(&g_data->reserved0, (LONG)vpW);
         InterlockedExchange(&g_data->reserved1, (LONG)vpH);
         InterlockedExchange(&g_data->reserved2, (LONG)(LONG_PTR)scd.OutputWindow);
+    }
+
+    // ── Load / reload menu preview texture when on stadiums tab ───────────────
+    if (showSplit) {
+        if (wcscmp(imgPathMenu, g_menuPrevPath) != 0) {
+            wcscpy_s(g_menuPrevPath, imgPathMenu);
+            if (imgPathMenu[0] != L'\0') {
+                ID3D11Device *dev2 = nullptr;
+                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
+                    LoadWICTexture(dev2, imgPathMenu, &g_menuPrevTex, &g_menuPrevSRV, &g_menuPrevNatW, &g_menuPrevNatH);
+                    dev2->Release();
+                }
+            } else {
+                if (g_menuPrevTex) { g_menuPrevTex->Release(); g_menuPrevTex = nullptr; }
+                if (g_menuPrevSRV) { g_menuPrevSRV->Release(); g_menuPrevSRV = nullptr; }
+                g_menuPrevNatW = g_menuPrevNatH = 0;
+            }
+        }
+    } else if (g_menuPrevPath[0] != L'\0') {
+        // Not on stadiums tab — release the cached preview
+        g_menuPrevPath[0] = L'\0';
+        if (g_menuPrevTex) { g_menuPrevTex->Release(); g_menuPrevTex = nullptr; }
+        if (g_menuPrevSRV) { g_menuPrevSRV->Release(); g_menuPrevSRV = nullptr; }
+        g_menuPrevNatW = g_menuPrevNatH = 0;
     }
 
     ID3D11Texture2D *bb = nullptr;
@@ -744,8 +788,22 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     const float HINT_X = mx + 2.f;
     const float HINT_W = MW - 4.f;
 
-    const int visibleRows = (std::max)(1, (int)floorf((LIST_YMAX - LIST_Y) / ITEM_H));
-    const int maxScroll = (std::max)(0, (int)itemCount - visibleRows);
+    // ── Split layout: stadiums tab → list (60%) left, preview (40%) right ─────
+    const float HEADER_H    = 30.f;
+    const float SPLIT_FRAC  = 0.60f;
+    const float baseContentW = MW - 8.f;
+    const float listSideW   = showSplit ? floorf(baseContentW * SPLIT_FRAC) : baseContentW;
+    const float prevSideW   = showSplit ? (baseContentW - listSideW - 4.f) : 0.f;
+    const float prevSideX   = mx + 4.f + listSideW + 4.f;
+    const float prevSideY   = CONT_Y + 4.f;
+    const float prevSideH   = LIST_YMAX - prevSideY;
+    const float adjListW    = listSideW - SCROLL_W - SCROLL_GAP;
+    const float adjScrollX  = LIST_X + adjListW + SCROLL_GAP;
+    const float adjListY    = LIST_Y + (showHeader ? (HEADER_H + 4.f) : 0.f);
+    const float adjScrollH  = (std::max)(1.f, LIST_YMAX - adjListY);
+
+    const int visibleRows = (std::max)(1, (int)floorf((LIST_YMAX - adjListY) / ITEM_H));
+    const int maxScroll   = (std::max)(0, (int)itemCount - visibleRows);
     if (scrollOffset > maxScroll) scrollOffset = maxScroll;
 
     ctx->VSSetShader(g_vs, nullptr, 0);
@@ -785,31 +843,43 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     R(DASH_X, DASH_Y, DASH_W, DASH_H, 0xE40C1622);
     R(DASH_X, DASH_Y, DASH_W, 2.f, 0xFF3399FF);
 
+    // Wizard header band (colored strip above list items)
+    if (showHeader) {
+        R(LIST_X, LIST_Y, adjListW + SCROLL_W + SCROLL_GAP, HEADER_H, 0xFF111E30);
+        R(LIST_X, LIST_Y + HEADER_H - 2.f, adjListW + SCROLL_W + SCROLL_GAP, 2.f, 0xFF2A537D);
+    }
+    // Stadium preview panel background (right column)
+    if (showSplit) {
+        R(prevSideX, prevSideY, prevSideW, prevSideH, 0xCC0C1520);
+        R(prevSideX, prevSideY, prevSideW, 1.f, 0xFF2A537D);
+        R(prevSideX, prevSideY, 1.f, prevSideH, 0xFF2A537D);
+    }
+
     for (LONG i = scrollOffset; i < itemCount; i++) {
-        float iy = LIST_Y + (float)(i - scrollOffset) * ITEM_H;
+        float iy = adjListY + (float)(i - scrollOffset) * ITEM_H;
         if (iy + ITEM_H > LIST_YMAX) break;
         if (i == selIdx) {
-            R(LIST_X, iy, LIST_W, ITEM_H - 2.f, 0xFF1C3E60);
+            R(LIST_X, iy, adjListW, ITEM_H - 2.f, 0xFF1C3E60);
             R(LIST_X, iy, 3.f, ITEM_H - 2.f, 0xFF3399FF);
         }
     }
 
-    R(SCROLL_X, SCROLL_Y, SCROLL_W, SCROLL_H, 0xCC0E1A26);
-    R(SCROLL_X, SCROLL_Y, SCROLL_W, 1.f, 0xFF2A537D);
-    R(SCROLL_X, SCROLL_Y + SCROLL_H - 1.f, SCROLL_W, 1.f, 0xFF2A537D);
-    R(SCROLL_X, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
-    R(SCROLL_X + SCROLL_W - 1.f, SCROLL_Y, 1.f, SCROLL_H, 0xFF2A537D);
+    R(adjScrollX, adjListY, SCROLL_W, adjScrollH, 0xCC0E1A26);
+    R(adjScrollX, adjListY, SCROLL_W, 1.f, 0xFF2A537D);
+    R(adjScrollX, adjListY + adjScrollH - 1.f, SCROLL_W, 1.f, 0xFF2A537D);
+    R(adjScrollX, adjListY, 1.f, adjScrollH, 0xFF2A537D);
+    R(adjScrollX + SCROLL_W - 1.f, adjListY, 1.f, adjScrollH, 0xFF2A537D);
 
     // Use totalCount and real scroll position for an accurate scrollbar.
     const int maxScrollTotal = (std::max)(0, (int)totalCount - visibleRows);
     if (maxScrollTotal > 0) {
         LONG realScroll = scrollOffset + windowBase;
-        float thumbH = (std::max)(22.f, SCROLL_H * ((float)visibleRows / (float)totalCount));
-        if (thumbH > SCROLL_H) thumbH = SCROLL_H;
-        float thumbRange = (std::max)(1.f, SCROLL_H - thumbH);
-        float thumbY = SCROLL_Y + ((float)realScroll / (float)maxScrollTotal) * thumbRange;
-        R(SCROLL_X + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
-        R(SCROLL_X + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
+        float thumbH = (std::max)(22.f, adjScrollH * ((float)visibleRows / (float)totalCount));
+        if (thumbH > adjScrollH) thumbH = adjScrollH;
+        float thumbRange = (std::max)(1.f, adjScrollH - thumbH);
+        float thumbY = adjListY + ((float)realScroll / (float)maxScrollTotal) * thumbRange;
+        R(adjScrollX + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
+        R(adjScrollX + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
     }
 
     // --- Hint bar ---
@@ -885,12 +955,12 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             if (!g_data) break;
             wchar_t item[MAX_MENU_ITEM_LEN] = {};
             wcsncpy_s(item, g_data->menu_items[i], MAX_MENU_ITEM_LEN - 1);
-            UpdateTextTex(dev, g_ttItems[i], item, 14, false, RGB(0xCC, 0xDD, 0xEE), (int)(LIST_W - 20.f));
+            UpdateTextTex(dev, g_ttItems[i], item, 14, false, RGB(0xCC, 0xDD, 0xEE), (int)(adjListW - 20.f));
         }
 
         for (LONG i = scrollOffset; i < itemCount; i++) {
             if (!g_ttItems[i].srv) continue;
-            float iy = LIST_Y + (float)(i - scrollOffset) * ITEM_H;
+            float iy = adjListY + (float)(i - scrollOffset) * ITEM_H;
             if (iy + ITEM_H > LIST_YMAX) break;
             float ty = iy + floorf((ITEM_H - 2.f - (float)g_ttItems[i].height) / 2.f);
             DrawTexQuad(ctx, LIST_X + 12.f, ty, (float)g_ttItems[i].width, (float)g_ttItems[i].height, vpW, vpH, g_ttItems[i].srv);
@@ -935,11 +1005,39 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
                         CREST_SIZE, CREST_SIZE, vpW, vpH, g_awayCrestSRV);
 
         if (itemCount == 0) {
+            float emptyAreaW = showSplit ? listSideW : MW;
             UpdateTextTex(dev, g_ttEmpty, L"No items available", 14, false, RGB(0x66, 0x88, 0xAA), 400);
             if (g_ttEmpty.srv) {
-                float ex = mx + floorf((MW - (float)g_ttEmpty.width) / 2.f);
+                float ex = mx + floorf((emptyAreaW - (float)g_ttEmpty.width) / 2.f);
                 float ey = CONT_Y + floorf((CONT_H - (float)g_ttEmpty.height) / 2.f);
                 DrawTexQuad(ctx, ex, ey, (float)g_ttEmpty.width, (float)g_ttEmpty.height, vpW, vpH, g_ttEmpty.srv);
+            }
+        }
+
+        // ── List header text (wizard step indicator above items) ─────────────────
+        if (showHeader) {
+            UpdateTextTex(dev, g_ttListHeader, listHeader, 13, false, RGB(0xFF, 0xCC, 0x55), (int)(adjListW - 16.f));
+            if (g_ttListHeader.srv) {
+                float ty = LIST_Y + floorf((HEADER_H - (float)g_ttListHeader.height) / 2.f);
+                DrawTexQuad(ctx, LIST_X + 8.f, ty,
+                            (float)g_ttListHeader.width, (float)g_ttListHeader.height,
+                            vpW, vpH, g_ttListHeader.srv);
+            }
+        }
+
+        // ── Menu preview image (stadiums tab: right panel) ────────────────────────
+        if (showSplit && g_menuPrevSRV && g_menuPrevNatW > 0 && g_menuPrevNatH > 0) {
+            float boxW = prevSideW - 16.f;
+            float boxH = prevSideH - 16.f;
+            if (boxW > 0.f && boxH > 0.f) {
+                float imgR = (float)g_menuPrevNatW / (float)g_menuPrevNatH;
+                float boxR = boxW / boxH;
+                float dw, dh;
+                if (imgR >= boxR) { dw = boxW; dh = boxW / imgR; }
+                else              { dh = boxH; dw = boxH * imgR; }
+                float ix = prevSideX + floorf((prevSideW - dw) / 2.f);
+                float iy = prevSideY + floorf((prevSideH - dh) / 2.f);
+                DrawTexQuad(ctx, ix, iy, dw, dh, vpW, vpH, g_menuPrevSRV);
             }
         }
 

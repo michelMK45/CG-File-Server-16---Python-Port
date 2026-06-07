@@ -265,6 +265,7 @@ class Server16App(tk.Tk):
         self._overlay_wizard_stadium: str | None = None
         self._overlay_wizard_police: str | None = None
         self._overlay_wizard_pitch: str | None = None
+        self._overlay_list_header: str = ""
         self._d3d_menu_visible = False
         self._overlay_items: list[str] = []
         self._overlay_item_count     = 0
@@ -2686,36 +2687,14 @@ class Server16App(tk.Tk):
         key_enter_edge = key_enter_down and not getattr(self, "_overlay_enter_down", False)
         a_edge = a_down and not bool(prev_buttons & XINPUT_GAMEPAD_A)
         b_edge = b_down and not bool(prev_buttons & XINPUT_GAMEPAD_B)
-        combo_toggle = False
         start_hold_toggle = False
-        single_back_toggle = back_edge and not start_down
-        if start_down and back_down:
-            has_combo_window = (
-                self._overlay_gp_start_pressed_at > 0.0
-                and self._overlay_gp_back_pressed_at > 0.0
-                and abs(self._overlay_gp_start_pressed_at - self._overlay_gp_back_pressed_at) <= 0.22
-            )
-            if has_combo_window and not self._overlay_combo_latched:
-                combo_toggle = True
-                self._overlay_combo_latched = True
-        elif not self._d3d_menu_visible and left_shoulder_down and right_shoulder_down:
-            has_combo_window = (
-                self._overlay_gp_left_pressed_at > 0.0
-                and self._overlay_gp_right_pressed_at > 0.0
-                and abs(self._overlay_gp_left_pressed_at - self._overlay_gp_right_pressed_at) <= 0.22
-            )
-            if has_combo_window and not self._overlay_combo_latched:
-                combo_toggle = True
-                self._overlay_combo_latched = True
-        else:
-            self._overlay_combo_latched = False
 
         if start_down and not back_down and self._overlay_gp_start_pressed_at > 0.0:
             if (now - self._overlay_gp_start_pressed_at) >= 0.60 and not self._overlay_gp_start_hold_latched:
                 start_hold_toggle = True
                 self._overlay_gp_start_hold_latched = True
 
-        if (f12_toggle or combo_toggle or start_hold_toggle or single_back_toggle) and can_toggle:
+        if (f12_toggle or start_hold_toggle) and can_toggle:
             self._d3d_menu_visible = not self._d3d_menu_visible
             self._overlay_toggle_ready_at = now + 0.22
             self.log(f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}")
@@ -2953,6 +2932,23 @@ class Server16App(tk.Tk):
         self._overlay_scroll_offset  = 0
         self._overlay_item_count     = len(items)
         self._overlay_window_base    = 0
+
+        # Wizard step header shown above the item list (drives the C++ header band)
+        phase = self._overlay_wizard_phase
+        if phase == "police":
+            header = f"Stadium: {self._overlay_wizard_stadium or '?'}  →  Police Pattern"
+        elif phase == "pitch":
+            header = f"Police: {self._overlay_wizard_police or '?'}  →  Pitch Mow Pattern"
+        elif phase == "net":
+            header = f"Pitch: {self._overlay_wizard_pitch or '?'}  →  Net Pattern"
+        else:
+            header = ""
+        self._overlay_list_header = header
+        try:
+            inj.set_list_header(header)
+        except Exception:
+            pass
+
         self._refresh_d3d_window()
         self._update_d3d_preview_image()
 
@@ -3007,12 +3003,22 @@ class Server16App(tk.Tk):
         list_y = content_y + 4.0
         scroll_w = 12.0
         scroll_gap = 6.0
-        list_w = menu_w - 8.0 - scroll_w - scroll_gap
+        base_content_w = menu_w - 8.0
         list_ymax = menu_y + menu_h - dash_h - 14.0
-        scroll_x = list_x + list_w + scroll_gap
-        scroll_y = list_y
-        scroll_h = max(1.0, list_ymax - list_y)
         tab_w = float(int(menu_w // max(1, len(self._overlay_tab_names))))
+
+        # Stadium tab: list occupies 60% of content width; header band shifts list_y down
+        show_split = (self._overlay_tab_index == 1)
+        header_h = 30.0
+        show_header = bool(self._overlay_list_header)
+        if show_split:
+            list_side_w = float(int(base_content_w * 0.60))
+            adj_list_w = list_side_w - scroll_w - scroll_gap
+        else:
+            adj_list_w = base_content_w - scroll_w - scroll_gap
+        adj_list_y = list_y + (header_h + 4.0 if show_header else 0.0)
+        adj_scroll_x = list_x + adj_list_w + scroll_gap
+
         return {
             "menu_x": menu_x,
             "menu_y": menu_y,
@@ -3022,13 +3028,13 @@ class Server16App(tk.Tk):
             "tab_w": tab_w,
             "dash_h": dash_h,
             "list_x": list_x,
-            "list_y": list_y,
-            "list_w": list_w,
+            "list_y": adj_list_y,
+            "list_w": adj_list_w,
             "list_ymax": list_ymax,
-            "scroll_x": scroll_x,
-            "scroll_y": scroll_y,
+            "scroll_x": adj_scroll_x,
+            "scroll_y": adj_list_y,
             "scroll_w": scroll_w,
-            "scroll_h": scroll_h,
+            "scroll_h": max(1.0, list_ymax - adj_list_y),
             "item_h": _D3D_MENU_ITEM_H,
         }
 
@@ -3240,20 +3246,47 @@ class Server16App(tk.Tk):
         ]
 
     def _update_d3d_preview_image(self) -> None:
-        """Update shared memory image_path to the preview of the currently highlighted stadium."""
-        if self._overlay_wizard_phase is not None:
-            return
-        if self._overlay_tab_names[self._overlay_tab_index] != "stadiums":
-            return
+        """Update shared memory image_path to the preview of the currently highlighted item.
+
+        During wizard phases (police/pitch/net) shows the pattern preview image.
+        On the stadiums tab (no wizard) shows the stadium preview image.
+        Clears the preview on all other tabs.
+        """
         inj = self._d3d_injector
         if inj is None:
             return
         sel = self._overlay_selected_index
-        stadium_name = self._overlay_items[sel] if 0 <= sel < len(self._overlay_items) else ""
+        selected_item = self._overlay_items[sel] if 0 <= sel < len(self._overlay_items) else ""
         preview_path = ""
-        if stadium_name:
+        phase = self._overlay_wizard_phase
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if phase is not None and selected_item:
+            # Wizard phase: find a preview image for the highlighted police/pitch/net option.
+            exedir = getattr(self, "exedir", None)
+            if exedir:
+                from pathlib import Path as _Path
+                _exedir = _Path(exedir)
+                if phase == "police":
+                    for subdir in ("FSW/Images/Police", "FSW/Police"):
+                        p = _exedir / subdir / f"{selected_item}.png"
+                        if p.exists():
+                            preview_path = str(p)
+                            break
+                elif phase == "pitch":
+                    for subdir in ("FSW/Images/PitchMowPattern", "FSW/PitchMowPattern"):
+                        p = _exedir / subdir / f"{selected_item}.png"
+                        if p.exists():
+                            preview_path = str(p)
+                            break
+                elif phase == "net":
+                    for subdir in ("FSW/Images/Nets", "FSW/Nets"):
+                        p = _exedir / subdir / f"{selected_item}.png"
+                        if p.exists():
+                            preview_path = str(p)
+                            break
+        elif tab_name == "stadiums" and selected_item:
             try:
-                path = self._resolve_stadium_preview_path(stadium_name)
+                path = self._resolve_stadium_preview_path(selected_item)
                 preview_path = str(path) if path else ""
             except Exception:
                 pass
