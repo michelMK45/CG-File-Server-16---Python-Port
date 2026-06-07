@@ -248,6 +248,7 @@ class Server16App(tk.Tk):
         self._mouse_hook_thread_id = 0
         self._keyboard_hook = None
         self._keyboard_hook_proc = None
+        self._overlay_b_close_pending = False
         self._overlay_toggle_ready_at = 0.0
         self._overlay_tab_ready_at = 0.0
         self._overlay_combo_latched = False
@@ -2599,7 +2600,7 @@ class Server16App(tk.Tk):
             self._fifa_hwnd = self._find_fifa_window_handle()
 
     def _sync_d3d_menu_input(self) -> None:
-        """Manages the D3D in-game menu (F12 / Start+Back / L-R)."""
+        """Manages the D3D in-game menu (F12 / Hold Start for 0.6s)."""
         if not self._ensure_d3d_overlay_injected(log_errors=False):
             return
         inj = self._d3d_injector
@@ -2738,6 +2739,14 @@ class Server16App(tk.Tk):
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
             else:
+                # Latch the close intent; execute only after B is released so
+                # XInputEnable(TRUE) fires when B is already up — preventing the
+                # game from seeing the same B press that closed the overlay.
+                self._overlay_b_close_pending = True
+
+        if self._overlay_b_close_pending and not b_down:
+            self._overlay_b_close_pending = False
+            if self._d3d_menu_visible:
                 self._d3d_menu_visible = False
                 self._overlay_toggle_ready_at = now + 0.22
                 self.log("D3D menu closed via gamepad B")
@@ -3604,6 +3613,11 @@ class Server16App(tk.Tk):
             self._keyboard_hook = self.user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._keyboard_hook_proc, module_handle, 0)
         except Exception:
             self._keyboard_hook = None
+        # Seed state for keys already held when the hook is installed so the
+        # edge detector doesn't see a false rising edge on auto-repeat.
+        for vk in blocked_keys:
+            if bool(self.user32.GetAsyncKeyState(vk) & 0x8000):
+                self._overlay_blocked_key_down.add(vk)
 
     def _uninstall_keyboard_hook(self) -> None:
         if self._keyboard_hook is not None:

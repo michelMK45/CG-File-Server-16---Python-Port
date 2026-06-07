@@ -178,7 +178,7 @@ class StadiumRuntime:
         app.curstad = ""
         app.ScoreboardStadName = ""
         app.stadmovie = False
-        app._set_display("stadium", "Stadium Module Disable")
+        app._set_display("stadium", "-")
         app._update_audio_overview()
         app._set_progress(100, "Default stadium restored")
         app.log("No stadium assignment found; default stadium restored")

@@ -59,6 +59,8 @@ class _OverlayShared(ctypes.Structure):
             # Team crest image paths (PNG) for dashboard panel — written by Python
             ("home_crest_path",     ctypes.c_wchar * _MAX_IMG),
             ("away_crest_path",     ctypes.c_wchar * _MAX_IMG),
+            # Wizard step header text shown above the item list (empty = hidden)
+            ("list_header",         ctypes.c_wchar * _MAX_STR),
     ]
 
 
@@ -251,6 +253,12 @@ class D3DOverlayInjector:
         if not self._ready or self._shared is None:
             return
         self._shared.image_path = (path or "")[:_MAX_IMG - 1]
+
+    def set_list_header(self, text: str) -> None:
+        """Set the wizard step header text shown above the menu item list (empty = hidden)."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.list_header = (text or "")[:_MAX_STR - 1]
 
     def set_menu_selection(self, selected: int, scroll: int) -> None:
         if not self._ready or self._shared is None:
