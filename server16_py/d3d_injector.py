@@ -246,6 +246,12 @@ class D3DOverlayInjector:
         self._shared.home_crest_path = home_path[:_MAX_IMG - 1]
         self._shared.away_crest_path = away_path[:_MAX_IMG - 1]
 
+    def set_preview_image(self, path: str) -> None:
+        """Update the preview image path in shared memory without changing visible state."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.image_path = (path or "")[:_MAX_IMG - 1]
+
     def set_menu_selection(self, selected: int, scroll: int) -> None:
         if not self._ready or self._shared is None:
             return

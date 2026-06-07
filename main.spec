@@ -5,7 +5,11 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=[
+        ('server16_py\\offsets.json', 'server16_py'),
+        ('server16_py\\locales', 'server16_py\\locales'),
+        ('server16.ico', '.'),
+    ],
     hiddenimports=['server16_py.chants_runtime'],
     hookspath=[],
     hooksconfig={},

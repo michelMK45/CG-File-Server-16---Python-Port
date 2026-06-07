@@ -584,6 +584,14 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         if (windowBase < 0) windowBase = 0;
     }
 
+    // ── Init COM once (for WIC) on this thread ─────────────────────────────
+    static bool s_comInit = false;
+    if (!s_comInit) {
+        s_comInit = true;
+        HRESULT cohr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        Log("[DrawMenu] CoInitializeEx hr=0x%08X", (unsigned)cohr);
+    }
+
     // ── Load / reload team crest textures when paths change ──────────────────
     {
         wchar_t homePath[MAX_IMG] = {}, awayPath[MAX_IMG] = {};
@@ -690,6 +698,8 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     ctx->PSGetShaderResources(0, 1, &oldSRV);
     ID3D11SamplerState *oldSamp = nullptr;
     ctx->PSGetSamplers(0, 1, &oldSamp);
+    ID3D11Buffer *oldVBuf = nullptr; UINT oldVBStride = 0, oldVBOffset = 0;
+    ctx->IAGetVertexBuffers(0, 1, &oldVBuf, &oldVBStride, &oldVBOffset);
 
     ctx->OMSetRenderTargets(1, &rtv, nullptr);
     D3D11_VIEWPORT vp = {0.f, 0.f, vpW, vpH, 0.f, 1.f};
@@ -966,6 +976,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     ctx->VSSetShader(oldVS, nullptr, 0);
     ctx->PSSetShader(oldPS, nullptr, 0);
     ctx->IASetInputLayout(oldIL);
+    ctx->IASetVertexBuffers(0, 1, &oldVBuf, &oldVBStride, &oldVBOffset);
     ctx->IASetPrimitiveTopology(oldTopo);
     ctx->PSSetShaderResources(0, 1, &oldSRV);
     ctx->PSSetSamplers(0, 1, &oldSamp);
@@ -977,6 +988,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     if (oldVS) oldVS->Release();
     if (oldPS) oldPS->Release();
     if (oldIL) oldIL->Release();
+    if (oldVBuf) oldVBuf->Release();
     if (oldSRV) oldSRV->Release();
     if (oldSamp) oldSamp->Release();
     rtv->Release();
@@ -1052,6 +1064,8 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     D3D11_PRIMITIVE_TOPOLOGY oldTopo; ctx->IAGetPrimitiveTopology(&oldTopo);
     ID3D11ShaderResourceView *oldSRV=nullptr; ctx->PSGetShaderResources(0,1,&oldSRV);
     ID3D11SamplerState *oldSamp=nullptr; ctx->PSGetSamplers(0,1,&oldSamp);
+    ID3D11Buffer *oldVBuf=nullptr; UINT oldVBStride=0, oldVBOffset=0;
+    ctx->IAGetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
 
     // ── Set overlay state (shared by both colored and textured draws) ───────
     ctx->OMSetRenderTargets(1,&rtv,nullptr);
@@ -1138,6 +1152,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     ctx->VSSetShader(oldVS,nullptr,0);
     ctx->PSSetShader(oldPS,nullptr,0);
     ctx->IASetInputLayout(oldIL);
+    ctx->IASetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
     ctx->IASetPrimitiveTopology(oldTopo);
     ctx->PSSetShaderResources(0,1,&oldSRV);
     ctx->PSSetSamplers(0,1,&oldSamp);
@@ -1149,6 +1164,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     if(oldVS)   oldVS->Release();
     if(oldPS)   oldPS->Release();
     if(oldIL)   oldIL->Release();
+    if(oldVBuf) oldVBuf->Release();
     if(oldSRV)  oldSRV->Release();
     if(oldSamp) oldSamp->Release();
     rtv->Release();
@@ -1159,7 +1175,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
 // ---------------------------------------------------------------------------
 typedef void (WINAPI *PFN_XInputEnable_t)(BOOL);
 static PFN_XInputEnable_t g_XInputEnable      = nullptr;
-static LONG               g_menuWasSuppressed = -1;
+static LONG               g_menuWasSuppressed = 0;
 static void InitXInputEnable();
 
 // ---------------------------------------------------------------------------

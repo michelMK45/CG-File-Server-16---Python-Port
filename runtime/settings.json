@@ -1,5 +1,9 @@
 {
-  "FIFAEXE": "default",
+  "FIFAEXE": "E:/Fifa/FIFA Infinity 9/fifa16.exe",
+  "CAMERAPACKAGE": "",
+  "SHOW_STADIUM_LOADING_NOTIFICATION": true,
+  "SHOW_OVERLAY": true,
+  "LANGUAGE": "en",
   "discord_rpc": {
     "enabled": true,
     "client_id": "1495719449700077630",

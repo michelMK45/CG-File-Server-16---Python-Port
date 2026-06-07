@@ -384,7 +384,9 @@ class ChantsRuntime:
                     app._set_display_async("audio_next", "Club song, then crowd")
                     if scorer:
                         time.sleep(2.0)
-                        club_song_played = self._play_club_song(scorer, chants_memory=chants_memory)
+                        club_song_played = False
+                        if scorer == hid or app.module_enabled("AwayClubSong"):
+                            club_song_played = self._play_club_song(scorer, chants_memory=chants_memory)
                         if scorer == aid and away_chants and app.module_enabled("AwayChants"):
                             self._play_away_reaction(away_chants, score_home, score_away, skip_random=club_song_played, chants_memory=chants_memory)
                     else:

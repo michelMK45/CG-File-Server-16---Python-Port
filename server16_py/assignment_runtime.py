@@ -81,6 +81,10 @@ class AssignmentRuntime:
         scope = dialog.result["selectedround"]
         tvlogo = dialog.result["Selectedtvlogo"]
         scoreboard = dialog.result["Selectedscoreboard"]
+        if scope == "3":
+            app.log("Scoreboard assignment using Friendly/Default key '0'")
+            self.scoreboards("0", tvlogo, scoreboard)
+            return
         comp, resolved = self.resolve_assignment_target(
             scope,
             {
@@ -91,7 +95,7 @@ class AssignmentRuntime:
         )
         if not comp:
             messagebox.showwarning(app.tr("message.assignment"), app.tr("message.warning.no_context"))
-            app.log("Scoreboard assignment skipped: no usable context")
+            app.log(f"Scoreboard assignment skipped: scope '{scope}' has no context")
             return
         app.log(f"Scoreboard assignment using {resolved}: {comp}")
         if resolved == "Home Team":
@@ -144,7 +148,7 @@ class AssignmentRuntime:
         selected_pitch = dialog.result["selectedpitch"]
         selected_net = dialog.result["selectednet"]
         multi = dialog.result["multistadium"]
-        if selected_stadium == "None":
+        if not selected_stadium or selected_stadium == "None":
             payload = "None"
         elif scope in {"2", "3", "4"}:
             payload = ",".join(multi + [selected_police, selected_pitch, selected_net])

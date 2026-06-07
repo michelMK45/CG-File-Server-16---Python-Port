@@ -223,9 +223,6 @@ class Server16App(tk.Tk):
         self._attached_once = False
         self._logs_visible = False
         self._kickoff_generation = 0
-        self._overlay_enabled = False
-        self._overlay_visible = False
-        self._overlay_space_down = False
         self._overlay_f12_down = False
         self._overlay_up_down = False
         self._overlay_down_down = False
@@ -264,6 +261,10 @@ class Server16App(tk.Tk):
         self._active_gamepad_index = 0
         self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos"]
         self._overlay_tab_index = 0
+        self._overlay_wizard_phase: str | None = None  # "police" | "pitch" | "net"
+        self._overlay_wizard_stadium: str | None = None
+        self._overlay_wizard_police: str | None = None
+        self._overlay_wizard_pitch: str | None = None
         self._d3d_menu_visible = False
         self._overlay_items: list[str] = []
         self._overlay_item_count     = 0
@@ -273,11 +274,8 @@ class Server16App(tk.Tk):
         self._overlay_visible_rows   = 20
         self._overlay_nav_ready_at   = 0.0
         self._overlay_nav_repeat_at  = 0.0
-        self._overlay_hwnd = 0
         self._fifa_hwnd = 0
         self._fifa_hwnd_checked_at = 0.0
-        self._restore_fullscreen_on_hide = False
-        self._launcher_mode = True
         self._worker_queue: queue.Queue[tuple] = queue.Queue()
         self._worker_poll_job = None
         self._stadium_task_running = False
@@ -298,7 +296,6 @@ class Server16App(tk.Tk):
         self.assign_scoreboard_button = None
         self.assign_movie_button = None
         self.exclude_competition_button = None
-        self.start_overlay_button = None
         self.log_status_label = None
         self.log_follow_button = None
         self.language_label = None
@@ -541,8 +538,6 @@ class Server16App(tk.Tk):
             window.title(self.tr("app.title"))
         except Exception:
             pass
-        if self.start_overlay_button is not None:
-            self.start_overlay_button.configure(text=self.tr("button.start_overlay"))
         if self.locate_fifa_button is not None:
             self.locate_fifa_button.configure(text=self.tr("button.locate_fifa_exe"))
         if self.launch_fifa_button is not None:
@@ -918,8 +913,6 @@ class Server16App(tk.Tk):
 
         top = tk.Frame(root, bg=self.bg, padx=10, pady=10)
         top.pack(fill="x")
-        self.start_overlay_button = ttk.Button(top, text=self.tr("button.start_overlay"), command=self.start_overlay_session)
-        self.start_overlay_button.pack(side="left")
         self.locate_fifa_button = ttk.Button(top, text=self.tr("button.locate_fifa_exe"), command=self.select_fifa_exe)
         self.locate_fifa_button.pack(side="left", padx=6)
         self.launch_fifa_button = ttk.Button(top, text=self.tr("button.launch_fifa"), command=self.launch_fifa)
@@ -1474,23 +1467,12 @@ class Server16App(tk.Tk):
 
     def prepare_floating_window(self) -> tk.Misc:
         window = self._window()
-        if self._overlay_visible:
-            self._hide_overlay()
-        try:
-            window.overrideredirect(False)
-        except Exception:
-            pass
-        try:
-            window.attributes("-topmost", False)
-        except Exception:
-            pass
         window.deiconify()
         window.lift()
         try:
             window.focus_force()
         except Exception:
             pass
-        self._launcher_mode = True
         return window
 
     def configure_secondary_window(self, window: tk.Toplevel) -> None:
@@ -1809,14 +1791,13 @@ class Server16App(tk.Tk):
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
         self.settings.save()
-        if not self.show_overlay_var.get():
-            if self._overlay_visible:
-                self._hide_overlay()
-            if self._d3d_menu_visible:
-                self._d3d_menu_visible = False
-                self._uninstall_mouse_wheel_hook()
-                self._uninstall_keyboard_hook()
-                self._publish_overlay_menu_state()
+        if not self.show_overlay_var.get() and self._d3d_menu_visible:
+            self._d3d_menu_visible = False
+            self._overlay_wizard_phase = None
+            self._overlay_wizard_stadium = None
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
+            self._publish_overlay_menu_state()
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "card.chants.title", "card.chants.subtitle")
@@ -2580,33 +2561,13 @@ class Server16App(tk.Tk):
         except Exception:
             return False
 
-    def start_overlay_session(self) -> None:
-        fifa_path = self._auto_detect_fifa_exe()
-        if fifa_path is None:
-            messagebox.showwarning(
-                self.tr("message.fifa16"),
-                self.tr("message.warning.find_fifa_same_folder"),
-            )
-            self.select_fifa_exe()
-            fifa_path = self._auto_detect_fifa_exe()
-            if fifa_path is None:
-                return
-        self.settings.fifa_exe = str(fifa_path)
-        self.setuppaths()
-        self.apply_bootstrap_files()
-        self.refresh_modules()
-        self._overlay_enabled = True
-        self._launcher_mode = False
-        self._set_process_status(self.status_text("overlay_armed"), self.accent)
-        self.log(f"Overlay session armed for FIFA executable: {fifa_path}")
-        if not self._is_target_process_running():
-            self.launch_fifa()
-        self._hide_overlay()
-
     def launch_fifa(self) -> None:
         if self.fifaEXE == "default":
             messagebox.showwarning(self.tr("message.fifa16"), self.tr("message.warning.select_fifa_first"))
             return
+        self.setuppaths()
+        self.apply_bootstrap_files()
+        self.refresh_modules()
         if self._is_target_process_running():
             self.log(f"FIFA process already running: {self.fifaEXE}")
             return
@@ -2618,10 +2579,7 @@ class Server16App(tk.Tk):
         if self._closing:
             return
         try:
-            self._sync_overlay_hotkey()
             self._sync_d3d_menu_input()
-            if self._overlay_visible:
-                self._position_overlay()
         except Exception as exc:
             self.log("Overlay loop error", exc, exc_info=sys.exc_info())
         if not self._closing:
@@ -2639,30 +2597,8 @@ class Server16App(tk.Tk):
             self._fifa_hwnd_checked_at = now
             self._fifa_hwnd = self._find_fifa_window_handle()
 
-    def _sync_overlay_hotkey(self) -> None:
-        """Manages the Tkinter overlay window toggle (Space key, _overlay_enabled guard)."""
-        if not self._overlay_enabled or not self.show_overlay_var.get():
-            return
-        now = perf_counter()
-        foreground = int(self.user32.GetForegroundWindow() or 0)
-        self._refresh_fifa_hwnd_if_needed(now)
-        space_down = bool(self.user32.GetAsyncKeyState(VK_SPACE) & 0x8000)
-        if self._overlay_visible:
-            can_toggle = bool(self._fifa_hwnd or self._overlay_hwnd)
-        else:
-            can_toggle = foreground in {self._fifa_hwnd, self._overlay_hwnd} and foreground != 0
-        if space_down and not self._overlay_space_down and can_toggle and now >= self._overlay_toggle_ready_at:
-            if self._overlay_visible:
-                self._hide_overlay()
-            else:
-                self._show_overlay()
-            self._overlay_toggle_ready_at = now + 0.22
-        self._overlay_space_down = space_down
-        if self._overlay_visible and not self._fifa_hwnd:
-            self._hide_overlay()
-
     def _sync_d3d_menu_input(self) -> None:
-        """Manages the D3D in-game menu (F12 / Start+Back / L-R). Independent of _overlay_enabled."""
+        """Manages the D3D in-game menu (F12 / Start+Back / L-R)."""
         if not self._ensure_d3d_overlay_injected(log_errors=False):
             return
         inj = self._d3d_injector
@@ -2671,6 +2607,8 @@ class Server16App(tk.Tk):
         if not self.show_overlay_var.get():
             if self._d3d_menu_visible:
                 self._d3d_menu_visible = False
+                self._overlay_wizard_phase = None
+                self._overlay_wizard_stadium = None
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
@@ -2785,8 +2723,16 @@ class Server16App(tk.Tk):
             if self._d3d_menu_visible:
                 self._install_mouse_wheel_hook()
                 self._install_keyboard_hook()
+                self._overlay_wizard_phase = None
+                self._overlay_wizard_stadium = None
+                self._overlay_wizard_police = None
+                self._overlay_wizard_pitch = None
                 self._update_menu_content()
             else:
+                self._overlay_wizard_phase = None
+                self._overlay_wizard_stadium = None
+                self._overlay_wizard_police = None
+                self._overlay_wizard_pitch = None
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
 
@@ -2797,20 +2743,28 @@ class Server16App(tk.Tk):
                 pass
 
         if self._d3d_menu_visible and key_escape_edge and now >= self._overlay_toggle_ready_at:
-            self._d3d_menu_visible = False
-            self._overlay_toggle_ready_at = now + 0.22
-            self.log("D3D menu closed via keyboard")
-            self._uninstall_mouse_wheel_hook()
-            self._uninstall_keyboard_hook()
-            self._publish_overlay_menu_state()
+            if self._overlay_wizard_phase is not None:
+                self._wizard_back()
+                self._overlay_toggle_ready_at = now + 0.22
+            else:
+                self._d3d_menu_visible = False
+                self._overlay_toggle_ready_at = now + 0.22
+                self.log("D3D menu closed via keyboard")
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
+                self._publish_overlay_menu_state()
 
         if self._d3d_menu_visible and b_edge and now >= self._overlay_toggle_ready_at:
-            self._d3d_menu_visible = False
-            self._overlay_toggle_ready_at = now + 0.22
-            self.log("D3D menu closed via gamepad B")
-            self._uninstall_mouse_wheel_hook()
-            self._uninstall_keyboard_hook()
-            self._publish_overlay_menu_state()
+            if self._overlay_wizard_phase is not None:
+                self._wizard_back()
+                self._overlay_toggle_ready_at = now + 0.22
+            else:
+                self._d3d_menu_visible = False
+                self._overlay_toggle_ready_at = now + 0.22
+                self.log("D3D menu closed via gamepad B")
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
+                self._publish_overlay_menu_state()
 
         if self._d3d_menu_visible and now >= self._overlay_tab_ready_at:
             if left_shoulder_edge or key_left_edge:
@@ -2885,6 +2839,8 @@ class Server16App(tk.Tk):
         # Auto-close if FIFA exits
         if self._d3d_menu_visible and not self._fifa_hwnd:
             self._d3d_menu_visible = False
+            self._overlay_wizard_phase = None
+            self._overlay_wizard_stadium = None
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
@@ -2949,7 +2905,7 @@ class Server16App(tk.Tk):
             pass
 
     def _update_menu_content(self) -> None:
-        """Populate the D3D menu content list for the active tab."""
+        """Populate the D3D menu content list for the active tab (or current wizard step)."""
         inj = self._d3d_injector
         if inj is None:
             return
@@ -2957,7 +2913,6 @@ class Server16App(tk.Tk):
             inj.set_dashboard_content(self._build_overlay_dashboard_lines())
         except Exception:
             pass
-        tab_name = self._overlay_tab_names[self._overlay_tab_index]
         items: list[str] = []
         try:
             from pathlib import Path
@@ -2969,27 +2924,37 @@ class Server16App(tk.Tk):
                 if not p.exists():
                     return []
                 return sorted(d.name for d in p.iterdir() if d.is_dir())
-            if tab_name == "scoreboards":
-                items = _list_dirs(getattr(self, "ScoreBoard", None))
-            elif tab_name == "stadiums":
-                stadium_root = getattr(self, "targetpath", None)
-                items = discover_stadium_names(stadium_root) if stadium_root else []
-            elif tab_name == "movies":
-                items = _list_dirs(getattr(self, "Movies", None))
-            elif tab_name == "tvlogos":
-                items = _list_dirs(getattr(self, "TVLogo", None))
-            elif tab_name == "chants":
-                exedir = getattr(self, "exedir", None)
-                if exedir:
-                    items = _list_dirs(Path(exedir) / "FSV")
+
+            if self._overlay_wizard_phase == "police":
+                items = [str(i) for i in range(1, 11)]
+            elif self._overlay_wizard_phase == "pitch":
+                items = _list_dirs(getattr(self, "PitchMowsource", None)) or ["0"]
+            elif self._overlay_wizard_phase == "net":
+                items = _list_dirs(getattr(self, "Nsource", None)) or ["0"]
+            else:
+                tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                if tab_name == "scoreboards":
+                    items = _list_dirs(getattr(self, "ScoreBoard", None))
+                elif tab_name == "stadiums":
+                    stadium_root = getattr(self, "targetpath", None)
+                    items = discover_stadium_names(stadium_root) if stadium_root else []
+                elif tab_name == "movies":
+                    items = _list_dirs(getattr(self, "Movies", None))
+                elif tab_name == "tvlogos":
+                    items = _list_dirs(getattr(self, "TVLogo", None))
+                elif tab_name == "chants":
+                    exedir = getattr(self, "exedir", None)
+                    if exedir:
+                        items = _list_dirs(Path(exedir) / "FSV")
         except Exception as exc:
-            self.log(f"Menu content error ({tab_name}): {exc}")
+            self.log(f"Menu content error (wizard={self._overlay_wizard_phase}): {exc}")
         self._overlay_items = items
         self._overlay_selected_index = 0
         self._overlay_scroll_offset  = 0
         self._overlay_item_count     = len(items)
         self._overlay_window_base    = 0
         self._refresh_d3d_window()
+        self._update_d3d_preview_image()
 
     def _refresh_d3d_window(self) -> None:
         """Write a sliding window of the current tab's items to shared memory.
@@ -3115,6 +3080,11 @@ class Server16App(tk.Tk):
             self.settings_ini.write(comp, value, key)
             self.settings_ini.save()
             self.log(f"Overlay assignment ({source}): [{key}] {comp}={value}")
+            if self._d3d_menu_visible:
+                self._d3d_menu_visible = False
+                self._uninstall_mouse_wheel_hook()
+                self._uninstall_keyboard_hook()
+                self._publish_overlay_menu_state()
             self.apply_all_runtime()
             return True
         except Exception as exc:
@@ -3139,7 +3109,23 @@ class Server16App(tk.Tk):
             pass
         return ",".join([selected_item, police, pitch, net])
 
+    def _wizard_back(self) -> None:
+        if self._overlay_wizard_phase == "net":
+            self._overlay_wizard_phase = "pitch"
+        elif self._overlay_wizard_phase == "pitch":
+            self._overlay_wizard_phase = "police"
+        else:
+            self._overlay_wizard_phase = None
+            self._overlay_wizard_stadium = None
+            self._overlay_wizard_police = None
+            self._overlay_wizard_pitch = None
+        self._update_menu_content()
+
     def _activate_overlay_selected_item(self, source: str) -> None:
+        if self._overlay_wizard_phase is not None:
+            self._activate_wizard_step(source)
+            return
+
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
         if not self._overlay_items:
             return
@@ -3172,10 +3158,47 @@ class Server16App(tk.Tk):
             self._write_overlay_assignment(key, comp, selected_item, source)
             return
         if tab_name == "stadiums":
-            key = "stadium" if resolved == "Home Team" else "comp"
-            payload = self._build_overlay_stadium_payload(selected_item, comp, key)
-            self._write_overlay_assignment(key, comp, payload, source)
+            self._overlay_wizard_stadium = selected_item
+            self._overlay_wizard_phase = "police"
+            self._overlay_wizard_police = None
+            self._overlay_wizard_pitch = None
+            self._update_menu_content()
             return
+
+    def _activate_wizard_step(self, source: str) -> None:
+        if not self._overlay_items:
+            return
+        sel = max(0, min(self._overlay_selected_index, len(self._overlay_items) - 1))
+        selected_item = (self._overlay_items[sel] or "").strip()
+        if not selected_item:
+            return
+        if self._overlay_wizard_phase == "police":
+            self._overlay_wizard_police = selected_item
+            self._overlay_wizard_phase = "pitch"
+            self._update_menu_content()
+        elif self._overlay_wizard_phase == "pitch":
+            self._overlay_wizard_pitch = selected_item
+            self._overlay_wizard_phase = "net"
+            self._update_menu_content()
+        elif self._overlay_wizard_phase == "net":
+            police = self._overlay_wizard_police or "4"
+            pitch = self._overlay_wizard_pitch or "0"
+            net = selected_item
+            stadium = self._overlay_wizard_stadium or ""
+            self._overlay_wizard_phase = None
+            self._overlay_wizard_stadium = None
+            self._overlay_wizard_police = None
+            self._overlay_wizard_pitch = None
+            if stadium:
+                self.assignment_runtime.refresh_context_for_assignment()
+                comp, resolved = self._resolve_overlay_assignment_target("stadiums")
+                if comp:
+                    key = "stadium" if resolved == "Home Team" else "comp"
+                    payload = ",".join([stadium, police, pitch, net])
+                    self._write_overlay_assignment(key, comp, payload, source)
+                else:
+                    self.log(f"Overlay wizard apply skipped ({source}): no match context")
+            self._update_menu_content()
 
     def _build_overlay_dashboard_lines(self) -> list[str]:
         def _label_text(key: str, fallback: str = "-") -> str:
@@ -3184,6 +3207,23 @@ class Server16App(tk.Tk):
                 return fallback
             text = str(label.cget("text") or "").strip()
             return text or fallback
+
+        if self._overlay_wizard_phase is not None:
+            phase = self._overlay_wizard_phase
+            phase_labels = {"police": "Police", "pitch": "Pitch Pattern", "net": "Net Pattern"}
+            police_val = "[selecting...]" if phase == "police" else (self._overlay_wizard_police or "-")
+            pitch_val = "-" if phase == "police" else "[selecting...]" if phase == "pitch" else (self._overlay_wizard_pitch or "-")
+            net_val = "[selecting...]" if phase == "net" else "-"
+            return [
+                "-- STADIUM CONFIG --",
+                f"Stadium: {self._overlay_wizard_stadium or '-'}",
+                f"Police:  {police_val}",
+                f"Pitch:   {pitch_val}",
+                f"Net:     {net_val}",
+                f">> Select {phase_labels.get(phase, phase)} <<",
+                "",
+                "B / Esc = back",
+            ]
 
         return [
             self.tr("card.assets.title"),
@@ -3198,6 +3238,29 @@ class Server16App(tk.Tk):
             f"{self.tr('stat.round_id')}: {_label_text('round')}",
             f"{self.tr('stat.status')}: {_label_text('status', self.display_value('idle'))}",
         ]
+
+    def _update_d3d_preview_image(self) -> None:
+        """Update shared memory image_path to the preview of the currently highlighted stadium."""
+        if self._overlay_wizard_phase is not None:
+            return
+        if self._overlay_tab_names[self._overlay_tab_index] != "stadiums":
+            return
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        sel = self._overlay_selected_index
+        stadium_name = self._overlay_items[sel] if 0 <= sel < len(self._overlay_items) else ""
+        preview_path = ""
+        if stadium_name:
+            try:
+                path = self._resolve_stadium_preview_path(stadium_name)
+                preview_path = str(path) if path else ""
+            except Exception:
+                pass
+        try:
+            inj.set_preview_image(preview_path)
+        except Exception:
+            pass
 
     def _navigate_menu_items(self, delta: int) -> None:
         """Move selection up/down in the current tab list."""
@@ -3214,6 +3277,7 @@ class Server16App(tk.Tk):
             scroll = sel - visible_rows + 1
         self._overlay_scroll_offset = scroll
         self._refresh_d3d_window()
+        self._update_d3d_preview_image()
 
     def _set_menu_selection(self, index: int) -> None:
         count = self._overlay_item_count
@@ -3229,6 +3293,7 @@ class Server16App(tk.Tk):
             scroll = sel - visible_rows + 1
         self._overlay_scroll_offset = scroll
         self._refresh_d3d_window()
+        self._update_d3d_preview_image()
 
     def _sync_d3d_menu_mouse_input(self, menu_input_fg: bool) -> None:
         # Use the flag set by the LL mouse hook — more reliable than GetAsyncKeyState
@@ -3354,7 +3419,7 @@ class Server16App(tk.Tk):
         fg = int(self.user32.GetForegroundWindow() or 0)
         if fg == 0:
             return False
-        if fg in {int(self._fifa_hwnd or 0), int(self._overlay_hwnd or 0)}:
+        if fg == int(self._fifa_hwnd or 0):
             return True
         inj = self._d3d_injector
         if inj is not None:
@@ -3472,7 +3537,6 @@ class Server16App(tk.Tk):
             VK_F12,
             VK_ESCAPE,
             VK_RETURN,
-            VK_SPACE,
             VK_LEFT,
             VK_RIGHT,
             VK_UP,
@@ -3525,7 +3589,7 @@ class Server16App(tk.Tk):
 
     def _best_effort_neutralize_game_keys(self) -> None:
         """Release common UI keys so FIFA is less likely to consume held inputs while menu is open."""
-        for vk in (VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_RETURN, VK_SPACE, VK_PRIOR, VK_NEXT, VK_HOME, VK_END):
+        for vk in (VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT, VK_RETURN, VK_PRIOR, VK_NEXT, VK_HOME, VK_END):
             if self.user32.GetAsyncKeyState(vk) & 0x8000:
                 self.user32.keybd_event(vk, 0, KEYEVENTF_KEYUP, 0)
 
@@ -3548,9 +3612,6 @@ class Server16App(tk.Tk):
         except Exception:
             pass
 
-    def _apply_overlay_window_style(self) -> None:
-        self._apply_noactivate_window_style(self._overlay_hwnd)
-
     def _focus_fifa_window(self) -> None:
         if not self._fifa_hwnd:
             return
@@ -3562,69 +3623,6 @@ class Server16App(tk.Tk):
             self.user32.SetForegroundWindow(self._fifa_hwnd)
         except Exception:
             pass
-
-    def _show_overlay(self) -> None:
-        if not self._fifa_hwnd:
-            return
-        window = self._window()
-        self._launcher_mode = False
-        self._restore_fullscreen_on_hide = self._is_probable_fullscreen_window(self._fifa_hwnd)
-        window.overrideredirect(True)
-        window.attributes("-topmost", True)
-        window.deiconify()
-        window.update_idletasks()
-        self._overlay_hwnd = window.winfo_id()
-        self._apply_overlay_window_style()
-        self._position_overlay()
-        try:
-            self.user32.ShowWindow(self._overlay_hwnd, SW_SHOWNOACTIVATE)
-        except Exception:
-            pass
-        self.after(10, self._focus_fifa_window)
-        self._overlay_visible = True
-        self._set_process_status(self.status_text("overlay_visible"), self.success)
-
-    def _hide_overlay(self) -> None:
-        window = self._window()
-        self._overlay_visible = False
-        if self._overlay_hwnd:
-            try:
-                self.user32.ShowWindow(self._overlay_hwnd, SW_HIDE)
-            except Exception:
-                pass
-        window.withdraw()
-        self._set_process_status(self.status_text("overlay_hidden"), self.gold if self._overlay_enabled else self.accent)
-        self.after(10, self._focus_fifa_window)
-        if self._restore_fullscreen_on_hide:
-            self.after(120, self._restore_fifa_fullscreen)
-
-    def _position_overlay(self) -> None:
-        if not self._fifa_hwnd:
-            return
-        window = self._window()
-        rect = RECT()
-        if not self.user32.GetWindowRect(self._fifa_hwnd, ctypes.byref(rect)):
-            return
-        game_width = max(1, rect.right - rect.left)
-        game_height = max(1, rect.bottom - rect.top)
-        overlay_width = min(game_width - 24, max(980, int(game_width * 0.86)))
-        overlay_height = min(max(360, int(game_height * 0.58)), game_height - 24)
-        x = rect.left + max(0, (game_width - overlay_width) // 2)
-        y = rect.top + 8
-        window.geometry(f"{overlay_width}x{overlay_height}+{x}+{y}")
-        if self._overlay_hwnd:
-            try:
-                self.user32.SetWindowPos(
-                    self._overlay_hwnd,
-                    HWND_TOPMOST,
-                    x,
-                    y,
-                    overlay_width,
-                    overlay_height,
-                    SWP_NOACTIVATE | SWP_SHOWWINDOW,
-                )
-            except Exception:
-                pass
 
     def _is_probable_fullscreen_window(self, hwnd: int) -> bool:
         if not hwnd:
@@ -3652,7 +3650,6 @@ class Server16App(tk.Tk):
         except Exception as exc:
             self.log("Failed to restore FIFA fullscreen", exc, exc_info=sys.exc_info())
         finally:
-            self._restore_fullscreen_on_hide = False
             self.after(180, self._focus_fifa_window)
 
     def _find_fifa_window_handle(self) -> int:

@@ -14,6 +14,7 @@ SCOREBOARD_SCOPE_OPTIONS = (
     ("0", "dialog.scope.every_tournament"),
     ("1", "dialog.scope.specific_round"),
     ("2", "dialog.scope.team_scoreboard"),
+    ("3", "dialog.scope.friendly_default"),
 )
 
 MOVIE_SCOPE_OPTIONS = (
@@ -120,47 +121,176 @@ class BaseDialog(tk.Toplevel):
 class ScoreboardDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
         super().__init__(master, "dialog.assignment.title.scoreboard")
+        self.geometry("1100x720")
+        self.minsize(900, 620)
         self.scope_labels = {key: self.tr(label_key) for key, label_key in SCOREBOARD_SCOPE_OPTIONS}
-        self.scope_ids = {self.tr(label_key): key for key, label_key in SCOREBOARD_SCOPE_OPTIONS}
+        self.scope_ids = {v: k for k, v in self.scope_labels.items()}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.scope_labels["0"]))
-        self.tvlogo = tk.StringVar()
-        self.scoreboard = tk.StringVar()
-        ttk.Combobox(
-            self,
-            state="readonly",
-            textvariable=self.scope,
-            values=tuple(self.tr(label_key) for _, label_key in SCOREBOARD_SCOPE_OPTIONS),
-            width=40,
-            style="Server16.TCombobox",
-        ).grid(
-            row=0, column=0, columnspan=2, padx=12, pady=12, sticky="ew"
-        )
-        tk.Label(self, text=self.tr("dialog.tvlogos"), bg=self.bg, fg=self.muted, font=("Bahnschrift", 10)).grid(row=1, column=0, padx=12, sticky="w")
-        tk.Label(self, text=self.tr("dialog.scoreboards"), bg=self.bg, fg=self.muted, font=("Bahnschrift", 10)).grid(row=1, column=1, padx=12, sticky="w")
-        self._build_listbox(2, 0, exedir / "TVLogoGBD", "default", self.tvlogo)
-        self._build_listbox(2, 1, exedir / "ScoreBoardGBD", "default", self.scoreboard)
-        ttk.Button(
-            self,
-            text=self.tr("button.select_and_assign"),
-            command=lambda: self.close_ok(
-                {
-                    "selectedround": self.scope_ids.get(self.scope.get(), "0"),
-                    "Selectedtvlogo": self.tvlogo.get(),
-                    "Selectedscoreboard": self.scoreboard.get(),
-                }
-            ),
-        ).grid(row=3, column=0, columnspan=2, padx=12, pady=12, sticky="ew")
+        self.tvlogo = tk.StringVar(value="default")
+        self.scoreboard = tk.StringVar(value="default")
+        self._preview_images: dict[str, ImageTk.PhotoImage] = {}
+        self._preview_labels: dict[str, tk.Label] = {}
+        self._tvlogo_source = exedir / "TVLogoGBD"
+        self._scoreboard_source = exedir / "ScoreBoardGBD"
 
-    def _build_listbox(self, row: int, column: int, base: Path, default: str, target: tk.StringVar) -> None:
-        listbox = self._dark_listbox(self, exportselection=False, width=28, height=16, font=("Consolas", 10))
-        listbox.grid(row=row, column=column, padx=12, pady=8)
-        listbox.insert("end", default)
+        self.grid_columnconfigure(0, weight=3)
+        self.grid_columnconfigure(1, weight=3)
+        self.grid_columnconfigure(2, weight=4)
+        self.grid_rowconfigure(1, weight=1)
+
+        topbar = tk.Frame(self, bg=self.bg)
+        topbar.grid(row=0, column=0, columnspan=3, sticky="ew", padx=14, pady=(14, 10))
+        topbar.grid_columnconfigure(0, weight=1)
+        self._dark_label(topbar, "TVLOGO / SCOREBOARD ASSIGN", bg=self.bg, font=("Bahnschrift", 18, "bold")).grid(row=0, column=0, sticky="w")
+        self._dark_label(topbar, "Choose the assignment scope, select a TV logo and a scoreboard.", bg=self.bg, muted=True, font=("Bahnschrift", 10)).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        tvlogo_card = self._card(self, "TV Logo", "Select a TV logo pack.")
+        tvlogo_card.grid(row=1, column=0, sticky="nsew", padx=(14, 6), pady=(0, 14))
+        tvlogo_card.pack_propagate(False)
+        tvlogo_body = tk.Frame(tvlogo_card, bg=self.card)
+        tvlogo_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        tvlogo_body.grid_columnconfigure(0, weight=1)
+        tvlogo_body.grid_rowconfigure(3, weight=1)
+        self._dark_label(tvlogo_body, "Assignment Mode", muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=0, column=0, sticky="w")
+        ttk.Combobox(tvlogo_body, state="readonly", textvariable=self.scope,
+            values=tuple(self.scope_labels[k] for k, _ in SCOREBOARD_SCOPE_OPTIONS),
+            style="Server16.TCombobox",
+        ).grid(row=1, column=0, sticky="ew", pady=(6, 12))
+        self._dark_label(tvlogo_body, "TV Logo", muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=2, column=0, sticky="w")
+        tvlogo_wrap = tk.Frame(tvlogo_body, bg=self.card)
+        tvlogo_wrap.grid(row=3, column=0, sticky="nsew")
+        tvlogo_wrap.grid_columnconfigure(0, weight=1)
+        tvlogo_wrap.grid_rowconfigure(0, weight=1)
+        self._tvlogo_list = self._dark_listbox(tvlogo_wrap, exportselection=False, height=18, font=("Consolas", 10))
+        tvlogo_scroll = ttk.Scrollbar(tvlogo_wrap, orient="vertical", command=self._tvlogo_list.yview)
+        self._tvlogo_list.configure(yscrollcommand=tvlogo_scroll.set)
+        self._tvlogo_list.grid(row=0, column=0, sticky="nsew")
+        tvlogo_scroll.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self._populate_listbox(self._tvlogo_list, self._tvlogo_source, self.tvlogo)
+        self._tvlogo_list.bind("<<ListboxSelect>>", lambda _e: self._on_tvlogo_select())
+
+        sb_card = self._card(self, "ScoreBoard", "Select a scoreboard pack.")
+        sb_card.grid(row=1, column=1, sticky="nsew", padx=(6, 6), pady=(0, 14))
+        sb_card.pack_propagate(False)
+        sb_body = tk.Frame(sb_card, bg=self.card)
+        sb_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        sb_body.grid_columnconfigure(0, weight=1)
+        sb_body.grid_rowconfigure(1, weight=1)
+        self._dark_label(sb_body, "ScoreBoard", muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=0, column=0, sticky="w")
+        sb_wrap = tk.Frame(sb_body, bg=self.card)
+        sb_wrap.grid(row=1, column=0, sticky="nsew")
+        sb_wrap.grid_columnconfigure(0, weight=1)
+        sb_wrap.grid_rowconfigure(0, weight=1)
+        self._sb_list = self._dark_listbox(sb_wrap, exportselection=False, height=18, font=("Consolas", 10))
+        sb_scroll = ttk.Scrollbar(sb_wrap, orient="vertical", command=self._sb_list.yview)
+        self._sb_list.configure(yscrollcommand=sb_scroll.set)
+        self._sb_list.grid(row=0, column=0, sticky="nsew")
+        sb_scroll.grid(row=0, column=1, sticky="ns", padx=(6, 0))
+        self._populate_listbox(self._sb_list, self._scoreboard_source, self.scoreboard)
+        self._sb_list.bind("<<ListboxSelect>>", lambda _e: self._on_sb_select())
+
+        right_card = self._card(self, "Preview", "Current selection and visual preview.")
+        right_card.grid(row=1, column=2, sticky="nsew", padx=(6, 14), pady=(0, 14))
+        right_card.pack_propagate(False)
+        right_body = tk.Frame(right_card, bg=self.card)
+        right_body.pack(fill="both", expand=True, padx=14, pady=(0, 14))
+        right_body.grid_columnconfigure(0, weight=1)
+
+        sel_frame = tk.Frame(right_body, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        sel_frame.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        sel_frame.grid_columnconfigure(0, weight=1)
+        self._dark_label(sel_frame, "Current Selection", bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", padx=12, pady=(10, 2))
+        self._sel_tvlogo_lbl = self._dark_label(sel_frame, "TV Logo: default", bg=self.card_soft, font=("Consolas", 10, "bold"), anchor="w")
+        self._sel_tvlogo_lbl.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 2))
+        self._sel_sb_lbl = self._dark_label(sel_frame, "ScoreBoard: default", bg=self.card_soft, font=("Consolas", 10, "bold"), anchor="w")
+        self._sel_sb_lbl.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 10))
+
+        self._build_preview_sb(right_body, 1, "TV Logo Preview", "tvlogo", image_size=(340, 180))
+        self._build_preview_sb(right_body, 2, "ScoreBoard Preview", "scoreboard", image_size=(340, 180))
+
+        action_bar = tk.Frame(self, bg=self.bg)
+        action_bar.grid(row=2, column=0, columnspan=3, sticky="ew", padx=14, pady=(0, 14))
+        action_bar.grid_columnconfigure(0, weight=1)
+        ttk.Button(action_bar, text=self.tr("button.select_and_assign"),
+            command=lambda: self.close_ok({
+                "selectedround": self.scope_ids.get(self.scope.get(), "0"),
+                "Selectedtvlogo": self.tvlogo.get(),
+                "Selectedscoreboard": self.scoreboard.get(),
+            }),
+        ).grid(row=0, column=0, sticky="ew")
+
+    def _populate_listbox(self, listbox: tk.Listbox, base: Path, target: tk.StringVar) -> None:
+        listbox.insert("end", "default")
         if base.exists():
-            for directory in sorted(p for p in base.iterdir() if p.is_dir()):
-                listbox.insert("end", directory.name)
+            for p in sorted(base.iterdir()):
+                if p.is_dir():
+                    listbox.insert("end", p.name)
+                elif p.suffix.lower() in {".zip", ".rar"}:
+                    listbox.insert("end", p.name)
         listbox.selection_set(0)
-        target.set(default)
-        listbox.bind("<<ListboxSelect>>", lambda _event: target.set(listbox.get("active")))
+        target.set("default")
+
+    def _on_tvlogo_select(self) -> None:
+        sel = self._tvlogo_list.curselection()
+        if sel:
+            val = self._tvlogo_list.get(sel[0])
+            self.tvlogo.set(val)
+            self._sel_tvlogo_lbl.configure(text=f"TV Logo: {val}")
+            self._update_preview_for("tvlogo", self._tvlogo_source / val)
+
+    def _on_sb_select(self) -> None:
+        sel = self._sb_list.curselection()
+        if sel:
+            val = self._sb_list.get(sel[0])
+            self.scoreboard.set(val)
+            self._sel_sb_lbl.configure(text=f"ScoreBoard: {val}")
+            self._update_preview_for("scoreboard", self._scoreboard_source / val)
+
+    def _update_preview_for(self, key: str, folder: Path) -> None:
+        image_path = None
+        if folder.exists() and folder.is_dir():
+            thumbnail_dir = folder / "render" / "thumbnail"
+            if thumbnail_dir.exists():
+                for ext in (".png", ".jpg", ".jpeg"):
+                    candidate = thumbnail_dir / f"{key}{ext}"
+                    if candidate.exists():
+                        image_path = candidate
+                        break
+                if image_path is None:
+                    for candidate in sorted(thumbnail_dir.iterdir()):
+                        if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                            image_path = candidate
+                            break
+        self._update_preview_sb(key, image_path, f"No preview for {folder.name}")
+
+    def _build_preview_sb(self, parent: tk.Misc, row: int, title: str, key: str, image_size: tuple[int, int] = (340, 180)) -> None:
+        frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        frame.grid_columnconfigure(0, weight=1)
+        self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).pack(anchor="w", padx=10, pady=(8, 4))
+        preview = tk.Label(frame, text="No preview", bg=self.panel, fg=self.muted,
+            anchor="center", justify="center", relief="flat", width=38, height=10)
+        preview.pack(fill="x", padx=10, pady=(0, 10), ipadx=8, ipady=12)
+        preview.image_size = image_size
+        self._preview_labels[key] = preview
+
+    def _update_preview_sb(self, key: str, image_path: "Path | None", fallback_text: str) -> None:
+        label = self._preview_labels.get(key)
+        if not label:
+            return
+        self._preview_images.pop(key, None)
+        if image_path is None or not image_path.exists():
+            label.configure(image="", text=fallback_text, compound="center")
+            return
+        try:
+            image = Image.open(image_path).convert("RGBA")
+            image.thumbnail(getattr(label, "image_size", (340, 180)))
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            label.configure(image="", text=fallback_text, compound="center")
+            return
+        self._preview_images[key] = photo
+        label.configure(image=photo, text="", compound="center")
 
 
 class MovieDialog(BaseDialog):

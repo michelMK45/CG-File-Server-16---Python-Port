@@ -9,7 +9,11 @@ a = Analysis(
         ('bin\\cgfs16_inject.exe',  'bin'),
         ('bin\\FifaLibrary14.dll',  'bin'),
     ],
-    datas=[('server16_py\\offsets.json', 'server16_py'), ('server16.ico', '.')],
+    datas=[
+        ('server16_py\\offsets.json', 'server16_py'),
+        ('server16_py\\locales', 'server16_py\\locales'),
+        ('server16.ico', '.'),
+    ],
     hiddenimports=['clr'],
     hookspath=[],
     hooksconfig={},
