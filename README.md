@@ -12,7 +12,7 @@ This project is a community-friendly, public rewrite of the classic FIFA 16 Serv
 - Attaches to FIFA 16 memory to read live match context.
 - Applies stadium, scoreboard, TV logo, movie, chants, and camera logic based on the current match state.
 - Loads assigned stadiums from normal folders or `.zip` / `.rar` archives.
-- Supports an overlay-style main UI that can appear on top of FIFA 16.
+- Provides a **fullscreen in-game overlay** for assigning assets without leaving FIFA 16, fully controllable with a gamepad or keyboard.
 - Opens secondary editors and assignment dialogs as floating windows outside the overlay flow.
 - Includes tools for editing `settings.ini`-driven assignment data.
 - Packages the project as a standalone Windows executable with PyInstaller.
@@ -25,17 +25,13 @@ The goal is to preserve and evolve the FIFA 16 Server 16 experience in a modern 
 
 ## Screenshots
 
-
 Main overlay:
 
-<img width="1007" height="667" alt="Screenshot_2" src="https://github.com/user-attachments/assets/9b533e22-21c2-46e2-adc0-a40a71e3ec3a" />
+<img alt="Screenshot_2" src="https://i.ibb.co/Dq9hf5p/image.png" />
 
-<img width="1008" height="694" alt="Screenshot_1" src="https://github.com/user-attachments/assets/ed0296f2-a270-48c0-a0cf-91d90054891c" />
+<img alt="Screenshot_1" src="https://i.ibb.co/845Kjjtz/image.png" />
 
-<img width="1010" height="698" alt="Screenshot_3" src="https://github.com/user-attachments/assets/c3a08a83-bef0-4dd4-a445-336ea80be6ea" />
-
-
-These paths are reserved so contributors can add screenshots later without changing the documentation structure.
+<img alt="Screenshot_3" src="https://i.ibb.co/ymQqhYLp/image.png" />
 
 ## Repository Structure
 
@@ -96,6 +92,32 @@ When the tool opens:
 4. Use the tool in normal window mode or arm the overlay mode.
 
 The application stores local settings in `runtime/settings.json` and reads/writes Server 16 assignment data from `FSW/settings.ini` inside the detected FIFA 16 folder.
+
+## In-Game Interactive Overlay
+
+The overlay lets you assign stadiums, scoreboards, TV logos, movies, and other CGFS assets without alt-tabbing out of FIFA 16. It runs in fullscreen mode on top of the game.
+
+### Opening and Closing
+
+| Action | Input |
+|---|---|
+| Open overlay | **F12** |
+| Open overlay (gamepad) | Hold **Start / Menu** for 0.6 seconds |
+| Close overlay | Press **F12** again, or close with the controller |
+
+### What You Can Do Inside the Overlay
+
+- Assign stadiums — with visual preview images shown directly in the overlay.
+- Assign scoreboards, TV logos, movies, and other CGFS assets.
+- Navigate all sections using **controller button hints** displayed on screen.
+
+### Enabling or Disabling the Overlay
+
+A checkbox in the settings panel allows you to enable or disable the in-game overlay independently. When disabled, F12 and the Start button hold have no effect.
+
+### Requirements
+
+The overlay uses native C++ helpers (`bin/cgfs16_overlay.dll` and `bin/cgfs16_inject.exe`) that ship with the release build. Running from source requires these binaries to be present in the `bin/` folder. The build script (`build_exe.bat`) compiles them when Visual Studio C++ tools are available.
 
 ## Expected FIFA Folder Layout
 
@@ -200,6 +222,7 @@ crowd_night.dat
 EntranceScene/
 1/
 3/
+GameplayCamGBD/
 ```
 
 Optional files supported by the runtime:
@@ -333,7 +356,7 @@ Suggested contribution flow:
 Suggested GitHub release contents:
 
 - `Server16Python.exe`
-- `RELEASE_NOTES_v0.2.1.md`
+- `RELEASE_NOTES_v<version>.md`
 - release notes summarizing major fixes and improvements
 - optional screenshots or changelog excerpts
 
