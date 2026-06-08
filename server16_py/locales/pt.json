@@ -1,7 +1,7 @@
 {
   "app.title": "CG Server 16 Python",
   "banner.control_room": "CENTRAL DE CONTROLE SERVER16",
-  "help.overlay_toggle": "Pressione F12 ou Start+Back para abrir o menu do overlay",
+  "help.overlay_toggle": "Pressione F12 ou mantenha Start para abrir o menu do overlay",
   "status.waiting_fifa": "Aguardando FIFA",
   "status.loading_fifa_data": "Carregando dados do FIFA",
   "status.fifa_ready": "FIFA pronto",

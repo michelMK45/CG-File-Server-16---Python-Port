@@ -1,6 +1,6 @@
 {
   "banner.control_room": "CENTRO DE CONTROL SERVER16",
-  "help.overlay_toggle": "Presiona F12 o Start+Back para abrir el menú del overlay",
+  "help.overlay_toggle": "Presiona F12 o mantén Start para abrir el menú del overlay",
   "status.waiting_fifa": "Esperando FIFA",
   "status.loading_fifa_data": "Cargando datos de FIFA",
   "status.fifa_ready": "FIFA listo",

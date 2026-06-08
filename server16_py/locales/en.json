@@ -1,7 +1,7 @@
 {
   "app.title": "CG Server 16 Python",
   "banner.control_room": "SERVER16 CONTROL ROOM",
-  "help.overlay_toggle": "Press F12 or Start+Back to open the in-game overlay menu",
+  "help.overlay_toggle": "Press F12 or hold Start to open the in-game overlay menu",
   "status.waiting_fifa": "Waiting FIFA",
   "status.loading_fifa_data": "Loading FIFA Data",
   "status.fifa_ready": "FIFA Ready",
