@@ -37,7 +37,14 @@ Main overlay:
 
 - `main.py`: project entry point.
 - `server16_py/`: main application source code.
-- `server16_py/app.py`: primary UI, overlay management, and runtime coordination.
+- `server16_py/app.py`: application entry class; assembles the mixin modules below.
+- `server16_py/app_ui.py`: main window construction, dashboard layout, and UI helpers.
+- `server16_py/app_overlay.py`: in-game overlay loop, gamepad/keyboard input handling, and D3D menu rendering.
+- `server16_py/app_game.py`: game process polling, live match context reading, and stats loop.
+- `server16_py/app_settings.py`: settings loading, module state management, and worker queue.
+- `server16_py/app_logging.py`: runtime log panel and auto-follow toggle.
+- `server16_py/app_localization.py`: language switching and UI string application.
+- `server16_py/win32_types.py`: shared Win32 ctypes type definitions.
 - `server16_py/assignment_runtime.py`: assignment flow for stadiums, scoreboards, TV logos, movies, and exclusions.
 - `server16_py/stadium_runtime.py`: stadium loading and application logic, including folder and archive sources.
 - `server16_py/asset_runtime.py`: scoreboard, TV logo, movie, and related routing.
@@ -109,7 +116,9 @@ The overlay lets you assign stadiums, scoreboards, TV logos, movies, and other C
 
 - Assign stadiums — with visual preview images shown directly in the overlay.
 - Assign scoreboards, TV logos, movies, and other CGFS assets.
+- See the **active assignment mode** (Round, Tournament, Home Team, or Default) for each asset type.
 - Navigate all sections using **controller button hints** displayed on screen.
+- Use **keyboard shortcuts** shown in the hint bar at the bottom of the overlay (UP/DOWN, Wheel, RIGHT/LEFT, Enter, Esc).
 
 ### Enabling or Disabling the Overlay
 
@@ -223,6 +232,7 @@ EntranceScene/
 1/
 3/
 GameplayCamGBD/
+GoalpostGBD/
 ```
 
 Optional files supported by the runtime:
@@ -230,6 +240,7 @@ Optional files supported by the runtime:
 - `NoSeats.rx3` for crowd-chair replacement.
 - `StadiumMovie.vp8` and `StadiumBumper.big` for stadium-specific movies.
 - `GameplayCamGBD/bcgameplay_176.dat` and `GameplayCamGBD/bcgameplay_261.dat` for per-stadium gameplay camera overrides.
+- `GoalpostGBD/` for per-stadium goal model files. Contents are copied to the game's goal-net directory on load and removed automatically when the next stadium (without goalposts) is applied.
 
 Archive extraction is used only for loading the stadium files. Preview lookup does not extract archives, so preview images are resolved from `StadiumGBD/render/thumbnail/stadium/<stadium name>.*`.
 
@@ -359,6 +370,8 @@ Suggested GitHub release contents:
 - `RELEASE_NOTES_v<version>.md`
 - release notes summarizing major fixes and improvements
 - optional screenshots or changelog excerpts
+
+Previous release notes: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md)
 
 ## Credits
 
