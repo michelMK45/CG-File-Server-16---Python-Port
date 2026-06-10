@@ -101,12 +101,16 @@ class StadiumRuntime:
             return
         section_id = None
         section_name = None
+        app._stadium_assignment_type = ""
         if app.settings_ini.key_exists(app.TOURROUNDID, "comp"):
             section_id, section_name = app.TOURROUNDID, "comp"
+            app._stadium_assignment_type = "Round"
         elif app.settings_ini.key_exists(app.TOURNAME, "comp"):
             section_id, section_name = app.TOURNAME, "comp"
+            app._stadium_assignment_type = "Tournament"
         elif app.settings_ini.key_exists(app.HID, "stadium"):
             section_id, section_name = app.HID, "stadium"
+            app._stadium_assignment_type = "Home Team"
         if section_id:
             raw_value = app.settings_ini.read(section_id, section_name)
             valid_stadiums, _police, _pitch, _net = self._parse_assignment(raw_value)

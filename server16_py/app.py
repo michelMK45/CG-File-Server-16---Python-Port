@@ -213,6 +213,12 @@ class Server16App(tk.Tk):
         self.TOURROUNDID = ""
         self.derby = ""
         self.tvlogoscoreboardtype = "default"
+        self._tvlogo_assignment_type = ""
+        self._scoreboard_assignment_type = ""
+        self._movie_assignment_type = ""
+        self._stadium_assignment_type = ""
+        self._overlay_scope_phase = False
+        self._overlay_selected_scope: str | None = None
         self._last_runtime_signature = None
         self._last_context_error = None
         self._closing = False
@@ -2713,12 +2719,16 @@ class Server16App(tk.Tk):
                 self._overlay_wizard_stadium = None
                 self._overlay_wizard_police = None
                 self._overlay_wizard_pitch = None
+                self._overlay_selected_scope = None
+                self._overlay_scope_phase = True
                 self._update_menu_content()
             else:
                 self._overlay_wizard_phase = None
                 self._overlay_wizard_stadium = None
                 self._overlay_wizard_police = None
                 self._overlay_wizard_pitch = None
+                self._overlay_selected_scope = None
+                self._overlay_scope_phase = False
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
 
@@ -2732,6 +2742,11 @@ class Server16App(tk.Tk):
             if self._overlay_wizard_phase is not None:
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
+            elif not self._overlay_scope_phase:
+                self._overlay_scope_phase = True
+                self._overlay_selected_scope = None
+                self._overlay_toggle_ready_at = now + 0.22
+                self._update_menu_content()
             else:
                 self._d3d_menu_visible = False
                 self._overlay_toggle_ready_at = now + 0.22
@@ -2744,6 +2759,11 @@ class Server16App(tk.Tk):
             if self._overlay_wizard_phase is not None:
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
+            elif not self._overlay_scope_phase:
+                self._overlay_scope_phase = True
+                self._overlay_selected_scope = None
+                self._overlay_toggle_ready_at = now + 0.22
+                self._update_menu_content()
             else:
                 # Latch the close intent; execute only after B is released so
                 # XInputEnable(TRUE) fires when B is already up — preventing the
@@ -2881,6 +2901,12 @@ class Server16App(tk.Tk):
         self._overlay_tab_index = normalized
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
         self.log(f"Overlay menu tab changed to {tab_name} via {source}")
+        self._overlay_wizard_phase = None
+        self._overlay_wizard_stadium = None
+        self._overlay_wizard_police = None
+        self._overlay_wizard_pitch = None
+        self._overlay_selected_scope = None
+        self._overlay_scope_phase = True
         self._publish_overlay_menu_state()
         if self._d3d_injector is not None:
             try:
@@ -2919,12 +2945,40 @@ class Server16App(tk.Tk):
                     return []
                 return sorted(d.name for d in p.iterdir() if d.is_dir())
 
-            if self._overlay_wizard_phase == "police":
+            def _list_file_stems(base) -> list[str]:
+                if base is None:
+                    return []
+                p = Path(base)
+                if not p.exists():
+                    return []
+                return [f.stem for f in sorted(p.iterdir()) if f.is_file()]
+
+            def _first_img_dir(*paths) -> Path | None:
+                for p in paths:
+                    if Path(p).exists():
+                        return Path(p)
+                return None
+
+            if self._overlay_scope_phase:
+                tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                scope_options = self._get_scope_options_for_tab(tab_name)
+                items = [label for label, _code in scope_options]
+            elif self._overlay_wizard_phase == "police":
                 items = [str(i) for i in range(1, 11)]
             elif self._overlay_wizard_phase == "pitch":
-                items = _list_dirs(getattr(self, "PitchMowsource", None)) or ["0"]
+                exedir = getattr(self, "exedir", None)
+                img_dir = _first_img_dir(
+                    Path(exedir) / "FSW" / "Images" / "PitchMowPattern",
+                    Path(exedir) / "FSW" / "PitchMowPattern",
+                ) if exedir else None
+                items = _list_file_stems(img_dir) or ["0"]
             elif self._overlay_wizard_phase == "net":
-                items = _list_dirs(getattr(self, "Nsource", None)) or ["0"]
+                exedir = getattr(self, "exedir", None)
+                img_dir = _first_img_dir(
+                    Path(exedir) / "FSW" / "Images" / "Nets",
+                    Path(exedir) / "FSW" / "Nets",
+                ) if exedir else None
+                items = _list_file_stems(img_dir) or ["0"]
             else:
                 tab_name = self._overlay_tab_names[self._overlay_tab_index]
                 if tab_name == "scoreboards":
@@ -2950,14 +3004,24 @@ class Server16App(tk.Tk):
 
         # Wizard step header shown above the item list (drives the C++ header band)
         phase = self._overlay_wizard_phase
-        if phase == "police":
+        if self._overlay_scope_phase:
+            tab_name = self._overlay_tab_names[self._overlay_tab_index]
+            header = f"Select scope  →  {tab_name.rstrip('s').title()}"
+        elif phase == "police":
             header = f"Stadium: {self._overlay_wizard_stadium or '?'}  →  Police Pattern"
         elif phase == "pitch":
             header = f"Police: {self._overlay_wizard_police or '?'}  →  Pitch Mow Pattern"
         elif phase == "net":
             header = f"Pitch: {self._overlay_wizard_pitch or '?'}  →  Net Pattern"
         else:
-            header = ""
+            scope_label = ""
+            if self._overlay_selected_scope is not None:
+                tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                for label, code in self._get_scope_options_for_tab(tab_name):
+                    if code == self._overlay_selected_scope:
+                        scope_label = label
+                        break
+            header = f"[{scope_label}]" if scope_label else ""
         self._overlay_list_header = header
         try:
             inj.set_list_header(header)
@@ -3058,19 +3122,44 @@ class Server16App(tk.Tk):
         usable = max(1.0, layout["list_ymax"] - layout["list_y"])
         return max(1, int(usable // layout["item_h"]))
 
-    def _resolve_overlay_assignment_target(self, tab_name: str) -> tuple[str | None, str | None]:
+    def _get_scope_options_for_tab(self, tab_name: str) -> list[tuple[str, str]]:
+        """Return [(display_label, scope_code)] for all valid scopes of the tab."""
         if tab_name in {"scoreboards", "tvlogos"}:
-            scope = self.assignment_runtime.default_scope_for_scoreboard()
+            return [
+                ("Home Team", "2"),
+                ("Default / Friendly", "3"),
+                ("Round", "1"),
+                ("Tournament", "0"),
+            ]
+        if tab_name == "movies":
+            return [
+                ("Home Team", "3"),
+                ("Derby", "2"),
+                ("Round", "1"),
+                ("Tournament", "0"),
+            ]
+        if tab_name == "stadiums":
+            return [
+                ("Home Team", "0"),
+                ("Round", "1"),
+                ("Tournament", "4"),
+            ]
+        return []
+
+    def _resolve_overlay_assignment_target(self, tab_name: str, scope_override: str | None = None) -> tuple[str | None, str | None]:
+        if tab_name in {"scoreboards", "tvlogos"}:
+            scope = scope_override if scope_override is not None else self.assignment_runtime.default_scope_for_scoreboard()
             return self.assignment_runtime.resolve_assignment_target(
                 scope,
                 {
                     "0": (self.TOURNAME, "Tournament"),
                     "1": (self.TOURROUNDID, "Round"),
                     "2": (self.HID, "Home Team"),
+                    "3": ("0", "Default"),
                 },
             )
         if tab_name == "movies":
-            scope = self.assignment_runtime.default_scope_for_movie()
+            scope = scope_override if scope_override is not None else self.assignment_runtime.default_scope_for_movie()
             return self.assignment_runtime.resolve_assignment_target(
                 scope,
                 {
@@ -3081,14 +3170,12 @@ class Server16App(tk.Tk):
                 },
             )
         if tab_name == "stadiums":
-            scope = self.assignment_runtime.default_scope_for_stadium()
+            scope = scope_override if scope_override is not None else self.assignment_runtime.default_scope_for_stadium()
             return self.assignment_runtime.resolve_assignment_target(
                 scope,
                 {
                     "0": (self.HID, "Home Team"),
                     "1": (self.TOURROUNDID, "Round"),
-                    "2": (self.HID, "Home Team"),
-                    "3": (self.TOURROUNDID, "Round"),
                     "4": (self.TOURNAME, "Tournament"),
                 },
             )
@@ -3103,10 +3190,19 @@ class Server16App(tk.Tk):
             self.log(f"Overlay assignment ({source}): [{key}] {comp}={value}")
             if self._d3d_menu_visible:
                 self._d3d_menu_visible = False
+                self._overlay_scope_phase = False
+                self._overlay_selected_scope = None
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
-            self.apply_all_runtime()
+            # Stadium assignments need the full runtime (may trigger loading modal).
+            # Movie/scoreboard assignments skip apply_stadium_runtime to avoid
+            # triggering a stadium reload as a side effect.
+            if key in {"stadium", "comp"}:
+                self.apply_all_runtime()
+            else:
+                self.apply_scoreboard_runtime()
+                self.apply_movie_runtime()
             return True
         except Exception as exc:
             self.log(f"Overlay assignment failed ({source})", exc, exc_info=sys.exc_info())
@@ -3143,6 +3239,18 @@ class Server16App(tk.Tk):
         self._update_menu_content()
 
     def _activate_overlay_selected_item(self, source: str) -> None:
+        if self._overlay_scope_phase:
+            tab_name = self._overlay_tab_names[self._overlay_tab_index]
+            scope_options = self._get_scope_options_for_tab(tab_name)
+            if not scope_options:
+                return
+            sel = max(0, min(self._overlay_selected_index, len(scope_options) - 1))
+            _label, code = scope_options[sel]
+            self._overlay_selected_scope = code
+            self._overlay_scope_phase = False
+            self._update_menu_content()
+            return
+
         if self._overlay_wizard_phase is not None:
             self._activate_wizard_step(source)
             return
@@ -3156,7 +3264,7 @@ class Server16App(tk.Tk):
             return
 
         self.assignment_runtime.refresh_context_for_assignment()
-        comp, resolved = self._resolve_overlay_assignment_target(tab_name)
+        comp, resolved = self._resolve_overlay_assignment_target(tab_name, scope_override=self._overlay_selected_scope)
         if not comp:
             self.log(f"Overlay assign skipped ({source}): no usable context for tab={tab_name}")
             return
@@ -3212,7 +3320,7 @@ class Server16App(tk.Tk):
             self._overlay_wizard_pitch = None
             if stadium:
                 self.assignment_runtime.refresh_context_for_assignment()
-                comp, resolved = self._resolve_overlay_assignment_target("stadiums")
+                comp, resolved = self._resolve_overlay_assignment_target("stadiums", scope_override=self._overlay_selected_scope)
                 if comp:
                     key = "stadium" if resolved == "Home Team" else "comp"
                     payload = ",".join([stadium, police, pitch, net])
@@ -3246,12 +3354,15 @@ class Server16App(tk.Tk):
                 "B / Esc = back",
             ]
 
+        def _with_type(value: str, atype: str) -> str:
+            return f"{value} [{atype}]" if atype else value
+
         return [
             self.tr("card.assets.title"),
-            f"{self.tr('stat.current_stadium')}: {_label_text('stadium')}",
-            f"{self.tr('stat.scoreboard')}: {_label_text('scoreboard', 'default')}",
-            f"{self.tr('stat.tv_logo')}: {_label_text('tvlogo', 'default')}",
-            f"{self.tr('stat.movie')}: {_label_text('movie', 'default')}",
+            f"{self.tr('stat.current_stadium')}: {_with_type(_label_text('stadium'), self._stadium_assignment_type)}",
+            f"{self.tr('stat.scoreboard')}: {_with_type(_label_text('scoreboard', 'default'), self._scoreboard_assignment_type)}",
+            f"{self.tr('stat.tv_logo')}: {_with_type(_label_text('tvlogo', 'default'), self._tvlogo_assignment_type)}",
+            f"{self.tr('stat.movie')}: {_with_type(_label_text('movie', 'default'), self._movie_assignment_type)}",
             self.tr("card.match.title"),
             f"{self.tr('stat.current_page')}: {_label_text('page')}",
             f"{self.tr('stat.minute_second')}: {_label_text('match_clock_split', '00 / 00')}",

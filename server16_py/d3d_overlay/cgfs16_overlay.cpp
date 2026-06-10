@@ -235,6 +235,19 @@ static TextTex g_ttHintBadge[NUM_HINT_ITEMS];
 static TextTex g_ttHintDesc[NUM_HINT_ITEMS];
 static bool    g_hintTexReady = false;
 
+#define NUM_KEY_HINT_ITEMS 5
+static const HintDef kKeyHints[NUM_KEY_HINT_ITEMS] = {
+    { L"UP/DOWN", L"Navigate", 0xFF606060 },
+    { L"Wheel",          L"Scroll",   0xFF606060 },
+    { L"RIGHT/LEFT", L"Tab",      0xFF606060 },
+    { L"Enter",          L"Select",   0xFF606060 },
+    { L"Esc",            L"Close",    0xFF606060 },
+};
+
+static TextTex g_ttKeyHintBadge[NUM_KEY_HINT_ITEMS];
+static TextTex g_ttKeyHintDesc[NUM_KEY_HINT_ITEMS];
+static bool    g_keyHintTexReady = false;
+
 static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
     L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos"
 };
@@ -714,6 +727,15 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         }
         g_hintTexReady = true;
     }
+    if (!g_keyHintTexReady) {
+        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
+            UpdateTextTex(dev, g_ttKeyHintBadge[i], kKeyHints[i].badgeLabel,
+                          12, true, RGB(0xFF, 0xFF, 0xFF), 80);
+            UpdateTextTex(dev, g_ttKeyHintDesc[i], kKeyHints[i].description,
+                          12, false, RGB(0xCC, 0xDD, 0xEE), 160);
+        }
+        g_keyHintTexReady = true;
+    }
 
     ID3D11RenderTargetView *oldRTV[8] = {};
     ID3D11DepthStencilView *oldDSV = nullptr;
@@ -767,7 +789,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     const float TAB_H = 56.f;
     const float TAB_W = floorf(MW / NUM_MENU_TABS);
     const float HINT_H    = 38.f;
-    const float HINT_ZONE = HINT_H + 5.f;  // separator + padding
+    const float HINT_ZONE = HINT_H * 2.f + 6.f;  // two hint rows + padding
     const float DASH_H = (std::max)(220.f, (std::min)(320.f, floorf(MH * 0.28f)));
     const float CONT_Y = my + TAB_H;
     const float CONT_H = MH - TAB_H;
@@ -812,8 +834,11 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     UINT stride = sizeof(Vtx11), offset = 0;
     ctx->IASetVertexBuffers(0, 1, &g_vb, &stride, &offset);
 
+    const float KEY_HINT_Y = my + MH - 2.f - HINT_H * 2.f - 1.f;
     float hintBadgeX[NUM_HINT_ITEMS] = {};
     float hintBadgeW[NUM_HINT_ITEMS] = {};
+    float keyHintBadgeX[NUM_KEY_HINT_ITEMS] = {};
+    float keyHintBadgeW[NUM_KEY_HINT_ITEMS] = {};
 
     Vtx11 verts[512];
     int n = 0;
@@ -882,7 +907,35 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         R(adjScrollX + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
     }
 
-    // --- Hint bar ---
+    // --- Keyboard hint bar ---
+    R(HINT_X, KEY_HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);
+    R(HINT_X, KEY_HINT_Y, HINT_W, HINT_H, 0xCC070F1A);
+    {
+        const float BADGE_H    = 20.f;
+        const float BADGE_VPAD = 9.f;
+        const float BADGE_HPAD = 6.f;
+        const float GAP_BD     = 5.f;
+        const float GAP_INTER  = 22.f;
+        float totalW = 0.f;
+        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
+            float tw = (float)(g_ttKeyHintBadge[i].width > 0 ? g_ttKeyHintBadge[i].width : 20);
+            float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
+            float bw = tw + BADGE_HPAD * 2.f;
+            totalW += bw + GAP_BD + dw + (i < NUM_KEY_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
+        }
+        float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
+        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
+            float tw = (float)(g_ttKeyHintBadge[i].width > 0 ? g_ttKeyHintBadge[i].width : 20);
+            float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
+            float bw = tw + BADGE_HPAD * 2.f;
+            keyHintBadgeX[i] = bx;
+            keyHintBadgeW[i] = bw;
+            R(bx, KEY_HINT_Y + BADGE_VPAD, bw, BADGE_H, kKeyHints[i].badgeColor);
+            bx += bw + GAP_BD + dw + GAP_INTER;
+        }
+    }
+
+    // --- Gamepad hint bar ---
     R(HINT_X, HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);   // separator line
     R(HINT_X, HINT_Y, HINT_W, HINT_H, 0xCC0E1A26);        // dark background
     {
@@ -1041,7 +1094,31 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             }
         }
 
-        // --- Hint bar textures ---
+        // --- Keyboard hint bar textures ---
+        {
+            const float BADGE_H    = 20.f;
+            const float BADGE_VPAD = 9.f;
+            const float BADGE_HPAD = 6.f;
+            const float GAP_BD     = 5.f;
+            for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
+                if (g_ttKeyHintBadge[i].srv) {
+                    float tlx = keyHintBadgeX[i] + floorf((keyHintBadgeW[i] - (float)g_ttKeyHintBadge[i].width) / 2.f);
+                    float tly = KEY_HINT_Y + BADGE_VPAD + floorf((BADGE_H - (float)g_ttKeyHintBadge[i].height) / 2.f);
+                    DrawTexQuad(ctx, tlx, tly,
+                                (float)g_ttKeyHintBadge[i].width, (float)g_ttKeyHintBadge[i].height,
+                                vpW, vpH, g_ttKeyHintBadge[i].srv);
+                }
+                if (g_ttKeyHintDesc[i].srv) {
+                    float dlx = keyHintBadgeX[i] + keyHintBadgeW[i] + GAP_BD;
+                    float dly = KEY_HINT_Y + floorf((HINT_H - (float)g_ttKeyHintDesc[i].height) / 2.f);
+                    DrawTexQuad(ctx, dlx, dly,
+                                (float)g_ttKeyHintDesc[i].width, (float)g_ttKeyHintDesc[i].height,
+                                vpW, vpH, g_ttKeyHintDesc[i].srv);
+                }
+            }
+        }
+
+        // --- Gamepad hint bar textures ---
         {
             const float BADGE_H    = 20.f;
             const float BADGE_VPAD = 9.f;
