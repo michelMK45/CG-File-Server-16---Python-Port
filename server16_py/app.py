@@ -36,6 +36,7 @@ from .offsets import Offsets
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 from .settings_store import SettingsStore
 from .stadium_runtime import StadiumRuntime
+from .dialogs import AboutDialog
 from .update_checker import GithubReleaseChecker, UpdateCheckResult
 try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
@@ -940,6 +941,8 @@ class Server16App(tk.Tk):
         self.language_combo.pack(side="left")
         self.language_combo.bind("<<ComboboxSelected>>", self._on_language_selected)
         self.language_var.set(self._language_combo_value())
+        self.about_button = ttk.Button(top, text=self.tr("button.about"), command=self._show_about)
+        self.about_button.pack(side="right", padx=(0, 6))
         self.check_update_button = ttk.Button(top, text=self.tr("button.check_update"), command=self.check_updates)
         self.check_update_button.pack(side="right", padx=(0, 6))
 
@@ -2213,6 +2216,9 @@ class Server16App(tk.Tk):
         label.pack(anchor="w", pady=(2, 0))
         self.stat_title_labels[key] = title_label
         self.labels[key] = label
+
+    def _show_about(self) -> None:
+        AboutDialog(self, self.app_version)
 
     def _check_update_button_text(self) -> str:
         key = "button.checking_update" if self._update_check_in_progress else "button.check_update"

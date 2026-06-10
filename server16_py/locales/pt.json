@@ -232,5 +232,17 @@
   "progress.database_unavailable": "Banco indisponível, continuando",
   "progress.database_failed": "Falha no banco, continuando",
   "progress.applying_runtime": "Aplicando runtime",
-  "progress.runtime_ready": "Runtime pronto"
+  "progress.runtime_ready": "Runtime pronto",
+  "button.about": "Sobre",
+  "dialog.about.title": "Sobre o CG Server 16",
+  "dialog.about.links": "Links",
+  "dialog.about.github": "GitHub",
+  "dialog.about.github.legacy": "GitHub (legacy)",
+  "dialog.about.forum": "Fórum",
+  "dialog.about.trello": "Trello",
+  "dialog.about.credits": "Créditos",
+  "dialog.about.developer": "Desenvolvedor original",
+  "dialog.about.collaborators": "Colaboradores",
+  "dialog.about.special_thanks": "Special Thanks",
+  "dialog.about.close": "Fechar"
 }

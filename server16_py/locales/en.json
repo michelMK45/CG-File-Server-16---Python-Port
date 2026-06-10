@@ -292,5 +292,17 @@
   "progress.database_unavailable": "Database unavailable, continuing",
   "progress.database_failed": "Database load failed, continuing",
   "progress.applying_runtime": "Applying runtime",
-  "progress.runtime_ready": "Runtime ready"
+  "progress.runtime_ready": "Runtime ready",
+  "button.about": "About",
+  "dialog.about.title": "About CG Server 16",
+  "dialog.about.links": "Links",
+  "dialog.about.github": "GitHub",
+  "dialog.about.github.legacy": "GitHub (legacy)",
+  "dialog.about.forum": "Forum",
+  "dialog.about.trello": "Trello",
+  "dialog.about.credits": "Credits",
+  "dialog.about.developer": "Original Developer",
+  "dialog.about.collaborators": "Collaborators",
+  "dialog.about.special_thanks": "Special Thanks",
+  "dialog.about.close": "Close"
 }

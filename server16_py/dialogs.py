@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tkinter as tk
 import unicodedata
+import webbrowser
 from pathlib import Path
 from tkinter import ttk
 
@@ -776,3 +777,70 @@ class ExcludeDialog(BaseDialog):
         super().__init__(master, "dialog.assignment.title.exclude")
         ttk.Button(self, text=self.tr("button.comp_id"), command=lambda: self.close_ok("COMP ID")).pack(fill="x", padx=12, pady=8)
         ttk.Button(self, text=self.tr("button.comp_round_id"), command=lambda: self.close_ok("COMP ROUND ID")).pack(fill="x", padx=12, pady=(0, 12))
+
+
+class AboutDialog(BaseDialog):
+    _GITHUB = "https://github.com/michelMK45/CG-File-Server-16---Python-Port"
+    _FORUM = "https://soccergaming.com/forums/threads/cg-file-server-16-python-port.6475909/"
+    _TRELLO = "https://trello.com/b/Y5Akq5is/cg-file-server-16-python-port"
+    _GITHUB_LEGACY = "https://github.com/igor1043/CG-File-Server-16---Python-Port"
+
+    def __init__(self, master: tk.Misc, version: str) -> None:
+        super().__init__(master, "dialog.about.title")
+        self.resizable(False, False)
+        self.geometry("420x480")
+        self._build(version)
+
+    def _build(self, version: str) -> None:
+        header = tk.Frame(self, bg=self.panel, pady=18)
+        header.pack(fill="x")
+        tk.Label(header, text="CG SERVER 16", bg=self.panel, fg=self.gold,
+                 font=("Bahnschrift", 17, "bold")).pack()
+        tk.Label(header, text="Python Port", bg=self.panel, fg=self.muted,
+                 font=("Bahnschrift", 10)).pack()
+        tk.Label(header, text=f"v{version}", bg=self.panel, fg=self.accent,
+                 font=("Bahnschrift", 9)).pack(pady=(4, 0))
+
+        tk.Frame(self, bg="#22314b", height=1).pack(fill="x")
+
+        body = tk.Frame(self, bg=self.bg, padx=22, pady=16)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(body, text=self.tr("dialog.about.links"), bg=self.bg, fg=self.muted,
+                 font=("Bahnschrift", 8, "bold")).pack(anchor="w")
+
+        links_row = tk.Frame(body, bg=self.bg)
+        links_row.pack(anchor="w", pady=(7, 16))
+        for key, url in (
+            ("dialog.about.github", self._GITHUB),
+            ("dialog.about.forum", self._FORUM),
+            ("dialog.about.trello", self._TRELLO),
+            ("dialog.about.github.legacy", self._GITHUB_LEGACY),
+        ):
+            lbl = tk.Label(links_row, text=self.tr(key), bg=self.bg, fg=self.accent,
+                           font=("Bahnschrift", 10, "underline"), cursor="hand2")
+            lbl.pack(side="left", padx=(0, 16))
+            lbl.bind("<Button-1>", lambda _, u=url: webbrowser.open(u))
+
+        tk.Frame(body, bg="#22314b", height=1).pack(fill="x", pady=(0, 14))
+
+        tk.Label(body, text=self.tr("dialog.about.credits"), bg=self.bg, fg=self.muted,
+                 font=("Bahnschrift", 8, "bold")).pack(anchor="w")
+
+        for section_key, names in (
+            ("dialog.about.developer", "igorVin"),
+            ("dialog.about.collaborators", "MichelMK, NonoLoko"),
+            ("dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, FIFA 16 COMUNITY"),
+        ):
+            row = tk.Frame(body, bg=self.bg)
+            row.pack(fill="x", pady=(9, 0))
+            tk.Label(row, text=self.tr(section_key), bg=self.bg, fg=self.muted,
+                     font=("Bahnschrift", 8)).pack(anchor="w")
+            tk.Label(row, text=names, bg=self.bg, fg=self.fg,
+                     font=("Bahnschrift", 10, "bold")).pack(anchor="w")
+
+        tk.Frame(self, bg="#22314b", height=1).pack(fill="x")
+        foot = tk.Frame(self, bg=self.panel, pady=10)
+        foot.pack(fill="x")
+        ttk.Button(foot, text=self.tr("dialog.about.close"),
+                   command=self.destroy).pack(side="right", padx=14)
