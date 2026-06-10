@@ -9,7 +9,7 @@ import winsound
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .file_tools import copy, copy_glares, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
+from .file_tools import clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
@@ -98,6 +98,8 @@ class StadiumRuntime:
             # Clear stadium from previous match when this tournament/round is excluded
             app.curstad = ""
             app.ScoreboardStadName = ""
+            clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest")
+            clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
             return
         section_id = None
         section_name = None
@@ -179,6 +181,8 @@ class StadiumRuntime:
         app._hide_stadium_loading_modal()
         app._set_progress(25, "Restoring default stadium")
         copy(app.exedir / "FSW" / "stadium", app.exedir / "data" / "sceneassets")
+        clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest")
+        clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
         app.curstad = ""
         app.ScoreboardStadName = ""
         app.stadmovie = False
@@ -289,7 +293,7 @@ class StadiumRuntime:
             ("Copying day textures", lambda: copy_if_exists(stad / "texture_day.rx3", dest / "stadium" / f"stadium_{injid}_1_textures.rx3")),
             ("Copying night textures", lambda: copy_if_exists(stad / "texture_night.rx3", dest / "stadium" / f"stadium_{injid}_3_textures.rx3")),
             ("Copying entrance scene", lambda: copy_if_exists(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat", app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")),
-            ("Copying gameplay camera", lambda: (copy_if_exists(stad / "GameplayCamGBD" / "bcgameplay_176.dat", app.exedir / "data" / "bcdata" / "camera" / "bcgameplay_176.dat"), copy_if_exists(stad / "GameplayCamGBD" / "bcgameplay_261.dat", app.exedir / "data" / "bcdata" / "camera" / "bcgameplay_261.dat"))),
+            ("Copying gameplay camera", lambda: copy_bcgameplay(stad / "GameplayCamGBD", app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")),
             ("Copying crowd day", lambda: copy_if_exists(stad / "crowd_day.dat", dest / "crowdplacement" / f"crowd_{injid}_1.dat")),
             ("Copying crowd night", lambda: copy_if_exists(stad / "crowd_night.dat", dest / "crowdplacement" / f"crowd_{injid}_3.dat")),
         ]
@@ -304,12 +308,14 @@ class StadiumRuntime:
             )
         steps.extend(
             [
-                ("Copying goalpost models", lambda: copy(stad / "GoalpostGBD", dest / "goalnet")),
                 ("Applying police setup", lambda: extra_setup(app.Psource, app.Pdest, police, "policeofficer", app.PoliceNum)),
                 ("Applying net setup", lambda: extra_setup(app.Nsource, app.Ndest, net, "netcolor", "0")),
                 ("Applying pitch setup", lambda: extra_setup(app.PitchMowsource, app.PitchMowdest, pitch, "pitchmowpattern", "0")),
             ]
         )
+        goalpost_src = stad / "GoalpostGBD"
+        _goalpost_manifest = app.exedir / "FSW" / ".goalpost_manifest"
+        steps.append(("Applying goalpost models", lambda: copy_goalpost(goalpost_src, dest / "goalnet", _goalpost_manifest)))
         if no_seats.exists():
             steps.append(("Applying crowd chairs", lambda: copy_if_exists(no_seats, app.exedir / "data" / "sceneassets" / "crowdchair" / f"specificchair_0_{injid}.rx3")))
         else:

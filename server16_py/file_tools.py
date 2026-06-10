@@ -185,6 +185,62 @@ def copy(src: str | Path, dst: str | Path) -> None:
             _copy_file_if_needed(item, target)
 
 
+def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path) -> None:
+    """Copy GoalpostGBD files to goalnet, tracking them in a manifest for later cleanup."""
+    clear_goalpost(dst_dir, manifest_path)
+    if not src_dir.is_dir():
+        return
+    copied: list[str] = []
+    for item in src_dir.rglob("*"):
+        if not item.is_file() or item.suffix.lower() == ".png":
+            continue
+        rel = item.relative_to(src_dir)
+        _copy_file_if_needed(item, dst_dir / rel)
+        copied.append(str(rel))
+    if copied:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text("\n".join(copied), encoding="utf-8")
+
+
+def clear_goalpost(dst_dir: Path, manifest_path: Path) -> None:
+    if not manifest_path.exists():
+        return
+    for line in manifest_path.read_text(encoding="utf-8").splitlines():
+        target = dst_dir / line.strip()
+        if target.is_file():
+            target.unlink()
+    manifest_path.unlink(missing_ok=True)
+
+
+_BCGAMEPLAY_NAMES = ("bcgameplay_176.dat", "bcgameplay_261.dat")
+
+
+def copy_bcgameplay(src_dir: Path, dst_dir: Path, restore_dir: Path) -> None:
+    """Copy GameplayCamGBD files to bcdata/camera. If absent, restore originals from restore_dir or delete."""
+    for name in _BCGAMEPLAY_NAMES:
+        src = src_dir / name
+        dst = dst_dir / name
+        if src.is_file():
+            _copy_file_if_needed(src, dst)
+        else:
+            fsw_src = restore_dir / name
+            if fsw_src.is_file():
+                _copy_file_if_needed(fsw_src, dst)
+            elif dst.is_file():
+                dst.unlink()
+
+
+def clear_bcgameplay(dst_dir: Path, restore_dir: Path) -> None:
+    """Restore original bcgameplay files from restore_dir, or delete them if no originals exist."""
+    for name in _BCGAMEPLAY_NAMES:
+        dst = dst_dir / name
+        fsw_src = restore_dir / name
+        if fsw_src.is_file():
+            _copy_file_if_needed(fsw_src, dst)
+        elif dst.is_file():
+            dst.unlink()
+
+
 def sync_tree(src: str | Path, dst: str | Path, *, skip_suffixes: set[str] | None = None) -> int:
     src_path = Path(src)
     dst_path = Path(dst)
