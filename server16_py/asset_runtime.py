@@ -24,6 +24,18 @@ class AssetRuntime:
                 return app.settings_ini.read(key, section)
         return ""
 
+    def _resolve_assignment_type_label(self, candidates: list[tuple[str, str, str]], fallback: tuple[str, str, str] | None = None) -> str:
+        """Returns the display label of the first matching assignment candidate."""
+        app = self.app
+        for key, section, label in candidates:
+            if key and app.settings_ini.key_exists(key, section):
+                return label
+        if fallback is not None:
+            key, section, label = fallback
+            if key and app.settings_ini.key_exists(key, section):
+                return label
+        return ""
+
     def update_audio_overview(self) -> None:
         app = self.app
         chants_enabled = app.module_enabled("Chants") if hasattr(app, "module_states") else False
@@ -71,6 +83,8 @@ class AssetRuntime:
         app._set_display("tvlogo", "default")
         app._set_display("scoreboard", "default")
         app.tvlogoscoreboardtype = "default"
+        app._tvlogo_assignment_type = ""
+        app._scoreboard_assignment_type = ""
         if app.module_enabled("TvLogo"):
             default_source = app.exedir / "FSW" / "TVLogo"
             source = default_source
@@ -81,6 +95,14 @@ class AssetRuntime:
                     (app.HID, "HomeTeamTvLogo"),
                 ],
                 fallback=("0", "TVLogo"),
+            )
+            app._tvlogo_assignment_type = self._resolve_assignment_type_label(
+                [
+                    (app.TOURROUNDID, "TVLogo", "Round"),
+                    (app.TOURNAME, "TVLogo", "Tournament"),
+                    (app.HID, "HomeTeamTvLogo", "Home Team"),
+                ],
+                fallback=("0", "TVLogo", "Default"),
             )
             if tvlogo:
                 source = app.TVLogo / tvlogo
@@ -101,6 +123,14 @@ class AssetRuntime:
                     (app.HID, "HomeTeamScoreBoard"),
                 ],
                 fallback=("0", "Scoreboard"),
+            )
+            app._scoreboard_assignment_type = self._resolve_assignment_type_label(
+                [
+                    (app.TOURROUNDID, "Scoreboard", "Round"),
+                    (app.TOURNAME, "Scoreboard", "Tournament"),
+                    (app.HID, "HomeTeamScoreBoard", "Home Team"),
+                ],
+                fallback=("0", "Scoreboard", "Default"),
             )
             if scoreboard:
                 variant = app.ScoreBoard / scoreboard / app.tvlogoscoreboardtype
@@ -124,6 +154,7 @@ class AssetRuntime:
     def apply_movie_runtime(self) -> None:
         app = self.app
         app._set_display("movie", "default")
+        app._movie_assignment_type = ""
         if not app.module_enabled("Movies"):
             app._set_display("movie", app.display_value("movie_module_disable"))
             self.update_audio_overview()
@@ -136,6 +167,15 @@ class AssetRuntime:
                 (app.HID, "TeamMovies"),
             ],
             fallback=("0", "movies"),
+        )
+        app._movie_assignment_type = self._resolve_assignment_type_label(
+            [
+                (app.TOURROUNDID, "movies", "Round"),
+                (app.TOURNAME, "movies", "Tournament"),
+                (app.derby, "DerbyMatch", "Derby"),
+                (app.HID, "TeamMovies", "Home Team"),
+            ],
+            fallback=("0", "movies", "Default"),
         )
         if movie:
             movie_dir = app.Movies / movie
