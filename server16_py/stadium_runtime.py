@@ -300,6 +300,7 @@ class StadiumRuntime:
             )
         steps.extend(
             [
+                ("Copying goalpost models", lambda: copy(stad / "GoalpostGBD", dest / "goalnet")),
                 ("Applying police setup", lambda: extra_setup(app.Psource, app.Pdest, police, "policeofficer", app.PoliceNum)),
                 ("Applying net setup", lambda: extra_setup(app.Nsource, app.Ndest, net, "netcolor", "0")),
                 ("Applying pitch setup", lambda: extra_setup(app.PitchMowsource, app.PitchMowdest, pitch, "pitchmowpattern", "0")),
