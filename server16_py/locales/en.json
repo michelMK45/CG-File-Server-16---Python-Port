@@ -41,6 +41,7 @@
   "tab.camera": "Camera",
   "tab.logs": "Logs",
   "logs.group": "Logs",
+  "logs.autofollow": "Auto-follow",
   "logs.following": "Following latest logs",
   "logs.browsing": "Browsing history",
   "stadium_modal.title": "Loading Stadium",

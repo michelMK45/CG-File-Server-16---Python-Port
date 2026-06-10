@@ -306,6 +306,8 @@ class Server16App(tk.Tk):
         self.assign_movie_button = None
         self.exclude_competition_button = None
         self.log_status_label = None
+        self.log_autofollow_checkbox = None
+        self._log_autofollow_var: tk.BooleanVar | None = None
         self.log_follow_button = None
         self.language_label = None
         self.language_combo = None
@@ -872,14 +874,11 @@ class Server16App(tk.Tk):
         except Exception:
             pass
         if self.log_widget is not None:
-            if self._log_widget_is_near_bottom():
-                self._log_autofollow = True
             self.log_widget.configure(state="normal")
             self.log_widget.insert("end", line + "\n")
             if self._log_autofollow:
                 self.log_widget.see("end")
             self.log_widget.configure(state="disabled")
-            self._update_log_follow_ui()
 
     def _log_widget_is_near_bottom(self) -> bool:
         if self.log_widget is None:
@@ -888,7 +887,14 @@ class Server16App(tk.Tk):
         return last >= 0.995
 
     def _refresh_log_autofollow_state(self, _event=None) -> None:
-        self._log_autofollow = self._log_widget_is_near_bottom()
+        pass
+
+    def _on_autofollow_toggled(self) -> None:
+        if self._log_autofollow_var is None:
+            return
+        self._log_autofollow = self._log_autofollow_var.get()
+        if self._log_autofollow and self.log_widget is not None:
+            self.log_widget.see("end")
         self._update_log_follow_ui()
 
     def _jump_logs_to_latest(self) -> None:
@@ -899,11 +905,8 @@ class Server16App(tk.Tk):
         self._update_log_follow_ui()
 
     def _update_log_follow_ui(self) -> None:
-        if self.log_status_label is not None:
-            if self._log_autofollow:
-                self.log_status_label.configure(text=self.tr("logs.following"), fg=self.success)
-            else:
-                self.log_status_label.configure(text=self.tr("logs.browsing"), fg=self.gold)
+        if self._log_autofollow_var is not None:
+            self._log_autofollow_var.set(self._log_autofollow)
         if self.log_follow_button is not None:
             self.log_follow_button.configure(state="disabled" if self._log_autofollow else "normal")
 
@@ -1971,15 +1974,22 @@ class Server16App(tk.Tk):
         logs.pack(fill="both", expand=True, padx=10, pady=10)
         header = tk.Frame(logs, bg=self.bg)
         header.pack(fill="x", pady=(0, 8))
-        self.log_status_label = tk.Label(
+        self._log_autofollow_var = tk.BooleanVar(value=self._log_autofollow)
+        self.log_autofollow_checkbox = tk.Checkbutton(
             header,
-            text=self.tr("logs.following"),
+            text=self.tr("logs.autofollow"),
+            variable=self._log_autofollow_var,
+            command=self._on_autofollow_toggled,
             bg=self.bg,
-            fg=self.success,
-            font=("Bahnschrift", 9, "bold"),
+            fg=self.fg,
+            activebackground=self.bg,
+            activeforeground=self.fg,
+            selectcolor=self.panel,
+            font=("Bahnschrift", 9),
             anchor="w",
+            cursor="hand2",
         )
-        self.log_status_label.pack(side="left")
+        self.log_autofollow_checkbox.pack(side="left")
         self.log_follow_button = ttk.Button(header, text=self.tr("button.jump_latest"), command=self._jump_logs_to_latest)
         self.log_follow_button.pack(side="right")
         logs_body = tk.Frame(logs, bg=self.panel)
