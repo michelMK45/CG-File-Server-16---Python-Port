@@ -500,6 +500,21 @@ class UIMixin:
             self.log(f"D3D overlay: DLL injected into FIFA pid {pid}")
         return True
 
+    def _show_toast_notification(self, title: str, body: str = "") -> int:
+        """Show a compact in-game toast (no progress bar, no image). Returns slot index or -1."""
+        if not self.settings.show_stadium_loading_notification:
+            return -1
+        if not self._ensure_d3d_overlay_injected(log_errors=False):
+            return -1
+        inj = self._d3d_injector
+        if inj is None:
+            return -1
+        return inj.show_toast(title, body)
+
+    def _hide_toast_notification(self, slot: int = -1) -> None:
+        if self._d3d_injector is not None:
+            self._d3d_injector.hide_toast(slot)
+
     def _cancel_stadium_loading_hide(self) -> None:
         if self._stadium_loading_hide_job is not None:
             try:

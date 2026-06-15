@@ -45,6 +45,13 @@
 #define MAX_MENU_ITEM_LEN 80
 #define MAX_MENU_ITEMS    256
 #define MAX_DASH_ITEMS    10
+#define MAX_TOASTS        6
+
+struct ToastEntry {
+    volatile LONG visible;       // 0 = hidden, 1 = shown
+    wchar_t title[MAX_STR];
+    wchar_t body[MAX_STR];
+};
 
 struct OverlayShared {
     volatile LONG visible;
@@ -71,6 +78,8 @@ struct OverlayShared {
     wchar_t home_crest_path[MAX_IMG];  // PNG path for home team crest (empty = none)
     wchar_t away_crest_path[MAX_IMG];  // PNG path for away team crest (empty = none)
     wchar_t list_header[MAX_STR];      // wizard step header text shown above list (empty = hidden)
+    // Toast notification stack — each slot is independently shown/hidden
+    ToastEntry toasts[MAX_TOASTS];
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -278,6 +287,10 @@ static int                       g_menuPrevNatW         = 0;
 static int                       g_menuPrevNatH         = 0;
 // Wizard-phase list header text texture (rendered above list items)
 static TextTex g_ttListHeader;
+
+// Toast notification text textures (one pair per slot)
+static TextTex g_ttToastTitle[MAX_TOASTS];
+static TextTex g_ttToastBody[MAX_TOASTS];
 
 static bool InitD3D11Overlay(ID3D11Device *dev) {
     ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *err = nullptr;
@@ -1169,6 +1182,157 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
     rtv->Release();
 }
 
+// ---------------------------------------------------------------------------
+// Toast notification — stacked compact panels, bottom-right, no image/progress
+// Slots with lower index = higher in the stack (oldest at top, newest at bottom)
+// ---------------------------------------------------------------------------
+static void DrawToast11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
+    // Collect visible slots in ascending index order
+    int  slots[MAX_TOASTS]; int slotCount = 0;
+    wchar_t titles[MAX_TOASTS][MAX_STR]={}, bodies[MAX_TOASTS][MAX_STR]={};
+    if (g_data) {
+        for (int i = 0; i < MAX_TOASTS; i++) {
+            if (InterlockedCompareExchange(&g_data->toasts[i].visible, 0, 0) == 0) continue;
+            slots[slotCount] = i;
+            wcsncpy_s(titles[slotCount], g_data->toasts[i].title, MAX_STR-1);
+            wcsncpy_s(bodies[slotCount], g_data->toasts[i].body,  MAX_STR-1);
+            slotCount++;
+        }
+    }
+    if (slotCount == 0) return;
+
+    DXGI_SWAP_CHAIN_DESC scd={}; sc->GetDesc(&scd);
+    float vpW=(float)(scd.BufferDesc.Width?scd.BufferDesc.Width:1280);
+    float vpH=(float)(scd.BufferDesc.Height?scd.BufferDesc.Height:720);
+
+    ID3D11Texture2D *bb=nullptr;
+    if (FAILED(sc->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)&bb))) return;
+    ID3D11RenderTargetView *rtv=nullptr;
+    dev->CreateRenderTargetView(bb,nullptr,&rtv);
+    bb->Release();
+    if (!rtv) return;
+
+    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
+    if (!g_vs||!g_ps||!g_il||!g_vb) { rtv->Release(); return; }
+
+    // Update text textures for each visible slot
+    const int kTextMaxW = 320;
+    for (int v = 0; v < slotCount; v++) {
+        int s = slots[v];
+        UpdateTextTex(dev, g_ttToastTitle[s], titles[v], 16, true,  RGB(0xFF,0xFF,0xFF), kTextMaxW);
+        UpdateTextTex(dev, g_ttToastBody[s],  bodies[v], 13, false, RGB(0x99,0xBB,0xDD), kTextMaxW);
+    }
+
+    // Save D3D state
+    ID3D11RenderTargetView *oldRTV[8]={}; ID3D11DepthStencilView *oldDSV=nullptr;
+    ctx->OMGetRenderTargets(8,oldRTV,&oldDSV);
+    D3D11_VIEWPORT oldVP={}; UINT nVP=1; ctx->RSGetViewports(&nVP,&oldVP);
+    ID3D11BlendState *oldBS=nullptr; float oldBF[4]={}; UINT oldSM=0;
+    ctx->OMGetBlendState(&oldBS,oldBF,&oldSM);
+    ID3D11RasterizerState *oldRS=nullptr; ctx->RSGetState(&oldRS);
+    ID3D11DepthStencilState *oldDSS=nullptr; UINT oldSRef=0;
+    ctx->OMGetDepthStencilState(&oldDSS,&oldSRef);
+    ID3D11VertexShader *oldVS=nullptr; ctx->VSGetShader(&oldVS,nullptr,nullptr);
+    ID3D11PixelShader  *oldPS=nullptr; ctx->PSGetShader(&oldPS,nullptr,nullptr);
+    ID3D11InputLayout  *oldIL=nullptr; ctx->IAGetInputLayout(&oldIL);
+    D3D11_PRIMITIVE_TOPOLOGY oldTopo; ctx->IAGetPrimitiveTopology(&oldTopo);
+    ID3D11ShaderResourceView *oldSRV=nullptr; ctx->PSGetShaderResources(0,1,&oldSRV);
+    ID3D11SamplerState *oldSamp=nullptr; ctx->PSGetSamplers(0,1,&oldSamp);
+    ID3D11Buffer *oldVBuf=nullptr; UINT oldVBStride=0, oldVBOffset=0;
+    ctx->IAGetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
+
+    ctx->OMSetRenderTargets(1,&rtv,nullptr);
+    D3D11_VIEWPORT vp={0,0,vpW,vpH,0,1}; ctx->RSSetViewports(1,&vp);
+    ctx->OMSetBlendState(g_bs,nullptr,0xFFFFFFFF);
+    ctx->RSSetState(g_rs);
+    ctx->OMSetDepthStencilState(g_dss,0);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
+
+    // Panel dimensions and margin
+    const float PW=360.f, PH=80.f, M=20.f, GAP=8.f;
+    const float PX = vpW - PW - M;  // fixed X for all panels
+
+    ctx->VSSetShader(g_vs,nullptr,0);
+    ctx->PSSetShader(g_ps,nullptr,0);
+    ctx->IASetInputLayout(g_il);
+    UINT stride=sizeof(Vtx11),offset=0;
+    ctx->IASetVertexBuffers(0,1,&g_vb,&stride,&offset);
+
+    // Colored quads pass — all panels, stacked downward from top-right
+    // If the stadium loading overlay is active, start below it to avoid overlap
+    const float kStadOverlayH = 140.f;  // DrawOverlay11 PH
+    bool stadVisible = (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0);
+    float topY = stadVisible ? (M + kStadOverlayH + GAP) : M;
+
+    Vtx11 verts[5 * 4 * MAX_TOASTS]; int n=0;
+    auto R=[&](float x,float y,float w,float h,DWORD col){
+        PushQuad(verts,n,x,y,w,h,vpW,vpH,col);
+    };
+
+    float drawY = topY;
+    for (int v = 0; v < slotCount; v++) {
+        float py = drawY;
+        R(PX,        py,       PW,   2.f,    0xFF3399FF);  // top accent bar
+        R(PX,        py+2.f,   PW,   PH-2.f, 0xEE101828);  // background
+        R(PX,        py+2.f,   4.f,  PH-2.f, 0xFF3399FF);  // left accent strip
+        R(PX,        py+PH-1.f,PW,   1.f,    0xFF3399FF);  // bottom border
+        R(PX+PW-1.f, py,       1.f,  PH,     0xFF3399FF);  // right border
+        drawY += (PH + GAP);
+    }
+
+    D3D11_MAPPED_SUBRESOURCE ms={};
+    if (SUCCEEDED(ctx->Map(g_vb,0,D3D11_MAP_WRITE_DISCARD,0,&ms))){
+        memcpy(ms.pData,verts,n*sizeof(Vtx11)); ctx->Unmap(g_vb,0);
+    }
+    for(int i=0;i<n;i+=4) ctx->Draw(4,i);
+
+    // Text quads pass
+    if (g_vsT && g_psT && g_ilT && g_vbT && g_samp) {
+        ctx->VSSetShader(g_vsT,nullptr,0);
+        ctx->PSSetShader(g_psT,nullptr,0);
+        ctx->IASetInputLayout(g_ilT);
+        ctx->PSSetSamplers(0,1,&g_samp);
+
+        float drawY2 = topY;
+        for (int v = 0; v < slotCount; v++) {
+            int s = slots[v];
+            float py = drawY2;
+            float TX = PX + 14.f;
+            if (g_ttToastTitle[s].srv)
+                DrawTexQuad(ctx, TX, py+14.f, (float)g_ttToastTitle[s].width, (float)g_ttToastTitle[s].height, vpW, vpH, g_ttToastTitle[s].srv);
+            if (g_ttToastBody[s].srv && bodies[v][0])
+                DrawTexQuad(ctx, TX, py+42.f, (float)g_ttToastBody[s].width, (float)g_ttToastBody[s].height, vpW, vpH, g_ttToastBody[s].srv);
+            drawY2 += (PH + GAP);
+        }
+    }
+
+    // Restore D3D state
+    ctx->OMSetRenderTargets(8,oldRTV,oldDSV);
+    ctx->RSSetViewports(1,&oldVP);
+    ctx->OMSetBlendState(oldBS,oldBF,oldSM);
+    ctx->RSSetState(oldRS);
+    ctx->OMSetDepthStencilState(oldDSS,oldSRef);
+    ctx->VSSetShader(oldVS,nullptr,0);
+    ctx->PSSetShader(oldPS,nullptr,0);
+    ctx->IASetInputLayout(oldIL);
+    ctx->IASetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
+    ctx->IASetPrimitiveTopology(oldTopo);
+    ctx->PSSetShaderResources(0,1,&oldSRV);
+    ctx->PSSetSamplers(0,1,&oldSamp);
+    for(auto *r:oldRTV) if(r) r->Release();
+    if(oldDSV)  oldDSV->Release();
+    if(oldBS)   oldBS->Release();
+    if(oldRS)   oldRS->Release();
+    if(oldDSS)  oldDSS->Release();
+    if(oldVS)   oldVS->Release();
+    if(oldPS)   oldPS->Release();
+    if(oldIL)   oldIL->Release();
+    if(oldVBuf) oldVBuf->Release();
+    if(oldSRV)  oldSRV->Release();
+    if(oldSamp) oldSamp->Release();
+    rtv->Release();
+}
+
 static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
     wchar_t stadium[MAX_STR]={}, detail[MAX_STR]={}, imgPath[MAX_IMG]={};
     float pct=0.f;
@@ -1401,6 +1565,7 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
     EnterCriticalSection(&g_drawCs);
     HRESULT presentResult = S_OK;
     __try {
+        // Draw order: menu → stadium loading → toasts (toasts always on top)
         if (g_data && InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0) {
             ID3D11Device *dev = nullptr;
             if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
@@ -1417,6 +1582,22 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
                 dev->GetImmediateContext(&ctx);
                 DrawOverlay11(sc, dev, ctx);
                 ctx->Release(); dev->Release();
+            }
+        }
+        {
+            bool anyToast = false;
+            if (g_data) {
+                for (int _ti = 0; _ti < MAX_TOASTS && !anyToast; _ti++)
+                    anyToast = (InterlockedCompareExchange(&g_data->toasts[_ti].visible, 0, 0) != 0);
+            }
+            if (anyToast) {
+                ID3D11Device *dev = nullptr;
+                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
+                    ID3D11DeviceContext *ctx = nullptr;
+                    dev->GetImmediateContext(&ctx);
+                    DrawToast11(sc, dev, ctx);
+                    ctx->Release(); dev->Release();
+                }
             }
         }
         // Call original Present inside the SEH guard so any AV in the

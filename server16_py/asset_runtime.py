@@ -13,6 +13,12 @@ class AssetRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
 
+    def _show_asset_toast(self, title: str, body: str, duration_ms: int = 3500) -> None:
+        app = self.app
+        slot = app._show_toast_notification(title, body)
+        if slot != -1:
+            app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
+
     def _resolve_assignment_value(self, candidates: list[tuple[str, str]], fallback: tuple[str, str] | None = None) -> str:
         app = self.app
         for key, section in candidates:
@@ -112,6 +118,7 @@ class AssetRuntime:
             app.tvlogoscoreboardtype = copy_tvlogo(source, app.TVdata)
             app._set_display("tvlogo", Path(source).name)
             app.log(f"Applied TV logo source: {source}")
+            self._show_asset_toast(app.tr("notify.tvlogo_loaded"), Path(source).name)
         else:
             app._set_display("tvlogo", app.display_value("tvlogo_module_disable"))
         if app.module_enabled("ScoreBoard"):
@@ -145,6 +152,7 @@ class AssetRuntime:
                 if scoreboard:
                     app._set_display("scoreboard", scoreboard)
                     app.log(f"Applied scoreboard: {scoreboard}")
+                    self._show_asset_toast(app.tr("notify.scoreboard_loaded"), scoreboard)
             else:
                 app.log("No scoreboard assignment found; default scoreboard active")
         else:
@@ -186,6 +194,7 @@ class AssetRuntime:
                 app._set_display("audio_current", movie)
                 app._set_display("audio_last_action", app.display_value("movie_prefix", fallback="Movie {name}", name=movie))
                 app.log(f"Applied movie: {movie}")
+                self._show_asset_toast(app.tr("notify.movie_loaded"), movie)
             else:
                 app.log(f"Movie directory not found, falling back to default movie: {movie_dir}")
                 movie = ""

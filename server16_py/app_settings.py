@@ -54,6 +54,11 @@ class SettingsMixin:
             elif kind == "done":
                 _, payload = event
                 self._finish_stadium_apply(payload)
+            elif kind == "toast":
+                _, title, body, duration_ms = event
+                slot = self._show_toast_notification(title, body)
+                if slot != -1:
+                    self.after(duration_ms, lambda s=slot: self._hide_toast_notification(s))
             elif kind == "error":
                 _, message = event
                 short_message = str(message).splitlines()[0] if message else self.status_text("stadium_error")

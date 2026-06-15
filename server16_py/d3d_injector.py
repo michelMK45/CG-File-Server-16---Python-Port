@@ -32,6 +32,15 @@ _MAX_IMG    = 512
 _MAX_MENU_ITEM_LEN = 80
 _MAX_MENU_ITEMS    = 256  # must match MAX_MENU_ITEMS in the compiled DLL
 _MAX_DASH_ITEMS    = 10
+_MAX_TOASTS        = 6    # must match MAX_TOASTS in the compiled DLL
+
+
+class _ToastEntry(ctypes.Structure):
+    _fields_ = [
+        ("visible", ctypes.c_long),
+        ("title",   ctypes.c_wchar * _MAX_STR),
+        ("body",    ctypes.c_wchar * _MAX_STR),
+    ]
 
 
 class _OverlayShared(ctypes.Structure):
@@ -61,6 +70,8 @@ class _OverlayShared(ctypes.Structure):
             ("away_crest_path",     ctypes.c_wchar * _MAX_IMG),
             # Wizard step header text shown above the item list (empty = hidden)
             ("list_header",         ctypes.c_wchar * _MAX_STR),
+        # Toast notification stack — each slot is independently shown/hidden
+        ("toasts",              _ToastEntry * _MAX_TOASTS),
     ]
 
 
@@ -254,6 +265,28 @@ class D3DOverlayInjector:
             return
         self._shared.image_path = (path or "")[:_MAX_IMG - 1]
 
+    def show_toast(self, title: str, body: str = "") -> int:
+        """Occupy the first free slot. Returns slot index (0-3) or -1 if all full."""
+        if not self._ready or self._shared is None:
+            return -1
+        for i in range(_MAX_TOASTS):
+            if self._shared.toasts[i].visible == 0:
+                self._shared.toasts[i].title   = title[:_MAX_STR - 1]
+                self._shared.toasts[i].body    = body[:_MAX_STR - 1]
+                self._shared.toasts[i].visible = 1
+                return i
+        return -1
+
+    def hide_toast(self, slot: int = -1) -> None:
+        """Hide a specific slot (0-3) or all slots when slot=-1."""
+        if self._shared is None:
+            return
+        if slot == -1:
+            for i in range(_MAX_TOASTS):
+                self._shared.toasts[i].visible = 0
+        elif 0 <= slot < _MAX_TOASTS:
+            self._shared.toasts[slot].visible = 0
+
     def set_list_header(self, text: str) -> None:
         """Set the wizard step header text shown above the menu item list (empty = hidden)."""
         if not self._ready or self._shared is None:
@@ -365,6 +398,10 @@ class D3DOverlayInjector:
             self._shared.dashboard_items[i].value = ""
         for i in range(_MAX_MENU_ITEMS):
             self._shared.menu_items[i].value = ""
+        for i in range(_MAX_TOASTS):
+            self._shared.toasts[i].visible = 0
+            self._shared.toasts[i].title   = ""
+            self._shared.toasts[i].body    = ""
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))

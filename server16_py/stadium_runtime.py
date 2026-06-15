@@ -331,6 +331,13 @@ class StadiumRuntime:
             app._worker_queue.put(("progress", progress, message))
             action()
 
+        # Queue toast notifications for custom assets that were applied
+        _bcgp_dir = stad / "GameplayCamGBD"
+        if _bcgp_dir.is_dir() and any((_bcgp_dir / n).exists() for n in ("bcgameplay_176.dat", "bcgameplay_261.dat")):
+            app._worker_queue.put(("toast", app.tr("notify.bcgameplay_loaded"), stad_name, 3500))
+        if goalpost_src.is_dir() and next((f for f in goalpost_src.rglob("*") if f.is_file() and f.suffix.lower() != ".png"), None) is not None:
+            app._worker_queue.put(("toast", app.tr("notify.goalpost_loaded"), stad_name, 3500))
+
         stadmovie = (stad / "StadiumMovie.vp8").exists() and (stad / "StadiumBumper.big").exists()
         if stadmovie:
             copy_if_exists(stad / "StadiumMovie.vp8", app.Movdata)

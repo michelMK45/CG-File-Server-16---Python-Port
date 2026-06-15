@@ -26,7 +26,9 @@ class GameMixin:
                 return
             running = bool(self.MP) and any(Path((p.info.get("name") or "")).stem.lower() == self.MP.lower() for p in psutil.process_iter(["name"]))
             if running and self.memory.attack(self.MP):
-                self._attached_once = True
+                if not self._attached_once:
+                    self._attached_once = True
+                    self._show_attach_notification()
                 self._set_process_status(self.status_text("fifa_attached"), self.success)
                 self.update_page_name()
             else:
@@ -49,6 +51,18 @@ class GameMixin:
             self.log("Polling error", exc, exc_info=sys.exc_info())
         if not self._closing:
             self._poll_job = self.after(500, self.poll_process)
+
+    def _show_attach_notification(self) -> None:
+        try:
+            slot = self._show_toast_notification(
+                self.tr("notify.fifa_attached"),
+                self.tr("notify.fifa_attached_detail"),
+            )
+            if slot == -1:
+                return
+            self.after(7000, lambda: self._hide_toast_notification(slot))
+        except Exception as exc:
+            self.log("Attach notification error", exc, exc_info=sys.exc_info())
 
     def stats_loop(self) -> None:
         if self._closing:
