@@ -241,6 +241,25 @@ def clear_bcgameplay(dst_dir: Path, restore_dir: Path) -> None:
             dst.unlink()
 
 
+def clear_stadium_inj_files(sceneassets_dir: Path, inj_id: str) -> None:
+    """Delete all injected stadium files for a given injection ID from sceneassets."""
+    sid = inj_id
+    candidates = [
+        sceneassets_dir / "stadium" / f"stadium_{sid}.rx3",
+        sceneassets_dir / "stadium" / f"stadium_{sid}_1_textures.rx3",
+        sceneassets_dir / "stadium" / f"stadium_{sid}_3_textures.rx3",
+        sceneassets_dir / "crowdplacement" / f"crowd_{sid}_1.dat",
+        sceneassets_dir / "crowdplacement" / f"crowd_{sid}_3.dat",
+        sceneassets_dir / "crowdchair" / f"specificchair_0_{sid}.rx3",
+    ]
+    for suffix in range(4):
+        for day_night in ("1", "3"):
+            candidates.append(sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.rx3")
+            candidates.append(sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.lnx")
+    for path in candidates:
+        path.unlink(missing_ok=True)
+
+
 def sync_tree(src: str | Path, dst: str | Path, *, skip_suffixes: set[str] | None = None) -> int:
     src_path = Path(src)
     dst_path = Path(dst)

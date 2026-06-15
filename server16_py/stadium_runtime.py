@@ -9,7 +9,7 @@ import winsound
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .file_tools import clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
+from .file_tools import clear_bcgameplay, clear_goalpost, clear_stadium_inj_files, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
@@ -284,6 +284,9 @@ class StadiumRuntime:
         else:
             raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
         dest = app.exedir / "data" / "sceneassets"
+        # Clear stale files from the other injection slot before writing new ones
+        other_id = "261" if injid == "176" else "176"
+        clear_stadium_inj_files(dest, other_id)
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
         glare3 = stad / "3"

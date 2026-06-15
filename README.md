@@ -1,5 +1,12 @@
 # CGFS 16 Server 16 Python Port
 
+<p align="center">
+  <a href="https://github.com/michelMK45/CG-File-Server-16---Python-Port/releases">
+  <img alt="Github Downloads" src="https://img.shields.io/github/downloads/michelMK45/CG-File-Server-16---Python-Port/total?style=for-the-badge&logo=github">
+  </a>
+  <br>
+</p>
+
 ⚠This is a fork from the orignal project, as the original author stopped developing the tool. So the community can continue.
 
 Python conversion of the original CGFS 16 Server 16 tool for FIFA 16.
