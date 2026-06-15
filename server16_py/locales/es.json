@@ -84,6 +84,7 @@
   "stat.away_goals": "Goles visitante",
   "toggle.show_loading_notification": "Mostrar notificación de carga",
   "toggle.show_overlay": "Activar overlay en el juego",
+  "toggle.keep_open": "Mantener abierto al cerrar el juego",
   "camera.no_package_selected": "Ningún paquete de cámara seleccionado",
   "camera.no_camera_selected": "Ninguna cámara seleccionada",
   "camera.no_preview": "Sin vista previa",

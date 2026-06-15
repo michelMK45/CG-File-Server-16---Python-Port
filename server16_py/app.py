@@ -53,6 +53,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
+        self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
         self.localization = LocalizationManager(self.base_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()

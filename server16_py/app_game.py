@@ -33,9 +33,15 @@ class GameMixin:
                 self._sync_page_banner("Process not running")
                 self._set_process_status(self.status_text("waiting_fifa"), self.accent)
                 if self._attached_once:
-                    self.log("Game process ended; closing server automatically")
-                    self.on_close()
-                    return
+                    if self.keep_open_var.get():
+                        self.log("Game process ended; keeping server open")
+                        self.memory.close()
+                        self._attached_once = False
+                        self._reset_chants_state()
+                    else:
+                        self.log("Game process ended; closing server automatically")
+                        self.on_close()
+                        return
                 self._reset_chants_state()
         except Exception as exc:
             self._sync_page_banner(f"Polling error: {exc}")

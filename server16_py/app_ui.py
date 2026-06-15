@@ -984,7 +984,7 @@ class UIMixin:
     def _build_modules_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.modules.title", "card.modules.subtitle")
         card.grid(row=row, column=0, sticky="ew")
-        card.configure(height=256)
+        card.configure(height=290)
         card.grid_propagate(False)
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
@@ -1023,7 +1023,16 @@ class UIMixin:
             variable=self.show_overlay_var,
             command=self._toggle_overlay_enabled,
         )
-        overlay_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        overlay_switch.pack(anchor="w", padx=12, pady=(0, 4))
+
+        keep_open_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.keep_open"),
+            variable=self.keep_open_var,
+            command=self._toggle_keep_open,
+        )
+        keep_open_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
         new_state = self.module_vars["DiscordRPC"].get()
@@ -1062,6 +1071,10 @@ class UIMixin:
         if self.show_stadium_loading_var.get():
             return
         self._hide_stadium_loading_modal()
+
+    def _toggle_keep_open(self) -> None:
+        self.settings.keep_open_on_game_close = self.keep_open_var.get()
+        self.settings.save()
 
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()

@@ -102,6 +102,7 @@
   "stat.away_goals": "Away Goals",
   "toggle.show_loading_notification": "Show loading notification",
   "toggle.show_overlay": "Enable in-game overlay",
+  "toggle.keep_open": "Keep open after game exits",
   "module.stadium": "Stadium",
   "module.tvlogo": "TvLogo",
   "module.scoreboard": "ScoreBoard",

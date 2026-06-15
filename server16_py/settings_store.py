@@ -28,6 +28,7 @@ class SettingsStore:
         # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
         "SHOW_OVERLAY": True,
+        "KEEP_OPEN_ON_GAME_CLOSE": True,
         "LANGUAGE": "en",
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
@@ -101,6 +102,15 @@ class SettingsStore:
     @show_overlay.setter
     def show_overlay(self, value: bool) -> None:
         self.data["SHOW_OVERLAY"] = bool(value)
+        self.save()
+
+    @property
+    def keep_open_on_game_close(self) -> bool:
+        return bool(self.data.get("KEEP_OPEN_ON_GAME_CLOSE", True))
+
+    @keep_open_on_game_close.setter
+    def keep_open_on_game_close(self, value: bool) -> None:
+        self.data["KEEP_OPEN_ON_GAME_CLOSE"] = bool(value)
         self.save()
 
     @property
