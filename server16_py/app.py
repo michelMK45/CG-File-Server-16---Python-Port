@@ -131,6 +131,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_right_pressed_at = 0.0
         self._overlay_gp_start_hold_latched = False
         self._overlay_gp_rstick_repeat_at = 0.0
+        self._overlay_gp_lstick_repeat_at = 0.0
+        self._overlay_gp_lstick_prev_in_zone = False
         self._active_gamepad_index = 0
         self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos"]
         self._overlay_tab_index = 0

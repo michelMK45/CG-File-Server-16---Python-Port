@@ -27,7 +27,7 @@ from .win32_types import (
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
     _D3D_MENU_RATIO_W, _D3D_MENU_RATIO_H, _D3D_MENU_MIN_W, _D3D_MENU_MIN_H,
     _D3D_MENU_VIEW_MARGIN, _D3D_MENU_TAB_H, _D3D_MENU_DASH_MIN_H,
-    _D3D_MENU_DASH_MAX_H, _D3D_MENU_ITEM_H,
+    _D3D_MENU_DASH_MAX_H, _D3D_MENU_ITEM_H, _D3D_MENU_HINT_ZONE,
 )
 from .file_tools import discover_stadium_names
 
@@ -103,7 +103,7 @@ class OverlayMixin:
         key_home_down = self._is_overlay_key_down(VK_HOME, menu_input_fg)
         key_end_down = self._is_overlay_key_down(VK_END, menu_input_fg)
         key_enter_down = self._is_overlay_key_down(VK_RETURN, menu_input_fg)
-        gamepad_buttons, _stick_rx, stick_ry = self._get_gamepad_snapshot()
+        gamepad_buttons, _stick_rx, stick_ry, stick_ly = self._get_gamepad_snapshot()
         start_down = bool(gamepad_buttons & XINPUT_GAMEPAD_START)
         back_down = bool(gamepad_buttons & XINPUT_GAMEPAD_BACK)
         left_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
@@ -249,7 +249,7 @@ class OverlayMixin:
                 self._overlay_nav_repeat_at = now + 0.40
             elif (nav_up or nav_down) and now >= self._overlay_nav_repeat_at:
                 self._navigate_menu_items(-1 if nav_up else 1)
-                self._overlay_nav_repeat_at = now + 0.10
+                self._overlay_nav_repeat_at = now + 0.03
             if key_pgup_edge:
                 self._navigate_menu_items(-self._overlay_visible_rows)
             elif key_pgdn_edge:
@@ -267,13 +267,25 @@ class OverlayMixin:
             deadzone = 9000
             if abs_ry > deadzone:
                 norm = min(1.0, float(abs_ry - deadzone) / float(32767 - deadzone))
-                step = max(1, int(round(1.0 + norm * 5.0)))
+                step = max(1, int(round(1.0 + norm * 9.0)))
                 interval = max(0.04, 0.18 - (norm * 0.12))
                 if now >= self._overlay_gp_rstick_repeat_at:
                     self._navigate_menu_items(-step if stick_ry > 0 else step)
                     self._overlay_gp_rstick_repeat_at = now + interval
             else:
                 self._overlay_gp_rstick_repeat_at = now
+
+            lstick_up = stick_ly > deadzone
+            lstick_down = stick_ly < -deadzone
+            lstick_in_zone = lstick_up or lstick_down
+            lstick_entered_zone = lstick_in_zone and not self._overlay_gp_lstick_prev_in_zone
+            self._overlay_gp_lstick_prev_in_zone = lstick_in_zone
+            if lstick_entered_zone:
+                self._navigate_menu_items(-1 if lstick_up else 1)
+                self._overlay_gp_lstick_repeat_at = now + 0.40
+            elif lstick_in_zone and now >= self._overlay_gp_lstick_repeat_at:
+                self._navigate_menu_items(-1 if lstick_up else 1)
+                self._overlay_gp_lstick_repeat_at = now + 0.03
 
         if self._d3d_menu_visible and (key_enter_edge or a_edge):
             self._activate_overlay_selected_item("confirm")
@@ -317,9 +329,9 @@ class OverlayMixin:
         self.log("XInput unavailable; gamepad overlay controls disabled")
         return None
 
-    def _get_gamepad_snapshot(self) -> tuple[int, int, int]:
+    def _get_gamepad_snapshot(self) -> tuple[int, int, int, int]:
         if self._xinput is None:
-            return 0, 0, 0
+            return 0, 0, 0, 0
         indices = [self._active_gamepad_index] + [i for i in range(4) if i != self._active_gamepad_index]
         for index in indices:
             state = XINPUT_STATE()
@@ -329,12 +341,17 @@ class OverlayMixin:
                 continue
             if result == XINPUT_SUCCESS:
                 self._active_gamepad_index = index
-                return int(state.Gamepad.wButtons), int(state.Gamepad.sThumbRX), int(state.Gamepad.sThumbRY)
+                return (
+                    int(state.Gamepad.wButtons),
+                    int(state.Gamepad.sThumbRX),
+                    int(state.Gamepad.sThumbRY),
+                    int(state.Gamepad.sThumbLY),
+                )
         self._active_gamepad_index = 0
-        return 0, 0, 0
+        return 0, 0, 0, 0
 
     def _get_gamepad_buttons(self) -> int:
-        buttons, _rx, _ry = self._get_gamepad_snapshot()
+        buttons, _rx, _ry, _ly = self._get_gamepad_snapshot()
         return buttons
 
     def _set_overlay_tab(self, index: int, source: str) -> None:
@@ -520,7 +537,7 @@ class OverlayMixin:
         scroll_w = 12.0
         scroll_gap = 6.0
         base_content_w = menu_w - 8.0
-        list_ymax = menu_y + menu_h - dash_h - 14.0
+        list_ymax = menu_y + menu_h - dash_h - _D3D_MENU_HINT_ZONE - 14.0
         tab_w = float(int(menu_w // max(1, len(self._overlay_tab_names))))
 
         show_split = (self._overlay_tab_index == 1)

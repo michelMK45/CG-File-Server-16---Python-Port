@@ -149,6 +149,7 @@ _D3D_MENU_TAB_H = 56.0
 _D3D_MENU_DASH_MIN_H = 220.0
 _D3D_MENU_DASH_MAX_H = 320.0
 _D3D_MENU_ITEM_H = 28.0
+_D3D_MENU_HINT_ZONE = 82.0   # two hint rows (38×2) + 6px padding — must match HINT_ZONE in DLL
 
 # Window messages
 WM_QUIT = 0x0012
