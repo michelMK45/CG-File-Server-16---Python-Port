@@ -42,6 +42,8 @@
   "tab.logs": "Logs",
   "logs.group": "Logs",
   "logs.autofollow": "Auto-follow",
+  "logs.filter_pointer_trace": "Hide Pointer traces",
+  "logs.filter_discord_rpc": "Hide DiscordRPC",
   "logs.following": "Following latest logs",
   "logs.browsing": "Browsing history",
   "notify.fifa_attached": "FIFA Attached",

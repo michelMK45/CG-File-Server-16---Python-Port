@@ -49,6 +49,10 @@ class LogMixin:
         except Exception:
             pass
         if self.log_widget is not None:
+            if self._log_filter_pointer_trace and message.startswith("Pointer trace"):
+                return
+            if self._log_filter_discord_rpc and (message.startswith("DiscordRPC") or message.startswith("Discord ")):
+                return
             self.log_widget.configure(state="normal")
             self.log_widget.insert("end", line + "\n")
             if self._log_autofollow:
@@ -63,6 +67,16 @@ class LogMixin:
 
     def _refresh_log_autofollow_state(self, _event=None) -> None:
         pass
+
+    def _on_filter_pointer_trace_toggled(self) -> None:
+        if self._log_filter_pointer_trace_var is None:
+            return
+        self._log_filter_pointer_trace = self._log_filter_pointer_trace_var.get()
+
+    def _on_filter_discord_rpc_toggled(self) -> None:
+        if self._log_filter_discord_rpc_var is None:
+            return
+        self._log_filter_discord_rpc = self._log_filter_discord_rpc_var.get()
 
     def _on_autofollow_toggled(self) -> None:
         if self._log_autofollow_var is None:

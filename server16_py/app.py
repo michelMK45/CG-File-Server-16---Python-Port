@@ -175,6 +175,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.log_status_label = None
         self.log_autofollow_checkbox = None
         self._log_autofollow_var: tk.BooleanVar | None = None
+        self._log_filter_pointer_trace = False
+        self._log_filter_pointer_trace_var: tk.BooleanVar | None = None
+        self._log_filter_discord_rpc = False
+        self._log_filter_discord_rpc_var: tk.BooleanVar | None = None
         self.log_follow_button = None
         self.language_label = None
         self.language_combo = None

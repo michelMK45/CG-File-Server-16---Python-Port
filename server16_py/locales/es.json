@@ -35,6 +35,8 @@
   "label.language": "Idioma",
   "tab.camera": "Cámara",
   "logs.autofollow": "Seguimiento automático",
+  "logs.filter_pointer_trace": "Ocultar Pointer traces",
+  "logs.filter_discord_rpc": "Ocultar DiscordRPC",
   "logs.following": "Siguiendo los logs más recientes",
   "logs.browsing": "Revisando el historial",
   "notify.fifa_attached": "FIFA conectado",

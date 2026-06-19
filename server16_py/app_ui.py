@@ -1279,6 +1279,38 @@ class UIMixin:
             cursor="hand2",
         )
         self.log_autofollow_checkbox.pack(side="left")
+        self._log_filter_pointer_trace_var = tk.BooleanVar(value=self._log_filter_pointer_trace)
+        self.log_filter_pointer_trace_checkbox = tk.Checkbutton(
+            header,
+            text=self.tr("logs.filter_pointer_trace"),
+            variable=self._log_filter_pointer_trace_var,
+            command=self._on_filter_pointer_trace_toggled,
+            bg=self.bg,
+            fg=self.fg,
+            activebackground=self.bg,
+            activeforeground=self.fg,
+            selectcolor=self.panel,
+            font=("Bahnschrift", 9),
+            anchor="w",
+            cursor="hand2",
+        )
+        self.log_filter_pointer_trace_checkbox.pack(side="left", padx=(8, 0))
+        self._log_filter_discord_rpc_var = tk.BooleanVar(value=self._log_filter_discord_rpc)
+        self.log_filter_discord_rpc_checkbox = tk.Checkbutton(
+            header,
+            text=self.tr("logs.filter_discord_rpc"),
+            variable=self._log_filter_discord_rpc_var,
+            command=self._on_filter_discord_rpc_toggled,
+            bg=self.bg,
+            fg=self.fg,
+            activebackground=self.bg,
+            activeforeground=self.fg,
+            selectcolor=self.panel,
+            font=("Bahnschrift", 9),
+            anchor="w",
+            cursor="hand2",
+        )
+        self.log_filter_discord_rpc_checkbox.pack(side="left", padx=(8, 0))
         self.log_follow_button = ttk.Button(header, text=self.tr("button.jump_latest"), command=self._jump_logs_to_latest)
         self.log_follow_button.pack(side="right")
         logs_body = tk.Frame(logs, bg=self.panel)
