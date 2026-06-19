@@ -182,6 +182,8 @@ def copy(src: str | Path, dst: str | Path) -> None:
         else:
             if item.suffix.lower() == ".png":
                 continue
+            if item.name.lower() in {"desktop.ini", "thumbs.db"}:
+                continue
             _copy_file_if_needed(item, target)
 
 

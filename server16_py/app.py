@@ -443,8 +443,14 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self._set_display("stadium", "Stadium Module Disable")
             self.curstad = ""
             self.ScoreboardStadName = ""
-        self.apply_scoreboard_runtime()
-        self.apply_movie_runtime()
+        try:
+            self.apply_scoreboard_runtime()
+        except Exception as exc:
+            self.log("Scoreboard runtime error", exc, exc_info=True)
+        try:
+            self.apply_movie_runtime()
+        except Exception as exc:
+            self.log("Movie runtime error", exc, exc_info=True)
         if not self._stadium_task_running:
             self._set_progress(100, "Runtime ready")
 
