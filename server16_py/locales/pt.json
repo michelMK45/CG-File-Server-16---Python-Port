@@ -103,6 +103,7 @@
   "stat.next_behavior": "Próximo comportamento",
   "stat.home_goals": "Gols do mandante",
   "stat.away_goals": "Gols do visitante",
+  "label.app_options": "Opções do aplicativo",
   "toggle.show_loading_notification": "Mostrar notificação de carregamento",
   "toggle.show_overlay": "Ativar overlay no jogo",
   "toggle.keep_open": "Manter aberto após fechar o jogo",

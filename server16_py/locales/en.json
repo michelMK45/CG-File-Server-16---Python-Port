@@ -109,6 +109,7 @@
   "stat.next_behavior": "Next Behavior",
   "stat.home_goals": "Home Goals",
   "stat.away_goals": "Away Goals",
+  "label.app_options": "App Options",
   "toggle.show_loading_notification": "Show loading notification",
   "toggle.show_overlay": "Enable in-game overlay",
   "toggle.keep_open": "Keep open after game exits",

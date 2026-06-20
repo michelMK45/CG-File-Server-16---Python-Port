@@ -60,7 +60,7 @@ class GameMixin:
             )
             if slot == -1:
                 return
-            self.after(7000, lambda: self._hide_toast_notification(slot))
+            self.after(11000, lambda: self._hide_toast_notification(slot))
         except Exception as exc:
             self.log("Attach notification error", exc, exc_info=sys.exc_info())
 

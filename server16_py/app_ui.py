@@ -1022,6 +1022,8 @@ class UIMixin:
             check.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
             self.module_checks[name] = check
 
+        tk.Label(card, text=self.tr("label.app_options"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9)).pack(anchor="w", padx=12, pady=(4, 2))
+
         notification_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
