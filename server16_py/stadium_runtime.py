@@ -9,6 +9,7 @@ import winsound
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from . import file_tools as _ft_mod
 from .file_tools import clear_bcgameplay, clear_goalpost, clear_stadium_inj_files, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
@@ -265,12 +266,25 @@ class StadiumRuntime:
             runtime_dir.mkdir(parents=True, exist_ok=True)
             _temp_dir = tempfile.mkdtemp(prefix="server16_stad_", dir=runtime_dir)
             try:
+                _rarmod_before = _ft_mod._rarmod
+                if _rarmod_before is None:
+                    app._worker_queue.put(("progress", 3, "Installing rarfile library..."))
+                    app.log("rarfile not found — attempting automatic installation")
                 app._worker_queue.put(("progress", 5, f"Extracting {source_path.name}..."))
                 def _zip_progress(current, total, filename):
                     pct = 5 + int((current / max(1, total)) * 6)
                     short = filename if len(filename) <= 40 else "..." + filename[-37:]
                     app._worker_queue.put(("progress", pct, f"Extracting {short} ({current}/{total})"))
                 extract_archive(source_path, Path(_temp_dir), progress_callback=_zip_progress)
+                _rarmod_after = _ft_mod._rarmod
+                if _rarmod_before is None and _rarmod_after is not None:
+                    app.log("rarfile installed successfully — RAR archives now fully supported")
+                elif _rarmod_before is not None and _rarmod_after is not _rarmod_before:
+                    app.log("rarfile upgraded successfully — RAR5 archives now fully supported")
+                elif _rarmod_before is not None and _rarmod_after is None:
+                    app.log("rarfile upgrade failed — extracted via system tar fallback")
+                elif _rarmod_before is None and _rarmod_after is None:
+                    app.log("rarfile installation failed — extracted via system tar fallback")
                 stad = self._find_extracted_stadium_root(Path(_temp_dir), source_path.stem)
                 app.log(f"Archive extracted to: {stad}")
             except Exception:

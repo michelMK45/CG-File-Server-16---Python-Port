@@ -1,17 +1,50 @@
 from __future__ import annotations
 
+import importlib
 import random
 import shutil
 import subprocess
+import sys
 import unicodedata
 import zipfile
 from pathlib import Path
 
 try:
-    import rarfile
-    _RAR_AVAILABLE = True
+    import rarfile as _rarmod
 except ImportError:
-    _RAR_AVAILABLE = False
+    _rarmod = None
+
+
+def _try_install_rarfile():
+    """Attempt to pip-install/upgrade rarfile and return the module on success, None on failure."""
+    if getattr(sys, "frozen", False):
+        return None  # running as PyInstaller bundle — sys.executable is the app, not Python
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--upgrade", "rarfile"],
+            capture_output=True,
+            check=True,
+        )
+        return importlib.import_module("rarfile")
+    except Exception:
+        return None
+
+
+def _extract_with_rarmod(archive_path: Path, dest_dir: Path, progress_callback) -> bool:
+    """Extract RAR with _rarmod. Returns True on success, False if unrar tool is missing."""
+    try:
+        with _rarmod.RarFile(archive_path, "r") as rf:
+            members = rf.infolist()
+            total = len(members)
+            for index, member in enumerate(members, start=1):
+                rf.extract(member, dest_dir)
+                if progress_callback:
+                    progress_callback(index, total, member.filename)
+        return True
+    except Exception as exc:
+        if "Cannot find working tool" in str(exc) or exc.__class__.__name__.endswith("CannotExec"):
+            return False
+        raise
 
 try:
     from win32api import GetFileVersionInfo, HIWORD, LOWORD
@@ -106,37 +139,40 @@ def extract_archive(archive_path: Path, dest_dir: Path, progress_callback=None) 
                 zf.extract(member, dest_dir)
                 if progress_callback:
                     progress_callback(index, total, member.filename)
-    elif suffix == ".rar" and _RAR_AVAILABLE:
-        with rarfile.RarFile(archive_path, "r") as rf:
-            members = rf.infolist()
-            total = len(members)
-            for index, member in enumerate(members, start=1):
-                rf.extract(member, dest_dir)
-                if progress_callback:
-                    progress_callback(index, total, member.filename)
     elif suffix == ".rar":
-        startupinfo = None
-        creationflags = 0
-        if hasattr(subprocess, "STARTUPINFO") and hasattr(subprocess, "STARTF_USESHOWWINDOW"):
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-        try:
-            result = subprocess.run(
-                ["tar", "-xf", str(archive_path), "-C", str(dest_dir)],
-                capture_output=True,
-                text=True,
-                check=False,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-        except FileNotFoundError as exc:
-            raise RuntimeError("The system tar extractor is not available for RAR support") from exc
-        if result.returncode != 0:
-            details = (result.stderr or result.stdout or "").strip()
-            raise RuntimeError(f"Failed to extract RAR archive {archive_path.name}: {details or 'unknown error'}")
-        if progress_callback:
-            progress_callback(1, 1, archive_path.name)
+        global _rarmod
+        if _rarmod is None:
+            _rarmod = _try_install_rarfile()
+        if _rarmod is not None and not _extract_with_rarmod(archive_path, dest_dir, progress_callback):
+            # RarCannotExec: old rarfile without unrar — try upgrading to 4.x (native RAR5 support)
+            upgraded = _try_install_rarfile()
+            if upgraded is not None:
+                _rarmod = upgraded
+            if _rarmod is not None and not _extract_with_rarmod(archive_path, dest_dir, progress_callback):
+                _rarmod = None  # upgraded but still broken — fall through to tar
+        if _rarmod is None:
+            startupinfo = None
+            creationflags = 0
+            if hasattr(subprocess, "STARTUPINFO") and hasattr(subprocess, "STARTF_USESHOWWINDOW"):
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+            try:
+                result = subprocess.run(
+                    ["tar", "-xf", str(archive_path), "-C", str(dest_dir)],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError("The system tar extractor is not available for RAR support") from exc
+            if result.returncode != 0:
+                details = (result.stderr or result.stdout or "").strip()
+                raise RuntimeError(f"Failed to extract RAR archive {archive_path.name}: {details or 'unknown error'}")
+            if progress_callback:
+                progress_callback(1, 1, archive_path.name)
     else:
         raise RuntimeError(f"Unsupported archive format: {archive_path.suffix}")
 

@@ -14,7 +14,7 @@ a = Analysis(
         ('server16_py\\locales', 'server16_py\\locales'),
         ('server16.ico', '.'),
     ],
-    hiddenimports=['clr'],
+    hiddenimports=['clr', 'rarfile'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
