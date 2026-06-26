@@ -450,6 +450,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self._set_display("stadium", "Stadium Module Disable")
             self.curstad = ""
             self.ScoreboardStadName = ""
+            if self.stadium_runtime.has_assignment():
+                self.assets_runtime._show_warning_toast(self.tr("notify.warn.stadium_off"), self.tr("notify.warn.assets_skipped"))
         try:
             self.apply_scoreboard_runtime()
         except Exception as exc:

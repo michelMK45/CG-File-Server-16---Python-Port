@@ -51,6 +51,7 @@ struct ToastEntry {
     volatile LONG visible;       // 0 = hidden, 1 = shown
     wchar_t title[MAX_STR];
     wchar_t body[MAX_STR];
+    volatile LONG style;         // 0 = info (blue), 1 = warning (amber)
 };
 
 struct OverlayShared {
@@ -1190,12 +1191,14 @@ static void DrawToast11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceConte
     // Collect visible slots in ascending index order
     int  slots[MAX_TOASTS]; int slotCount = 0;
     wchar_t titles[MAX_TOASTS][MAX_STR]={}, bodies[MAX_TOASTS][MAX_STR]={};
+    LONG   styles[MAX_TOASTS]={};
     if (g_data) {
         for (int i = 0; i < MAX_TOASTS; i++) {
             if (InterlockedCompareExchange(&g_data->toasts[i].visible, 0, 0) == 0) continue;
             slots[slotCount] = i;
             wcsncpy_s(titles[slotCount], g_data->toasts[i].title, MAX_STR-1);
             wcsncpy_s(bodies[slotCount], g_data->toasts[i].body,  MAX_STR-1);
+            styles[slotCount] = InterlockedCompareExchange(&g_data->toasts[i].style, 0, 0);
             slotCount++;
         }
     }
@@ -1272,11 +1275,12 @@ static void DrawToast11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceConte
     float drawY = topY;
     for (int v = 0; v < slotCount; v++) {
         float py = drawY;
-        R(PX,        py,       PW,   2.f,    0xFF3399FF);  // top accent bar
+        DWORD accent = (styles[v] == 1) ? 0xFFFFAA00 : 0xFF3399FF;  // amber if warning, blue if info
+        R(PX,        py,       PW,   2.f,    accent);      // top accent bar
         R(PX,        py+2.f,   PW,   PH-2.f, 0xEE101828);  // background
-        R(PX,        py+2.f,   4.f,  PH-2.f, 0xFF3399FF);  // left accent strip
-        R(PX,        py+PH-1.f,PW,   1.f,    0xFF3399FF);  // bottom border
-        R(PX+PW-1.f, py,       1.f,  PH,     0xFF3399FF);  // right border
+        R(PX,        py+2.f,   4.f,  PH-2.f, accent);      // left accent strip
+        R(PX,        py+PH-1.f,PW,   1.f,    accent);      // bottom border
+        R(PX+PW-1.f, py,       1.f,  PH,     accent);      // right border
         drawY += (PH + GAP);
     }
 

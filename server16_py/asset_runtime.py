@@ -19,6 +19,12 @@ class AssetRuntime:
         if slot != -1:
             app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
 
+    def _show_warning_toast(self, title: str, body: str, duration_ms: int = 5000) -> None:
+        app = self.app
+        slot = app._show_toast_notification(title, body, style=1)
+        if slot != -1:
+            app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
+
     def _resolve_assignment_value(self, candidates: list[tuple[str, str]], fallback: tuple[str, str] | None = None) -> str:
         app = self.app
         for key, section in candidates:
@@ -118,9 +124,20 @@ class AssetRuntime:
             app.tvlogoscoreboardtype = copy_tvlogo(source, app.TVdata)
             app._set_display("tvlogo", Path(source).name)
             app.log(f"Applied TV logo source: {source}")
-            self._show_asset_toast(app.tr("notify.tvlogo_loaded"), Path(source).name)
+            if source != default_source:
+                self._show_asset_toast(app.tr("notify.tvlogo_loaded"), Path(source).name)
         else:
             app._set_display("tvlogo", app.display_value("tvlogo_module_disable"))
+            tvlogo_check = self._resolve_assignment_value(
+                [
+                    (app.TOURROUNDID, "TVLogo"),
+                    (app.TOURNAME, "TVLogo"),
+                    (app.HID, "HomeTeamTvLogo"),
+                ],
+                fallback=("0", "TVLogo"),
+            )
+            if tvlogo_check and (app.TVLogo / tvlogo_check).exists():
+                self._show_warning_toast(app.tr("notify.warn.tvlogo_off"), app.tr("notify.warn.assets_skipped"))
         if app.module_enabled("ScoreBoard"):
             copy(app.exedir / "FSW" / "ScoreBoard", app.Scoredata / "game")
             scoreboard = self._resolve_assignment_value(
@@ -190,6 +207,25 @@ class AssetRuntime:
                 app.log("No scoreboard assignment found; default scoreboard active")
         else:
             app._set_display("scoreboard", app.display_value("scoreboard_module_disable"))
+            scoreboard_check = self._resolve_assignment_value(
+                [
+                    (app.TOURROUNDID, "Scoreboard"),
+                    (app.TOURNAME, "Scoreboard"),
+                    (app.HID, "HomeTeamScoreBoard"),
+                ],
+                fallback=("0", "Scoreboard"),
+            )
+            if scoreboard_check:
+                from .file_tools import is_archive
+                sb_path = app.ScoreBoard / scoreboard_check
+                sb_exists = sb_path.exists() and sb_path.is_dir()
+                if not sb_exists:
+                    for ext in (".zip", ".rar"):
+                        if (app.ScoreBoard / (scoreboard_check + ext)).exists():
+                            sb_exists = True
+                            break
+                if sb_exists:
+                    self._show_warning_toast(app.tr("notify.warn.scoreboard_off"), app.tr("notify.warn.assets_skipped"))
         self.update_audio_overview()
 
     def apply_movie_runtime(self) -> None:
@@ -198,6 +234,17 @@ class AssetRuntime:
         app._movie_assignment_type = ""
         if not app.module_enabled("Movies"):
             app._set_display("movie", app.display_value("movie_module_disable"))
+            movie_check = self._resolve_assignment_value(
+                [
+                    (app.TOURROUNDID, "movies"),
+                    (app.TOURNAME, "movies"),
+                    (app.derby, "DerbyMatch"),
+                    (app.HID, "TeamMovies"),
+                ],
+                fallback=("0", "movies"),
+            )
+            if movie_check and (app.Movies / movie_check).exists():
+                self._show_warning_toast(app.tr("notify.warn.movie_off"), app.tr("notify.warn.assets_skipped"))
             self.update_audio_overview()
             return
         movie = self._resolve_assignment_value(

@@ -21,6 +21,17 @@ class StadiumRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
 
+    def has_assignment(self) -> bool:
+        """Return True if there is a stadium assignment for the current match context."""
+        app = self.app
+        if app.settings_ini.key_exists(app.TOURROUNDID, "exclude") or app.settings_ini.key_exists(app.TOURNAME, "exclude"):
+            return False
+        return (
+            app.settings_ini.key_exists(app.TOURROUNDID, "comp")
+            or app.settings_ini.key_exists(app.TOURNAME, "comp")
+            or app.settings_ini.key_exists(app.HID, "stadium")
+        )
+
     @staticmethod
     def _parse_assignment(raw_value: str) -> tuple[list[str], str, str, str]:
         parts = [part.strip() for part in raw_value.split(",") if part.strip()]

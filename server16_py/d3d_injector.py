@@ -40,6 +40,7 @@ class _ToastEntry(ctypes.Structure):
         ("visible", ctypes.c_long),
         ("title",   ctypes.c_wchar * _MAX_STR),
         ("body",    ctypes.c_wchar * _MAX_STR),
+        ("style",   ctypes.c_long),   # 0 = info (blue), 1 = warning (amber)
     ]
 
 
@@ -265,7 +266,7 @@ class D3DOverlayInjector:
             return
         self._shared.image_path = (path or "")[:_MAX_IMG - 1]
 
-    def show_toast(self, title: str, body: str = "") -> int:
+    def show_toast(self, title: str, body: str = "", style: int = 0) -> int:
         """Occupy the first free slot. Returns slot index (0-3) or -1 if all full."""
         if not self._ready or self._shared is None:
             return -1
@@ -273,6 +274,7 @@ class D3DOverlayInjector:
             if self._shared.toasts[i].visible == 0:
                 self._shared.toasts[i].title   = title[:_MAX_STR - 1]
                 self._shared.toasts[i].body    = body[:_MAX_STR - 1]
+                self._shared.toasts[i].style   = style
                 self._shared.toasts[i].visible = 1
                 return i
         return -1
@@ -284,8 +286,10 @@ class D3DOverlayInjector:
         if slot == -1:
             for i in range(_MAX_TOASTS):
                 self._shared.toasts[i].visible = 0
+                self._shared.toasts[i].style   = 0
         elif 0 <= slot < _MAX_TOASTS:
             self._shared.toasts[slot].visible = 0
+            self._shared.toasts[slot].style   = 0
 
     def set_list_header(self, text: str) -> None:
         """Set the wizard step header text shown above the menu item list (empty = hidden)."""
