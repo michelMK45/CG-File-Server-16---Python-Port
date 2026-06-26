@@ -91,6 +91,12 @@ class SettingsMixin:
         self.Ndest = self.exedir / "data" / "sceneassets" / "goalnet"
         self.PitchMowdest = self.exedir / "data" / "sceneassets" / "pitch"
         self.settings_ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
+        if not self.settings_ini.path.exists():
+            import shutil as _shutil
+            src_ini = self.resource_dir / "install_data" / "FSW" / "settings.ini"
+            if src_ini.exists():
+                self.settings_ini.path.parent.mkdir(parents=True, exist_ok=True)
+                _shutil.copy2(str(src_ini), str(self.settings_ini.path))
         self._load_module_states()
         self._update_audio_overview()
         if load_team_database:
@@ -178,6 +184,8 @@ class SettingsMixin:
             self._load_team_database(lambda value, text: self._set_progress(value, text))
             self._set_progress(82, self.progress_text("applying_bootstrap"))
             self.apply_bootstrap_files()
+            if getattr(self, "_setup_status_vars", None):
+                self.refresh_setup_tab()
             self._set_progress(94, self.progress_text("refreshing_modules"))
             self.refresh_modules()
             self._set_progress(100, self.progress_text("fifa_data_ready"))
@@ -315,6 +323,8 @@ class SettingsMixin:
             return
         self.setuppaths()
         self.apply_bootstrap_files()
+        if getattr(self, "_setup_status_vars", None):
+            self.refresh_setup_tab()
         self.refresh_modules()
         if self._is_target_process_running():
             self.log(f"FIFA process already running: {self.fifaEXE}")

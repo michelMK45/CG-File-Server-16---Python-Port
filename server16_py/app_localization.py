@@ -82,6 +82,7 @@ class LocalizationMixin:
         self._apply_module_labels()
         self._apply_camera_localization()
         self._refresh_card_titles()
+        self._apply_setup_notice_localization()
 
     def _refresh_card_titles(self) -> None:
         if hasattr(self, "_card_title_bindings"):
@@ -150,3 +151,17 @@ class LocalizationMixin:
             self.camera_preview_image_label.configure(text=self.tr("placeholder.preview"))
         if hasattr(self, "settings_ini"):
             self.refresh_camera_catalog()
+
+    def _apply_setup_notice_localization(self) -> None:
+        title_lbl = getattr(self, "_setup_notice_title", None)
+        if title_lbl is not None and title_lbl.winfo_exists():
+            title_lbl.configure(text=self.tr("setup_notice.title"))
+        desc_lbl = getattr(self, "_setup_notice_desc", None)
+        if desc_lbl is not None and desc_lbl.winfo_exists():
+            desc_lbl.configure(text=self.tr("setup_notice.description"))
+        btn = getattr(self, "_setup_notice_btn", None)
+        if btn is not None and btn.winfo_exists():
+            btn.configure(text=self.tr("setup_notice.go_setup"))
+        for key, lbl in getattr(self, "_setup_notice_step_labels", []):
+            if lbl.winfo_exists():
+                lbl.configure(text=self.tr(key))

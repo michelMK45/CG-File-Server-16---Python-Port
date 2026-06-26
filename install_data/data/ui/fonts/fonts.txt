@@ -1,0 +1,22 @@
+﻿EAHelveticaNeueConBol-Mod.ttf
+EAHeavy.ttf
+EAHelveticaNeueMed-Mod.ttf
+DFP-HeiSeiGothic-W5-mod.ttf
+DFP-HeiSeiGothic-W9-mod.ttf
+KlavikaBasic-Bold.ttf
+KlavikaBasic-Medium.ttf
+HelveticaNeueLTStd-Roman.ttf
+HelveticaNeueLTStd-Bd.ttf
+PremierLeague1.ttf
+ApexDFLBoldTabular.ttf
+ApexDFLBookTabular.ttf
+champions.ttf
+klavika.ttf
+SkySportItaly2015SB.ttf
+LegaSerieA2015.ttf
+SkyTextBold.ttf
+DIN1451EF.ttf
+DINBlack.ttf
+liganos.ttf
+LigaBBVA.ttf
+DFL Sans.ttf

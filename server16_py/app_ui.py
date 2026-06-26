@@ -304,12 +304,17 @@ class UIMixin:
         self.logs_tab = tk.Frame(self.tabview, bg=self.bg)
         self.audio_tab = tk.Frame(self.tabview, bg=self.bg)
         self.camera_tab = tk.Frame(self.tabview, bg=self.bg)
+        self.setup_tab = tk.Frame(self.tabview, bg=self.bg)
         self.tabview.add(self.dashboard_tab, text=self.tr("tab.dashboard"))
         self.tabview.add(self.audio_tab, text=self.tr("tab.chants"))
         self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
+        self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
         self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
 
+        self._build_setup_notice()
+
         dashboard_host = tk.Frame(self.dashboard_tab, bg=self.bg)
+        self._dashboard_host = dashboard_host
         dashboard_host.pack(fill="both", expand=True, padx=10, pady=10)
         self.dashboard_canvas = tk.Canvas(dashboard_host, bg=self.bg, highlightthickness=0, bd=0)
         self.dashboard_scrollbar = ttk.Scrollbar(
@@ -346,6 +351,7 @@ class UIMixin:
         self._build_modules_card(right, 1)
         self._build_audio_card()
         self._build_camera_tab()
+        self._build_setup_tab()
         self._build_logs_card()
         self._apply_main_localization()
 
@@ -1257,6 +1263,473 @@ class UIMixin:
         self.camera_instruction_text.configure(state="disabled")
         self.camera_apply_button = ttk.Button(detail_body, text=self.tr("button.apply_camera"), command=self.apply_selected_camera)
         self.camera_apply_button.grid(row=5, column=0, sticky="ew", pady=(12, 0))
+
+    def _build_setup_tab(self) -> None:
+        outer = tk.Frame(self.setup_tab, bg=self.bg)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        card = self._card(outer, "card.setup.title", "card.setup.subtitle")
+        card.pack(fill="both", expand=True)
+
+        # Fixed footer — packed before the scroll area so it stays visible
+        footer = tk.Frame(card, bg=self.card)
+        footer.pack(side="bottom", fill="x", padx=12, pady=(4, 12))
+        pb_row = tk.Frame(footer, bg=self.card)
+        pb_row.pack(fill="x", pady=(0, 6))
+        self._setup_progressbar = ttk.Progressbar(pb_row, mode="indeterminate", style="Accent.Horizontal.TProgressbar")
+        self._setup_progressbar.pack(side="left", fill="x", expand=True)
+        self._setup_progress_label = tk.Label(pb_row, text="", bg=self.card, fg=self.muted, font=("Bahnschrift", 9), width=22, anchor="w")
+        self._setup_progress_label.pack(side="left", padx=(8, 0))
+        btn_row = tk.Frame(footer, bg=self.card)
+        btn_row.pack(fill="x")
+        ttk.Button(btn_row, text=self.tr("button.refresh"), command=self.refresh_setup_tab).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._run_setup_btn = ttk.Button(btn_row, text=self.tr("button.run_setup"), command=self._run_setup)
+        self._run_setup_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._regen_bh_btn = ttk.Button(btn_row, text=self.tr("button.regen_bh"), command=self._run_regen_bh, state="disabled")
+        self._regen_bh_btn.pack(side="left", fill="x", expand=True)
+
+        # Scrollable two-column content
+        scroll_host = tk.Frame(card, bg=self.card)
+        scroll_host.pack(fill="both", expand=True, padx=12, pady=(6, 0))
+
+        canvas = tk.Canvas(scroll_host, bg=self.card, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        body = tk.Frame(canvas, bg=self.card)
+        canvas_win = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(canvas_win, width=e.width)
+
+        body.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+
+        body.columnconfigure(0, weight=1, uniform="setupcol")
+        body.columnconfigure(1, weight=1, uniform="setupcol")
+
+        left_col = tk.Frame(body, bg=self.card)
+        left_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        right_col = tk.Frame(body, bg=self.card)
+        right_col.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        def section(parent: tk.Frame, label_key: str) -> None:
+            tk.Frame(parent, bg=self.card, height=12).pack(fill="x")
+            tk.Label(parent, text=self.tr(label_key), bg=self.card, fg=self.muted, font=("Bahnschrift", 9, "bold")).pack(anchor="w")
+            tk.Frame(parent, bg="#243654", height=1).pack(fill="x", pady=(2, 4))
+
+        def status_row(parent: tk.Frame, label_key: str, item_key: str) -> None:
+            row = tk.Frame(parent, bg=self.card)
+            row.pack(fill="x", pady=2)
+            dot = tk.Label(row, text="○", bg=self.card, fg=self.muted, font=("Bahnschrift", 11), width=2)
+            dot.pack(side="left")
+            tk.Label(row, text=self.tr(label_key), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
+            status_lbl = tk.Label(row, text=self.tr("setup.status.not_applicable"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9), anchor="e")
+            status_lbl.pack(side="right", padx=(4, 4))
+            self._setup_status_vars[item_key] = (dot, status_lbl)
+
+        # Left column: prerequisites + FSW sources + user folders
+        section(left_col, "setup.section.prerequisites")
+        status_row(left_col, "setup.item.fifa_exe", "fifa_exe")
+
+        section(left_col, "setup.section.fsw_sources")
+        status_row(left_col, "setup.item.settings_ini", "settings_ini")
+        status_row(left_col, "setup.item.fsw_police", "fsw_police")
+        status_row(left_col, "setup.item.fsw_nets", "fsw_nets")
+        status_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
+        status_row(left_col, "setup.item.fsw_stadium", "fsw_stadium")
+        status_row(left_col, "setup.item.fsw_nav", "fsw_nav")
+
+        section(left_col, "setup.section.user_folders")
+        status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
+        status_row(left_col, "setup.item.gbd_tvlogo", "gbd_tvlogo")
+        status_row(left_col, "setup.item.gbd_scoreboard", "gbd_scoreboard")
+        status_row(left_col, "setup.item.gbd_movies", "gbd_movies")
+
+        # Right column: destination folders
+        section(right_col, "setup.section.dest_folders")
+        status_row(right_col, "setup.item.dest_slc", "dest_slc")
+        status_row(right_col, "setup.item.dest_goalnet", "dest_goalnet")
+        status_row(right_col, "setup.item.dest_pitch", "dest_pitch")
+        status_row(right_col, "setup.item.dest_stadium", "dest_stadium")
+        status_row(right_col, "setup.item.dest_fx", "dest_fx")
+        status_row(right_col, "setup.item.dest_crowdplacement", "dest_crowdplacement")
+        status_row(right_col, "setup.item.dest_crowdchair", "dest_crowdchair")
+        status_row(right_col, "setup.item.dest_overlays", "dest_overlays")
+        status_row(right_col, "setup.item.dest_scoreboard_game", "dest_scoreboard_game")
+        status_row(right_col, "setup.item.dest_tv", "dest_tv")
+        status_row(right_col, "setup.item.dest_nav", "dest_nav")
+        status_row(right_col, "setup.item.dest_movies", "dest_movies")
+        status_row(right_col, "setup.item.dest_camera", "dest_camera")
+        status_row(right_col, "setup.item.dest_lua", "dest_lua")
+
+        self.refresh_setup_tab()
+
+    # ── Setup notice (dashboard banner) ───────────────────────────────────────
+
+    def _build_setup_notice(self) -> None:
+        amber_bg = "#1c1400"
+        notice = tk.Frame(
+            self.dashboard_tab,
+            bg=amber_bg,
+            highlightthickness=1,
+            highlightbackground="#f6c177",
+        )
+        self._setup_notice_frame = notice
+
+        inner = tk.Frame(notice, bg=amber_bg, padx=14, pady=10)
+        inner.pack(fill="x")
+
+        header_row = tk.Frame(inner, bg=amber_bg)
+        header_row.pack(fill="x", pady=(0, 6))
+
+        self._setup_notice_title = tk.Label(
+            header_row,
+            text=self.tr("setup_notice.title"),
+            bg=amber_bg,
+            fg=self.gold,
+            font=("Bahnschrift", 11, "bold"),
+            anchor="w",
+        )
+        self._setup_notice_title.pack(side="left")
+
+        self._setup_notice_btn = ttk.Button(
+            header_row,
+            text=self.tr("setup_notice.go_setup"),
+            command=self._go_to_setup_tab,
+        )
+        self._setup_notice_btn.pack(side="right")
+
+        self._setup_notice_desc = tk.Label(
+            inner,
+            text=self.tr("setup_notice.description"),
+            bg=amber_bg,
+            fg=self.fg,
+            font=("Bahnschrift", 9),
+            anchor="w",
+            wraplength=820,
+            justify="left",
+        )
+        self._setup_notice_desc.pack(fill="x", pady=(0, 4))
+
+        steps_frame = tk.Frame(inner, bg=amber_bg)
+        steps_frame.pack(fill="x")
+        self._setup_notice_step_labels = []
+        for key in ("setup_notice.step1", "setup_notice.step2", "setup_notice.step3"):
+            lbl = tk.Label(
+                steps_frame,
+                text=self.tr(key),
+                bg=amber_bg,
+                fg=self.muted,
+                font=("Bahnschrift", 9),
+                anchor="w",
+            )
+            lbl.pack(fill="x")
+            self._setup_notice_step_labels.append((key, lbl))
+
+    def _go_to_setup_tab(self) -> None:
+        self.tabview.select(self.setup_tab)
+
+    def _is_setup_complete(self) -> bool:
+        if not hasattr(self, "fifaEXE") or self.fifaEXE == "default":
+            return False
+        from pathlib import Path as _Path
+
+        if not _Path(self.fifaEXE).exists():
+            return False
+
+        exedir = _Path(self.fifaEXE).parent
+
+        # FSW settings.ini
+        if not (exedir / "FSW" / "settings.ini").exists():
+            return False
+
+        # FSW source folders must exist and contain at least one file
+        for src in (self.Psource, self.Nsource, self.PitchMowsource):
+            p = _Path(src)
+            if not p.exists() or next((f for f in p.iterdir() if f.is_file()), None) is None:
+                return False
+
+        # FSW Stadium and Nav folders
+        for path in (exedir / "FSW" / "Stadium", exedir / "FSW" / "Nav"):
+            if not _Path(path).exists():
+                return False
+
+        # Destination folders
+        dest_paths = [
+            self.Pdest, self.Ndest, self.PitchMowdest,
+            exedir / "data" / "sceneassets" / "stadium",
+            exedir / "data" / "sceneassets" / "fx",
+            exedir / "data" / "sceneassets" / "crowdplacement",
+            exedir / "data" / "sceneassets" / "crowdchair",
+            self.TVdata,
+            self.Scoredata / "game",
+            exedir / "data" / "ui" / "TV",
+            exedir / "data" / "ui" / "nav",
+            exedir / "data" / "movies",
+            exedir / "data" / "bcdata" / "camera",
+            exedir / "data" / "fifarna" / "lua" / "assets",
+        ]
+        if not all(_Path(p).exists() for p in dest_paths):
+            return False
+
+        # User GBD folders
+        for path in (self.targetpath, self.TVLogo, self.ScoreBoard, self.Movies):
+            if not _Path(path).exists():
+                return False
+
+        return True
+
+    def _update_setup_notice(self) -> None:
+        notice = getattr(self, "_setup_notice_frame", None)
+        if notice is None:
+            return
+        dashboard_host = getattr(self, "_dashboard_host", None)
+        if self._is_setup_complete():
+            notice.pack_forget()
+        elif not notice.winfo_ismapped():
+            if dashboard_host:
+                notice.pack(fill="x", padx=10, pady=(10, 4), before=dashboard_host)
+            else:
+                notice.pack(fill="x", padx=10, pady=(10, 4))
+
+    def refresh_setup_tab(self) -> None:
+        if not self._setup_status_vars:
+            return
+
+        no_exe = not hasattr(self, "fifaEXE") or self.fifaEXE == "default"
+
+        def _set(key: str, ok: bool | None, text: str) -> None:
+            pair = self._setup_status_vars.get(key)
+            if pair is None:
+                return
+            dot, lbl = pair
+            if ok is None:
+                dot.configure(text="○", fg=self.muted)
+                lbl.configure(text=text, fg=self.muted)
+            elif ok:
+                dot.configure(text="●", fg=self.success)
+                lbl.configure(text=text, fg=self.success)
+            else:
+                dot.configure(text="●", fg=self.error)
+                lbl.configure(text=text, fg=self.error)
+
+        def _count_files(path) -> int:
+            from pathlib import Path
+            p = Path(path)
+            if not p.exists():
+                return -1
+            return sum(1 for f in p.iterdir() if f.is_file())
+
+        na = self.tr("setup.status.not_applicable")
+        missing = self.tr("setup.status.missing")
+        ok_text = self.tr("setup.status.ok")
+        empty_text = self.tr("setup.status.empty")
+
+        if no_exe:
+            for key in self._setup_status_vars:
+                if key == "fifa_exe":
+                    _set(key, False, self.tr("setup.status.not_linked"))
+                else:
+                    _set(key, None, na)
+            regen_btn = getattr(self, "_regen_bh_btn", None)
+            if regen_btn:
+                regen_btn.configure(state="disabled")
+            return
+
+        from pathlib import Path
+
+        # FIFA exe
+        exe_path = Path(self.fifaEXE)
+        _set("fifa_exe", exe_path.exists(), self.tr("setup.status.linked") if exe_path.exists() else missing)
+
+        exedir = self.exedir
+
+        # FSW sources
+        ini_path = exedir / "FSW" / "settings.ini"
+        _set("settings_ini", ini_path.exists(), ok_text if ini_path.exists() else missing)
+
+        for key, src in (("fsw_police", self.Psource), ("fsw_nets", self.Nsource), ("fsw_pitch", self.PitchMowsource)):
+            count = _count_files(src)
+            if count < 0:
+                _set(key, False, missing)
+            elif count == 0:
+                _set(key, None, empty_text)
+            else:
+                _set(key, True, self.tr("setup.status.files").format(count=count))
+
+        for key, path in (("fsw_stadium", exedir / "FSW" / "Stadium"), ("fsw_nav", exedir / "FSW" / "Nav")):
+            exists = Path(path).exists()
+            _set(key, exists, ok_text if exists else missing)
+
+        # Destination folders
+        for key, path in (
+            ("dest_slc", self.Pdest),
+            ("dest_goalnet", self.Ndest),
+            ("dest_pitch", self.PitchMowdest),
+            ("dest_stadium", exedir / "data" / "sceneassets" / "stadium"),
+            ("dest_fx", exedir / "data" / "sceneassets" / "fx"),
+            ("dest_crowdplacement", exedir / "data" / "sceneassets" / "crowdplacement"),
+            ("dest_crowdchair", exedir / "data" / "sceneassets" / "crowdchair"),
+            ("dest_overlays", self.TVdata),
+            ("dest_scoreboard_game", self.Scoredata / "game"),
+            ("dest_tv", exedir / "data" / "ui" / "TV"),
+            ("dest_nav", exedir / "data" / "ui" / "nav"),
+            ("dest_movies", exedir / "data" / "movies"),
+            ("dest_camera", exedir / "data" / "bcdata" / "camera"),
+            ("dest_lua", exedir / "data" / "fifarna" / "lua" / "assets"),
+        ):
+            exists = Path(path).exists()
+            _set(key, exists, ok_text if exists else missing)
+
+        # User content folders
+        for key, path in (
+            ("gbd_stadium", self.targetpath),
+            ("gbd_tvlogo", self.TVLogo),
+            ("gbd_scoreboard", self.ScoreBoard),
+            ("gbd_movies", self.Movies),
+        ):
+            exists = Path(path).exists()
+            _set(key, exists, ok_text if exists else missing)
+
+        regen_btn = getattr(self, "_regen_bh_btn", None)
+        if regen_btn:
+            dest_paths = [
+                self.Pdest, self.Ndest, self.PitchMowdest,
+                exedir / "data" / "sceneassets" / "stadium",
+                exedir / "data" / "sceneassets" / "fx",
+                exedir / "data" / "sceneassets" / "crowdplacement",
+                exedir / "data" / "sceneassets" / "crowdchair",
+                self.TVdata,
+                self.Scoredata / "game",
+                exedir / "data" / "ui" / "TV",
+                exedir / "data" / "ui" / "nav",
+                exedir / "data" / "movies",
+                exedir / "data" / "bcdata" / "camera",
+                exedir / "data" / "fifarna" / "lua" / "assets",
+            ]
+            setup_ok = Path(self.fifaEXE).exists() and all(Path(p).exists() for p in dest_paths)
+            regen_btn.configure(state="normal" if setup_ok else "disabled")
+
+        self._update_setup_notice()
+
+    def _run_setup(self) -> None:
+        import shutil
+        import threading
+        from tkinter import messagebox
+        from .big4_extractor import extract_fsw_sources
+
+        if not hasattr(self, "fifaEXE") or self.fifaEXE == "default":
+            messagebox.showwarning(self.tr("message.fifa16"), self.tr("message.warning.select_fifa_first"))
+            return
+
+        btn = getattr(self, "_run_setup_btn", None)
+        if btn:
+            btn.configure(state="disabled")
+
+        pb = getattr(self, "_setup_progressbar", None)
+        if pb:
+            pb.start(12)
+
+        def _work() -> None:
+            try:
+                src = self.resource_dir / "install_data"
+                if src.exists():
+                    self.after(0, self._set_setup_progress, self.tr("progress.setup.copying"))
+                    shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True)
+                    self.log(f"install_data copied to {self.exedir}")
+                else:
+                    self.log("install_data folder not found, skipping bundled copy")
+
+                self.after(0, self._set_setup_progress, self.tr("progress.setup.extracting"))
+                self.log("Extracting FSW sources from game archives...")
+                extract_fsw_sources(self.exedir, self.exedir / "FSW", log=self.log)
+
+                self.after(0, self._set_setup_progress, self.tr("progress.setup.bootstrap"))
+                self.setuppaths(load_team_database=False)
+                self.apply_bootstrap_files()
+            except Exception as exc:
+                self.log(f"Setup error: {exc}")
+            finally:
+                self.after(0, _done)
+
+        def _done() -> None:
+            if pb:
+                pb.stop()
+                pb["value"] = 0
+            self._set_setup_progress("")
+            self.refresh_setup_tab()
+            if btn:
+                btn.configure(state="normal")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _run_regen_bh(self) -> None:
+        import subprocess
+        import threading
+
+        candidates = [
+            self.resource_dir / "bin" / "regen-cli.exe",
+            self.base_dir / "bin" / "regen-cli.exe",
+        ]
+        regen_exe = next((c for c in candidates if c.exists()), None)
+        if regen_exe is None:
+            self.log("Regenerate BH: regen-cli.exe not found in bin/")
+            return
+
+        btn = getattr(self, "_regen_bh_btn", None)
+        if btn:
+            btn.configure(state="disabled")
+
+        pb = getattr(self, "_setup_progressbar", None)
+        if pb:
+            pb.start(12)
+
+        def _work() -> None:
+            try:
+                self.after(0, self._set_setup_progress, self.tr("progress.setup.regen_bh"))
+                self.log(f"Regenerate BH: running for {self.exedir}")
+                result = subprocess.run(
+                    [str(regen_exe), "--gamedir", str(self.exedir)],
+                    capture_output=True, text=True, timeout=120,
+                )
+                for line in result.stdout.splitlines():
+                    if line.strip():
+                        self.log(f"  {line.strip()}")
+                if result.returncode == 0:
+                    self.log("Regenerate BH: done")
+                else:
+                    self.log(f"Regenerate BH: exit code {result.returncode}")
+                    if result.stderr:
+                        self.log(result.stderr.strip())
+            except subprocess.TimeoutExpired:
+                self.log("Regenerate BH: timed out after 120s")
+            except Exception as exc:
+                self.log(f"Regenerate BH failed: {exc}")
+            finally:
+                self.after(0, _done)
+
+        def _done() -> None:
+            if pb:
+                pb.stop()
+                pb["value"] = 0
+            self._set_setup_progress("")
+            if btn:
+                btn.configure(state="normal")
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _set_setup_progress(self, text: str) -> None:
+        lbl = getattr(self, "_setup_progress_label", None)
+        if lbl:
+            lbl.configure(text=text)
 
     def _build_logs_card(self) -> None:
         logs = ttk.LabelFrame(self.logs_tab, text=self.tr("logs.group"), padding=10)

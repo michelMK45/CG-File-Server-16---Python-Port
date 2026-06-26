@@ -1,0 +1,1730 @@
+{
+	"name":"pauseMenuFlow"
+	,"initial":
+	{
+		"targets":["PMASkillGameCheck"]
+	}
+	,"onEnter":
+	[
+		["sendAction", ["backendEnter"]]
+		,["loadViewModel", ["InGameFlowViewModel"]]
+	]
+	,"onExit":
+	[
+		["unloadViewModel", ["InGameFlowViewModel"]]
+		,["sendAction", ["backendExit"]]
+		,["sendAction",["navigationBackoutContinue"]]
+	]
+	,"transitions":
+	[
+		{ "event":"navigationBackoutStart" }
+		,{ "event":"pause", "targets":["PauseMenu"], "let":{ "isGamePaused": "1" } }
+		,{ "event":"ContinueNextOnlineMatch", "actions": [["sendScreenEvent", ["ResetActiveController",""]],["sendScreenEvent", ["UxSetFlowState",".eState.ARENA"]],["sendScreenEvent", ["UxSetFlowSubState",".eSubState.SUBSTATE_NONE"]]], "targets":["continue"] }
+		,{ "event":"evt_online_disconnect", "targets":["ConnectionWithOpponentLostPopup"] }
+		,{ "event":"evt_online_disconnect_eom", "targets":["ConnectionWithOpponentLostEomPopup"] }
+		,{ "event":"evt_online_disconnect_mismatching_squad", "targets":["MismatchingSquadPopup"] }
+		,{ "event":"evt_online_disconnect_mismatching_squad_eom", "targets":["MismatchingSquadEomPopup"] }
+		,{ "event":"evt_online_disconnect_idle_player", "targets":["IdlePlayerPopup"] }
+		,{ "event":"evt_online_disconnect_idle_player_eom", "targets":["IdlePlayerEomPopup"] }
+		,{ "event":"evt_online_disconnect_mismatching_changelist", "targets":["MismatchingChangelistPopup"] }
+		,{ "event":"evt_online_disconnect_mismatching_changelist_eom", "targets":["MismatchingChangelistEomPopup"] }
+		,{ "event":"evt_online_desync", "targets":["OnlineDesyncPopup"] }
+		,{ "event":"evt_kick_from_otp_captain_kick", "targets":["KickFromOtp_CaptainKick"] }
+		,{ "event":"evt_kick_from_otp_clubs_forfeit", "targets":["KickFromOtp_ClubsForfeit"] }
+		,{ "event":"evt_kick_from_otp_clubs_opponent_forfeit", "targets":["KickFromOtp_ClubsOpponentForfeit"] }
+		,{ "event":"evt_kick_from_otp_coop_forfeit", "targets":["KickFromOtp_CoopForfeit"] }
+		,{ "event":"evt_kick_from_otp_coop_opponent_forfeit", "targets":["KickFromOtp_CoopOpponentForfeit"] }
+		,{ "event":"profileSignOut", "targets":["PauseProfileSignOutWait"] }
+	]
+	,"states":
+	[
+		{
+			"name":"PauseProfileSignOutWait"
+			,"transitions":
+			[
+				{
+					"event":"profileSignOutComplete"
+					, "actions":[ ["invoke",["GoToTitleScreen"]]]
+				}
+			]
+		}
+		,{
+			"name":"PMASkillGameCheck"
+			,"onEnter":
+			[
+				["sendAction", ["condition", "hasPMASkillGame"]]
+			]
+			,"transitions":
+			[
+				{
+					"event":"true"
+					,"targets":["PMASkillGame"]
+				}
+				,{
+					"event":"false"
+					,"targets":["gameActive"]
+				}
+			]
+		}
+		,{
+			"name":"PMASkillGame"
+			,"transitions":
+			[
+				{
+					"event":"advanceFromPMA"
+					,"targets":["gameActive"]
+				}
+			]
+			,"states":
+			[
+				{
+					"name":"WaitForInstructions"
+					,"transitions":
+					[
+						{
+							"event":"showInstructions"
+							,"targets":["instructionsOverlay"]
+						}
+					]
+				}
+				,{
+					"name":"instructionsOverlay"
+					,"onEnter":
+					[
+						["loadViewModel",["SkillGameInstructionsViewModel"]]
+						,["loadView", ["video", "OUTRO"]]	
+						,["loadView",["screen", "TV/bumper", "", ".direction"]]
+						,["sendAction", ["evt_training_allow_advance_to_game"]]
+					]
+					,"onExit":
+					[
+						["unloadView",["screen", "TV/bumper"]]
+						,["unloadViewModel",["SkillGameInstructionsViewModel"]]
+						,["unloadView", ["video", "OUTRO"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"resume"
+							,"targets":["PMASkillGameActive"]
+						}
+						,{
+							"event":"advanceFromPMAInstructions"
+							,"targets":["PMASkillGameActive"]
+						}
+
+					]
+				}
+				,{
+					"name":"PMASkillGameActive"
+					,"onEnter":
+					[	
+						["sendAction", ["transitionManager", ".NavTransitionManager.TO_GAME"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"showResults"
+							,"targets":["resultsOverlay"]
+						}
+					]
+				}
+				,{
+					"onEnter":
+					[	
+						["sendAction", ["transitionManager", ".NavTransitionManager.TO_FE"]]
+					]
+					,"states":
+					[
+						{
+							"name":"resultsOverlay"
+							,"onEnter":
+							[
+								["loadViewModel",["SkillGameResultsViewModel"]]
+								,["loadViewModel",["SkillGamesLeaderboardViewModel"]]
+								,["loadView",["screen", "game/screens/skillGames/SkillGameResults", "", ".direction"]]
+							]
+							,"onExit":
+							[
+								["unloadView",["screen", "game/screens/skillGames/SkillGameResults"]]
+								,["unloadViewModel",["SkillGamesLeaderboardViewModel"]]
+								,["unloadViewModel",["SkillGameResultsViewModel"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"restart"
+									,"targets":["PMASkillGameActive"]
+								}
+								,{
+									"event":"advanceFromPMAResults"
+									,"targets":["PMASkillGameActive"]
+								}
+							]
+						}
+					]
+				}
+			]
+		}
+		,{
+			"name":"gameActive"
+			,"initial":
+			{
+				"targets":["InGame"]
+			}
+			,"onEnter":
+			[	
+				["sendAction", ["transitionManager", ".NavTransitionManager.TO_GAME"]]
+			]
+			,"onExit":
+			[
+				["sendAction", ["transitionManager", ".NavTransitionManager.TO_FE"]]
+			]
+			,"transitions":
+			[
+				{
+					"event":"quit"
+					,"targets":["quit"]
+					,"let":{ "direction":"back" }
+				}
+				,{ "event":"evt_notify_controller_disconnect", "targets":["sideSelect"] }
+				,{
+					"event":"evt_notify_lead_controller_changed"
+					,"targets":["sideSelect"]
+				}
+			]
+			,"states":
+			[
+				{
+					"name":"InGame"
+					,"transitions":
+					[
+						{ "event":"Draw","targets":["Draw"] }
+						,{ "event":"HalfTime","targets":["HalfTime"] }
+						,{ "event":"MatchEnded","targets":["MatchEnded"] }
+						,{ "event":"PenaltyShoot","targets":["MatchDetailsPenalties"] }
+						,{ "event":"MatchForfeit","targets":["MatchForfeit"] }
+						,{ "event":"ForceSubstitution","targets":["teamSheetEditor"] }
+						,{ "event":"VotingMenu","targets":["VotingMenu"] }
+					]
+				}
+				,{
+					"name":"PostGame"
+					,"states":
+					[
+						{
+							"name":"Draw"
+							,"onEnter":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.DRAW"]]
+							]
+						}
+						,{
+							"name":"HalfTime"
+							,"onEnter":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.HALF_TIME"]]
+							]
+						}
+						,{
+							"name":"MatchEnded"
+							,"onEnter":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.POSTGAME"]]
+							]
+						}
+					]
+					,"transitions":
+					[
+						{
+							"event":"KickOffMatchResults"
+							,"targets":["MatchDetailsEndGame"]
+						}
+						,{
+							"event":"KickOffEndGame"
+							,"targets":["matchHighlights"]
+							, "let":{ "returnToMenu": "0" }
+						}
+						,{
+							"event":"CareerMatchResults"
+							,"targets":["CareerMatchResults"]
+						}
+						,{
+							"event":"CareerMatchResultsPostGame"
+							,"targets":["CareerMatchResultsPostGame"]
+						}
+						,{
+							"event":"ManOfTheMatch"
+							,"targets":["PlayerPerformanceFromGame"]
+						}
+						,{
+							"event":"ManOfTheMatchPlayerCareer"
+							,"targets":["ManOfTheMatchPlayerCareer"]
+						}
+						,{
+							"event":"ManOfTheMatchClubs"
+							,"targets":["ManOfTheMatchClubs"]
+						}
+						,{
+							"event":"ManOfTheMatchClubsCup"
+							,"targets":["ManOfTheMatchClubsCup"]
+						}
+						,{
+							"event":"OnlineSeasonsSummary"
+							,"targets":["OnlineSeasonsSummary"]
+						}
+						,{
+							"event":"VotingMenu"
+							,"targets":["VotingMenu"]
+						}
+					]
+				}
+			]
+		}
+		,{
+			"name":"GamePaused"
+			,"onEnter":
+			[
+				["sendAction",["updateScreen", "TM_CacheTeamSheets"]]
+			]
+			,"onExit":
+			[
+				["sendAction",["updateScreen", "TM_ClearTeamSheetsCache"]]
+			]
+			,"transitions":
+			[
+				{ "event":"resume", "targets":["gameActive"], "let":{ "direction":"back" } }
+				,{ "event":"evt_notify_controller_disconnect", "targets":["sideSelect"] }
+				,{ "event":"quit", "targets":["quit"] }
+			]
+			,"states":
+			[
+				{
+					"name":"PauseMenu"
+					,"initial":
+					{
+						"targets":["PauseMenuIdle"]
+					}
+					,"onEnter":
+					[
+						["loadViewModel",["FluxViewModel"]]
+						,["loadViewModel",["PauseHubViewModel", ".isGamePaused"]]
+						,["loadViewModel",["StartingXIViewModel"]]
+						,["loadViewModel",["easfcRecommendViewModel", "1"]]
+						,["loadView",["screen", "game/screens/fluxHub/FluxHub", "", ".direction"]]
+						,["loadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+					]
+					,"onExit":
+					[
+						["unloadView",["screen", "game/screens/fluxHub/FluxHub"]]
+						,["unloadViewModel",["easfcRecommendViewModel"]]
+						,["unloadViewModel",["StartingXIViewModel"]]
+						,["unloadViewModel",["PauseHubViewModel"]]
+						,["unloadViewModel",["FluxViewModel"]]
+						,["unloadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+					]
+					,"states":
+					[
+						{
+							"states":
+							[
+								{
+									"name":"PauseMenuIdle"
+									,"onEnter":
+									[
+										["loadViewModel", ["ScreenTimeoutViewModel", "FADE_PAUSE_MENU"]]
+									]
+									,"onExit":
+									[
+										["unloadViewModel", ["ScreenTimeoutViewModel"]]
+									]
+								}
+								,{
+									"name":"PauseMenuNoScreenSaver"
+									,"transitions":
+									[
+										{"event":"evt_state_idle", "targets":["PauseMenuIdle"]}
+										,{"event":"evt_popup_exit", "targets":["PauseMenuIdle"]}
+									]
+								}
+							]
+							,"transitions":
+							[
+								{"event":"evt_countdown_done", "targets":["StadiumPan"]}
+								,{"event":"evt_no_screensaver", "targets":["PauseMenuNoScreenSaver"]}
+								,{"event":"evt_popup_enter", "targets":["PauseMenuNoScreenSaver"]}
+								,{"event":"TrainerSettings", "targets":["TrainerSettings"]}
+								,{
+									"event":"CareerQuitMatch"
+									,"targets":["QuitMatchCareerDecision"]
+								}
+								,{
+									"event":"MutualOnlineQuit"
+									,"actions":[ ["sendScreenEvent", ["QuitMatchManualOnline"]] ]
+								}
+								,{
+									"event":"OnlineEndMatchQuit"
+									,"targets":["QuitEndMatchOnline"]
+								}
+								,{
+									"event":"OnlineQuit"
+									,"targets":["QuitMatchOnline"]
+								}
+								,{
+									"event":"QuitMatch"
+									,"targets":["QuitMatch"]
+								}
+								,{
+									"event":"RestartMatch"
+									,"targets":["RestartMatch"]
+								}
+								,{
+									"event":"RestartWithNewTeams"
+									,"targets":["RestartWithNewTeams"]
+								}
+								,{
+									"event":"SimRestofMatch"
+									,"targets":["SimRestofMatch"]
+								}
+								,{
+									"event":"adaptiveDifficultyDetectedPopup"
+									,"actions":[ ["sendAction",["adaptiveDifficultyDetectedPopup"]] ]
+								}
+								,{
+									"event":"adaptiveDifficultyUpPopup"
+									,"actions":[ ["sendAction",["adaptiveDifficultyUpPopup"]] ]
+								}
+								,{
+									"event":"adaptiveDifficultyDownPopup"
+									,"actions":[ ["sendAction",["adaptiveDifficultyDownPopup"]] ]
+								}
+								,{
+									"event":"OnlineSeasonsSummary"
+									,"targets":["OnlineSeasonsSummary"]
+								}
+								,{
+									"event":"REMOTE_PLAY"
+									,"targets":["remotePlay"]
+								}
+								,{
+									"event":"openMuteScreen"
+									,"targets":["MuteScreenFromPause"]
+								}
+								,{
+									"event":"enterMatchDayTab"
+									,"actions":
+									[
+										["unloadView",["widget", "game/components/FIFAScoreClock.swf"]]
+									]
+								}
+								,{
+									"event":"exitMatchDayTab"
+									,"actions":
+									[
+										["loadView",["widget", "game/components/FIFAScoreClock.swf"]]
+									]
+								}
+								,{
+									"event":"VotingMenu"
+									,"targets":["VotingMenu"]
+								}
+							]
+						}
+						,{
+							"name":"TrainerSettings"
+							,"onEnter":
+							[
+								["loadViewModel", ["TrainerSettingsViewModel"]]
+							]
+							,"onExit":
+							[
+								["unloadViewModel", ["TrainerSettingsViewModel"]]
+							]
+							,"transitions":
+							[
+								{"event":"back", "targets":["PauseMenuIdle"],"let":{ "direction":"back" }}
+							]
+						}
+						,{
+							"name":"RestartMatch"
+							,"onEnter":
+							[
+								["loadView", ["popup", "RestartConf", "RestartConf|YesRestart|restart|Cancel|back", "-1|1"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["popup", "RestartConf"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"restart"
+									,"actions":[ ["sendScreenEvent", ["RestartMatch"]] ]
+									,"targets":["gameActive"]
+									,"let":{ "direction":"back" }
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+							]
+						}
+						,{
+							"name":"RestartWithNewTeams"
+							,"onEnter":
+							[
+								["loadView", ["popup", "RestartWithNewTeamsPopup", "Popup_restartWithNewTeams|YesRestart|restart|Cancel|cancel", "-1|1"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["popup", "RestartWithNewTeamsPopup"]]
+							]
+							,"transitions":
+							[
+                                {
+                                    "event":"restart"
+                                    ,"actions":
+                                    [
+                                        ["sendAction", ["setStadiumPosition", ".StadiumFECameras.STADIUM_FE_CAMERA_STEP_1"] ]
+                                        ,["sendAction", ["restartWithNewTeams"]]
+                                        ,["sendScreenEvent", ["UxSetFlowSubState",".eSubState.PREGAME"]]    
+                                    ]
+                                }
+                                ,{
+                                    "event":"cancel"
+                                    ,"targets":["PauseMenuIdle"]
+                                }
+                            ]
+						}
+						,{
+							"name":"QuitMatch"
+							,"initial":
+							{
+								"targets":["Initial_QuitMatch"]
+							}
+							,"onEnter":
+							[
+								["sendScreenEvent", ["QuitMatch"]]
+							]
+							,"states":
+							[
+								{
+									"name":"Initial_QuitMatch"
+									,"transitions":
+									[
+										{
+											"event":"DemoVersion_QuitMatch"
+											,"targets":["DemoVersion_QuitMatch"]
+										}
+										,{
+											"event":"FinalVersion_QuitMatch"
+											,"targets":["FinalVersion_QuitMatch"]
+										}
+										,{
+											"event":"ADIFF_QuitToConf"
+											,"targets":["ADIFF_QuitToConf"]
+										}
+										,{
+											"event":"IntroMatch_QuitToConf"
+											,"targets":["IntroMatch_QuitToConf"]
+										}
+									]
+								}
+								,{
+									"name":"DemoVersion_QuitMatch"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatch", "DEMO_QuitToConf|YesQuit|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatch"]]
+									]
+								}
+								,{
+									"name":"FinalVersion_QuitMatch"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatch", "QuitToConf|YesQuit|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatch"]]
+									]
+								}
+								,{
+									"name":"ADIFF_QuitToConf"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatch", "ADIFF_QuitToConf|YesQuit|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatch"]]
+									]
+								}
+								,{
+									"name":"IntroMatch_QuitToConf"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatch", "QuitToConfSimple|YesQuit|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatch"]]
+									]
+								}
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"actions":
+									[ 
+										["sendAction", ["backendExit"]]
+										,["sendScreenEvent", ["ProcessQuitMatch"]] 
+									]
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+							]
+						}
+						,{
+							"name":"QuitEndMatchOnline"
+							,"initial":
+							{
+								"targets":["Initial_QuitEndMatchOnline"]
+							}
+							,"onEnter":
+							[
+								["sendScreenEvent", ["QuitEndMatchOnline"]]
+							]
+							,"states":
+							[
+								{
+									"name":"Initial_QuitEndMatchOnline"
+									,"transitions":
+									[
+										{
+											"event":"OnlineClubs_QuitEndMatchOnline"
+											,"targets":["OnlineClubs_QuitEndMatchOnline"]
+										}
+										,{
+											"event":"Other_QuitEndMatchOnline"
+											,"targets":["Other_QuitEndMatchOnline"]
+										}
+									]
+								}
+								,{
+									"name":"OnlineClubs_QuitEndMatchOnline"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitEndMatchOnline", "QuitConfGeneral|TXT_ONLINE_RETURNTOMATCHLOBBY|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitEndMatchOnline"]]
+									]
+								}
+								,{
+									"name":"Other_QuitEndMatchOnline"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitEndMatchOnline", "QuitConfGeneral|QuitGame|advance|Cancel|back", "-1|1"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitEndMatchOnline"]]
+									]
+								}
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"actions":
+									[ 
+										["sendAction", ["backendExit"]]
+										,["sendScreenEvent", ["ProcessQuitEndMatchOnline"]] 
+									]
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+								,{
+									"event":"OnlineSeasonsSummary"
+									,"targets":["OnlineSeasonsSummary"]
+								}
+							]
+						}
+						,{
+							"name":"QuitMatchOnline"
+							,"initial":
+							{
+								"targets":["Initial_QuitMatchOnline"]
+							}
+							,"onEnter":
+							[
+								["sendScreenEvent", ["QuitMatchOnline"]]
+							]
+							,"states":
+							[
+								{
+									"name":"Initial_QuitMatchOnline"
+									,"transitions":
+									[
+										{
+											"event":"Ranked_QuitMatchOnline"
+											,"targets":[ "Ranked_QuitMatchOnline" ]
+										}
+										,{
+											"event":"Unranked_QuitMatchOnline"
+											,"targets":[ "Unranked_QuitMatchOnline" ]
+										}
+									]
+								}
+								,{
+									"name":"Ranked_QuitMatchOnline"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatchOnline", "QuitCreatedSession|NO|back|YES|advance"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatchOnline"]]
+									]
+								}
+								,{
+									"name":"Unranked_QuitMatchOnline"
+									,"onEnter":
+									[
+										["loadView", ["popup", "QuitMatchOnline", "QuitCreatedSession_Unranked|NO|back|YES|advance"]]
+									]
+									,"onExit":
+									[
+										["unloadView", ["popup", "QuitMatchOnline"]]
+									]
+								}
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"actions":
+									[ 
+										["sendAction", ["backendExit"]]
+										,["sendScreenEvent", ["ProcessQuitMatchOnline"]] 
+									]
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+							]
+						}
+						,{
+							"name":"QuitMatchCareerDecision"
+							,"onEnter": 
+							[
+								["sendScreenEvent", ["QuitMatchCareerCheck"]] 
+							]
+							,"transitions":
+							[
+								{ "event":"QuitMatchCareer", "targets":["QuitMatchCareer"] }
+								,{ "event":"QuitCareerInvalidController", "targets":["QuitCareerInvalidController"] }
+							]
+						}
+						,{
+							"name":"QuitCareerInvalidController"
+							,"onEnter":
+							[
+								["loadView", ["popup", "QuitCareerInvalidController", "WarningMouseNotSoported|Ok|advance"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["popup", "QuitCareerInvalidController"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"targets":["PauseMenuIdle"]
+								}
+							]
+						}
+						,{
+							"name":"QuitMatchCareer"
+							,"onEnter":
+							[
+								["loadView", ["popup", "QuitMatchCareer", "ForfeitConf|YesForfeit|advance|Cancel|back", "-1|1"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["popup", "QuitMatchCareer"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"actions":
+									[ 
+										["sendAction", ["backendExit"]]
+										,["sendScreenEvent", ["QuitMatchCareer"]] 
+									]
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+								,{
+									"event":"CareerMatchResults"
+									,"targets":["CareerMatchResults"]
+								}
+							]
+						}
+						,{
+							"name":"SimRestofMatch"
+							,"onEnter":
+							[
+								["loadView", ["popup", "SimRestofMatch", "SimMatchConf|YesSimMatch|advance|Cancel|back", "-1|1"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["popup", "SimRestofMatch"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"actions":
+									[
+										["sendAction", ["backendExit"]]
+										,["sendScreenEvent", ["UxSetGameOption", "10"]]
+										,["sendScreenEvent", ["UxSetFlowSubState", ".eSubState.UNLOADING"]]
+										,["sendScreenEvent", ["CareerSimMatch"]]
+										,["sendAction", ["quit"]]
+									]
+								}
+								,{
+									"event":"back"
+									,"targets":["PauseMenuIdle"]
+								}
+							]
+						}
+						,{
+							"name":"remotePlay"
+							,"onEnter":
+							[
+								["loadView", ["screen", "game/screens/settings/RemotePlay", "", ".direction"]]
+							]
+							,"onExit":
+							[
+								["unloadView",["screen", "game/screens/settings/RemotePlay", "", ".direction"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["GamePaused"]
+								}
+							]				
+						}
+					]
+					,"transitions":
+					[
+						{
+							"event":"resume"
+							,"targets":["gameActive"]
+							,"let":{ "direction":"back" }
+						}
+						,{
+							"event":"ResumeMatch"
+							,"actions":[ ["sendScreenEvent", ["ResumeMatch"]] ]
+						}
+						,{
+							"event":"quit"
+							,"targets":["quit"]
+							,"let":{ "direction":"back" }
+						}
+						,{
+							"event":"back"
+							,"targets":["quit"]
+							,"let":{ "direction":"back" }
+						}
+						,{
+							"event":"pause"
+							,"targets":["PauseMenu"]
+						}
+						,{
+							"event":"SelectSides"
+							,"targets":["sideSelect"]
+						}
+						,{
+							"event":"TeamManagement"
+							,"targets":["teamSheetEditor"]
+						}
+						,{
+							"event":"InstantReplay"
+							,"targets":["instantReplay"]
+						}
+						,{
+							"event":"MatchHighlights"
+							,"targets":["matchHighlights"]
+							, "let":{ "returnToMenu": "1" }
+						}
+						,{
+							"event":"HelpKinect"
+							,"targets":["HelpKinect"]
+						}
+						,{ "event":"evt_notify_controller_disconnect", "targets":["sideSelect"] }
+						,{
+							"event":"evt_notify_lead_controller_changed"
+							,"targets":["sideSelect"]
+						}
+						,{
+							"event":"SettingsGame"
+							,"actions":[ ["sendScreenEvent", ["SetSettingsFromPauseMenu"]] ]
+							,"targets":["SettingsGame"]
+						}
+						,{
+							"event":"SettingsController"
+							,"targets":["SettingsController"]
+						}
+						,{
+							"event":"SettingsVideoBrightness"
+							,"targets":["SettingsVideoBrightness"]
+						}
+						,{
+							"event":"HelpBasic"
+							,"targets":["HelpBasic"]
+						}
+						,{
+							"event":"HelpSkillMoves"
+							,"targets":["HelpSkillMoves"]
+						}
+						,{
+							"event":"HelpCelebrations"
+							,"targets":["HelpCelebrations"]
+						}
+						,{
+							"event":"KIN_BasicSettings"
+							,"actions":[ ["sendScreenEvent", ["UXSetKinectSettingsContext", "KIN_BasicSettings"]] ]
+							,"targets":["SettingsGame"]
+						}
+						,{
+							"event":"KIN_ComboSettings"
+							,"actions":[ ["sendScreenEvent", ["UXSetKinectSettingsContext", "KIN_ComboSettings"]] ]
+							,"targets":["SettingsGame"]
+						}
+						,{
+							"event":"KIN_CustomSettings"
+							,"actions":[ ["sendScreenEvent", ["UXSetKinectSettingsContext", "KIN_CustomSettings"]] ]
+							,"targets":["SettingsGame"]
+						}
+						,{
+							"event":"KIN_FormationSettings"
+							,"actions":[ ["sendScreenEvent", ["UXSetKinectSettingsContext", "KIN_FormationSettings"]] ]
+							,"targets":["SettingsGame"]
+						}
+						/* Use the large quit tile in demo, pity it's destination is non generic */
+						,{"event":"AdvanceCareer","cond":["==",".FIFA_DEMO",true],"targets":["quit"]}
+						,{"event":"AdvanceCareer","actions":[["sendScreenEvent", ["CareerAdvance"]],["sendScreenEvent", ["UxSetFlowSubState", ".eSubState.UNLOADING"]],["sendAction", ["quit"]]],"targets":["CareerMatchResults"]}	
+						,{
+							"event":"PowRecommend0"
+							,"actions":[ ["sendScreenEvent", ["ProcessRecommendation", "0"]] ]
+						}
+						,{
+							"event":"PowRecommend1"
+							,"actions":[ ["sendScreenEvent", ["ProcessRecommendation", "1"]] ]
+						}
+						,{
+							"event":"PowRecommend2"
+							,"actions":[ ["sendScreenEvent", ["ProcessRecommendation", "2"]] ]
+						}
+						,{
+							"event":"PowRecommend3"
+							,"actions":[ ["sendScreenEvent", ["ProcessRecommendation", "3"]] ]
+						}
+						,{
+							"event":"PowRecommend4"
+							,"actions":[ ["sendScreenEvent", ["ProcessRecommendation", "4"]] ]
+						}
+						,{
+							"event":"EndMatchAsADraw"
+							,"actions":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.POSTGAME"]]
+								,["sendScreenEvent", ["EndMatchAsDraw"]]
+							]
+							,"targets":["matchHighlights"]
+							, "let":{ "returnToMenu": "0" }
+						}
+						,{
+							"event":"ExtraTimeClassic"
+							,"actions":
+							[
+								[ "sendScreenEvent", ["UxSetGameOption", "3"] ]
+								,[ "sendScreenEvent", ["UxSetFlowSubState", ".eSubState.INGAME"] ]
+								,[ "sendAction", ["resume"] ]
+							]
+						}
+						,{
+							"event":"ExtraTimeGoldenGoal"
+							,"actions":
+							[
+								[ "sendScreenEvent", ["UxSetGameOption", "5"] ]
+								,[ "sendScreenEvent", ["UxSetFlowSubState", ".eSubState.INGAME"] ]
+								,[ "sendAction", ["resume"] ]
+							]
+						}
+						,{
+							"event":"PenaltyShootOut"
+							,"targets":["PenaltyShootOut"]
+						}
+						,{ "event":"MatchFacts", "targets":[ "MatchDetailsPause" ] }
+						,{ "event":"PlayerRatings","targets":["PlayerRatings"]}
+						,{
+							"event":"ManOfTheMatch"
+							,"targets":["PlayerPerformanceFromPause"]
+						}
+						,{
+							"event":"ManOfTheMatchClubs"
+							,"targets":["ManOfTheMatchClubs"]
+						}
+						,{
+							"event":"ManOfTheMatchClubsCup"
+							,"targets":["ManOfTheMatchClubsCup"]
+						}
+						,{
+							"event":"RequestSub"
+							,"actions":
+							[
+								["sendScreenEvent", ["UxSetGameOption", "13"]]
+								,["sendAction", ["resume"]]
+							]
+						}
+						,{
+							"event":"Vpro_Accomplishments"
+							,"targets":["VProAccomplishments"]
+						}
+					]
+				}
+				,{
+					"name":"StadiumPanTransitionHandler"
+					,"states":
+					[
+						{
+							"name":"StadiumPan"
+							,"type":"external"
+							,"file":"/stadiumPanFlow.nav"
+							,"outputs":
+							{
+								"out_back":"PauseMenu"
+							}
+						}
+					]
+					,"transitions":
+					[
+						{
+							"event":"VotingMenu"
+							,"targets":["VotingMenu"]
+						}
+					]
+				}
+				,{
+					"name":"sideSelect"
+					,"onEnter":
+					[
+						["loadViewModel",["SideSelectViewModel", ".direction"]],
+						["loadView",["screen", "game/screens/playNow/SideSelect", "", ".direction"]]
+					]
+					,"onExit":
+					[
+						["unloadViewModel",["SideSelectViewModel"]],
+						["unloadView",["screen", "game/screens/playNow/SideSelect"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"pause"
+							,"targets":["PauseMenu"]
+						}
+						,{
+							"event":"back"
+							,"targets":["PauseMenu"]
+							,"let":{ "direction":"back" }
+						}
+						,{
+							"event":"btnY"
+							,"targets":["controllerAndGameSetup"]
+						}
+						,{
+							"event":"quit"
+							,"targets":["quit"]
+						}
+					]				
+				}
+				,{
+					"name":"teamSheetEditor"
+					,"onEnter":
+					[
+						["sendAction", ["updateScreen", "TM_SetTeamManagementMode"] ]
+					]
+					,"transitions":
+					[
+						{	"event":"offlinePauseHub"
+							,"let":{"tmMode":"offlinePauseHub"}
+							,"targets":["teamSheetEditorExternal"]
+						}
+						,{	"event":"onlinePauseSeasons"
+							,"let":{"tmMode":"onlinePauseSeasons"}
+							,"targets":["onlineTeamSheetEditorExternal"]
+						}
+						,{	"event":"onlinePauseFriendlies"
+							,"let":{"tmMode":"onlinePauseFriendlies"}
+							,"targets":["onlineTeamSheetEditorExternal"]
+						}
+						,{	"event":"onlinePauseOTP"
+							,"let":{"tmMode":"onlinePauseOTP"}
+							,"targets":["onlineTeamSheetEditorExternal"]
+						}
+						,{	"event":"onlinePauseClubs"
+							,"let":{"tmMode":"onlinePauseClubs"}
+							,"targets":["onlineTeamSheetEditorExternal"]
+						}
+						,{	"event":"noSideSelected"
+							,"let":{"tmMode":"noSideSelected"}
+							,"targets":["noSideSelectedPopUp"]
+						}
+
+					]
+				}
+				,{
+					"states":
+					[
+						{
+							"name":"onlineTeamSheetEditorExternal"
+							,"type":"external"
+							,"file":"/editTeamSheetFlow.nav"
+							,"outputs":
+							{
+								"back":"PauseMenu"
+							}
+						}
+					]
+					,"transitions":
+					[
+						{
+							"event":"VotingMenu"
+							,"targets":["VotingMenu"]
+						}
+					]
+				}
+				,{
+					"name":"teamSheetEditorExternal"
+					,"type":"external"
+					,"file":"/editTeamSheetFlow.nav"
+					,"outputs":
+					{
+						"back":"PauseMenu"
+					}
+				}
+				,{
+					"name":"noSideSelectedPopUp"
+					,"onEnter":
+					[
+						["loadView", ["popup", "NoSideSelected", "TXT_NEED_SIDE_TO_CONTINUE|Back|back"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["popup", "NoSideSelected"]]
+
+					]
+					,"transitions":
+					[
+						{
+							"event":"back"
+							,"targets":["PauseMenu"]
+						}
+					]
+				}
+				,{
+					"name":"controllerAndGameSetup"
+					,"onEnter":
+					[
+						["loadView",["screen", "game/screens/settings/controllerAndGameSetup", "", ".direction"]]
+					]
+					,"onExit":
+					[
+						["unloadView",["screen", "game/screens/settings/controllerAndGameSetup", "", ".direction"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"back"
+							,"targets":["sideSelect"]
+							,"let":{ "direction":"back" }
+						}
+					]				
+				}
+				,{
+					"name":"instantReplay"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/instantReplay/ReplayScreen", "", ".direction"]]
+					]
+					,"onExit":
+					[
+						["unloadView",["screen", "game/screens/instantReplay/ReplayScreen", "", ".direction"]]
+					]
+					,"transitions":
+					[
+						{"event":"back","targets":["PauseMenu"],"let":{ "direction":"back"}}
+					]	
+				}
+				,{
+					"name":"matchHighlights"
+					,"onEnter":
+					[
+						["loadViewModel",["MatchHighlightViewModel", ".returnToMenu"]]
+					]
+					,"onExit":
+					[
+						["unloadViewModel",["MatchHighlightViewModel"]]
+					]
+					,"initial":
+					{
+						"targets":["matchHighlightsScreen"]
+					}
+					,"states":
+					[
+						{
+							"name":"matchHighlightsScreen"
+							,"onEnter":
+							[
+								["loadView", ["screen", "game/screens/postGameFlow/MatchHighlights", "", ".direction"]]
+							]
+							,"onExit":
+							[
+								["unloadView",["screen", "game/screens/postGameFlow/MatchHighlights", "", ".direction"]]
+							]
+							,"transitions":
+							[
+								{"event":"advance","targets":["PauseMenu"]}
+								,{"event":"back","targets":["PauseMenu"],"let":{ "direction":"back" }}
+								,{"event":"postMatchHighlightSelect","targets":["matchHighlightViewer"]}
+								,{"event":"postMatchHighlightReelSelect","targets":["matchHighlightViewer"]}
+							]
+						}
+						,{
+							"name":"matchHighlightViewer"
+							,"onEnter":
+							[
+								["loadView", ["screen", "game/screens/postGameFlow/MatchHighlightViewer", "forward", ".direction"]]
+							]
+							,"onExit":
+							[
+								["unloadView",["screen", "game/screens/postGameFlow/MatchHighlightViewer", "back", ".direction"]]
+							]
+							,"transitions":
+							[
+								{"event":"postMatchHighlightExit","targets":["matchHighlightsScreen"],"let":{ "direction":"back" }}
+								,{"event":"postMatchHighlightIRSelect","targets":["instantReplayHighlight"]}
+								,{"event":"postMatchHighlightComplete","targets":["matchHighlightsScreen"],"let":{ "direction":"back" }}
+							]				
+						}
+						,{
+							"name":"instantReplayHighlight"
+							,"onEnter":
+							[
+								["loadView", ["screen", "game/screens/instantReplay/ReplayScreen", "", ".direction"]]
+							]
+							,"onExit":
+							[
+								["unloadView",["screen", "game/screens/instantReplay/ReplayScreen", "", ".direction"]]
+							]
+							,"transitions":
+							[
+								{"event":"back","targets":["matchHighlightsScreen"], "let":{ "direction":"back"}}
+							]	
+						}
+					]
+				}	
+				,{
+					"name":"settingsFlow"
+					,"type":"external"
+					,"file":"/settingsFlow.nav"
+					,"inputs":
+					{
+						"SettingsGame":"SettingsGame"
+						,"SettingsController":"SettingsController"
+						,"SettingsVideoBrightness":"SettingsVideoBrightness"
+					}
+					,"outputs":
+					{
+						"back":"PauseMenu"
+						,"out_notify_controller_disconnect":"sideSelect"
+					}
+				}
+				,{
+					"name":"helpFlow"
+					,"type":"external"
+					,"file":"/helpFlow.nav"
+					,"inputs":
+					{
+						"HelpBasic":"HelpBasic"
+						,"HelpSkillMoves":"HelpSkillMoves"
+						,"HelpCelebrations":"HelpCelebrations"
+						,"HelpKinect":"HelpKinect"
+					}
+					,"outputs":
+					{
+						"back":"PauseMenu"
+					}
+				}
+				,{
+					"name":"MatchDetailsPause"
+					,"onEnter":
+					[
+						["loadViewModel",["MatchDetailsViewModel", "fromPause"]]
+						,["loadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+						,["unloadViewModel",["MatchDetailsViewModel"]]
+					]
+					,"transitions":
+					[
+						{ "event":"back", "targets":["PauseMenu"] }
+					]
+				}
+				,{
+					"name":"MatchDetailsEndGame"
+					,"onEnter":
+					[
+						["loadViewModel",["MatchDetailsViewModel", "fromEndGame"]]
+						,["loadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+						,["unloadViewModel",["MatchDetailsViewModel"]]
+					]
+					,"transitions":
+					[
+						{ "event":"advance", "targets":["PauseMenu"] }
+					]
+				}
+				,{
+					"name":"Penalties"
+					,"onEnter":
+					[
+						["loadViewModel",["MatchDetailsViewModel", "fromPenalties"]]
+					]
+					,"onExit":
+					[
+						["unloadViewModel",["MatchDetailsViewModel"]]
+					]
+					,"states":
+					[
+						{
+							"name":"MatchDetailsPenalties"
+							,"onEnter":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.PENALTY_SHOOTOUT"]]
+								,["loadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+							]
+							,"onExit":
+							[
+								["unloadView", ["screen", "game/screens/matchDetails/MatchDetails"]]
+							]
+							,"transitions":
+							[
+								{ "event":"advance", "targets":["ContinueToPenalties"] }
+							]
+						}
+						,{
+							"name":"ContinueToPenalties"
+							,"onEnter":
+							[
+								["sendAction",["condition", "isCareerModePAP"]]
+							]
+							,"transitions":
+							[
+								{ "event":"true","targets":["FromPenaltiesToGame"] }
+								,{ "event":"false", "targets":["PenaltyShootOut"] }
+							]
+						}
+						,{
+							"name":"FromPenaltiesToGame"
+							,"onEnter":
+							[
+								["sendScreenEvent", ["UxSetFlowSubState",".eSubState.INGAME"]]
+								,["invoke", ["goToGameActive"]] 
+							]
+							,"transitions":
+							[
+								{ "event":"goToGameActive","targets":["gameActive"] }
+							]
+						}
+					]
+				}
+				,{
+					"name":"CareerMatchResultsPostGame"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/career/Results", "", ""]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/career/Results", "", ""]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"advance"
+							,"targets":["matchHighlights"]
+							, "let":{ "returnToMenu": "0" }
+						}
+						,{
+							"event":"quit"
+							,"targets":["quit"]
+						}
+					]
+				}
+				,{
+					"name":"CareerMatchResults"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/career/Results", "", ""]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"advance"
+							,"actions":[ ["unloadView", ["screen", "game/screens/career/Results", "", ""]] ]
+							,"targets":["PauseMenu"]
+						}
+						,{
+							"event":"quit"
+							,"targets":["quit"]
+						}
+					]
+				}
+				,{
+					"name":"PlayerRatings"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/matchDetails/PlayerRatings"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/matchDetails/PlayerRatings"]]
+					]
+					,"transitions":
+					[
+						{"event":"back","targets":["PauseMenu"]}
+					]
+				}
+				,{
+					"name":"ManOfTheMatch"
+					,"onEnter":
+					[
+						["loadViewModel",["PlayerPerformanceViewModel"]]
+						,["loadView", ["screen", "game/screens/matchDetails/ManOfTheMatch", "", ""]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/matchDetails/ManOfTheMatch"]]
+						,["unloadViewModel",["PlayerPerformanceViewModel"]]
+					]
+					,"states":
+					[
+						{
+							"name":"PlayerPerformanceFromPause"
+							,"onEnter":
+							[
+								["sendAction", ["updateScreen","false"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["PauseMenu"]
+								}
+								,{
+									"event":"openMuteScreen"
+									,"targets":["MuteScreenFromPlayerPerformancePause"]
+								}
+							]
+						}
+						,{
+							"name":"ManOfTheMatchPlayerCareer"
+							,"onEnter":
+							[
+								["sendAction", ["updateScreen","true"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"targets":["matchHighlights"]
+									, "let":{ "returnToMenu": "0" }
+								}
+							]
+						}
+						,{
+							"name":"PlayerPerformanceFromGame"
+							,"onEnter":
+							[
+								["sendAction", ["updateScreen","true"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"targets":["PauseMenu"]
+								}
+							]
+						}
+						,{
+							"name":"ManOfTheMatchClubs"
+							,"onEnter":
+							[
+								["sendAction", ["updateScreen","true"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"targets":["OnlineSeasonsSummary"]
+								}
+								,{
+									"event":"openMuteScreen"
+									,"targets":["MuteScreenFromManOfTheMatchClubs"]
+								}
+							]
+						}
+						,{
+							"name":"ManOfTheMatchClubsCup"
+							,"onEnter":
+							[
+								["sendAction", ["updateScreen","true"]]
+							]
+							,"transitions":
+							[
+								{
+									"event":"advance"
+									,"targets":["PauseMenu"]
+								}
+								,{
+									"event":"openMuteScreen"
+									,"targets":["MuteScreenFromManOfTheMatchClubsCup"]
+								}
+							]
+						}
+					]
+				}
+				,{
+					"name":"PenaltyShootOut"
+					,"onEnter":
+					[
+						["sendScreenEvent", [ "UxSetGameOption", "2" ] ]
+						,[ "loadView", ["screen", "game/screens/postGameFlow/PenaltyKickSelect", "", "" ] ]
+					]
+					,"onExit":
+					[
+						[ "unloadView", ["screen", "game/screens/postGameFlow/PenaltyKickSelect"] ]
+					]
+					,"transitions":
+					[
+						{
+							"event":"advance"
+							,"targets":["gameActive"]
+						}
+					]
+				}
+				,{
+					"name":"OnlineSeasonsSummary"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/online/endofmatch/PostGame", "", ""]]
+						,["loadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+						,["unloadView", ["screen", "game/screens/online/endofmatch/PostGame"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"quit"
+							,"targets":["quit"]
+						}
+						,{
+							"event":"advance"
+							,"targets":["PauseMenu"]
+						}
+						,{
+							"event":"openMuteScreen"
+							,"targets":["MuteScreenFromOnlineSeasonsSummary"]
+						}
+					]
+				}
+				
+				,{
+					"name":"VotingMenu"
+					,"onEnter":
+					[
+						["sendAction", ["transitionManager", ".NavTransitionManager.TO_FE"]]
+						,["loadView", ["screen", "game/screens/online/endofmatch/Eom_votableOptionsMenu", "", ".direction"]]
+						,["loadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/online/endofmatch/Eom_votableOptionsMenu"]]
+						,["unloadView", ["widget", "game/components/FIFAScoreClock.swf"]]
+					]
+					,"transitions":
+					[
+						{"event":"back","targets":["PauseMenu"],"let":{ "direction":"back" }}
+						,{"event":"advance","targets":["OnlineSeasonsSummary"]}
+					]					
+				}
+				
+				,{				
+					"name":"VProAccomplishments"
+					,"onEnter":
+					[
+						["loadView", ["screen", "game/screens/virtualPro/VPro_Accomplishments", "", ""]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/virtualPro/VPro_Accomplishments"]]
+					]
+					,"transitions":
+					[
+						{
+							"event":"back"
+							,"targets":["PauseMenu"]
+						}
+					]
+				}
+				,{				
+					"name":"MuteScreen"
+					,"onEnter":
+					[
+						["loadViewModel",["VoipViewModel"]]
+						,["loadView", ["screen", "game/screens/online/MuteScreen", "", ""]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/online/MuteScreen"]]	
+						,["unloadViewModel",["VoipViewModel"]]
+					]
+					,"states":
+					[
+						{
+							"name":"MuteScreenFromPause"
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["PauseMenu"]
+								}
+							]
+						}					
+						,{
+							"name":"MuteScreenFromManOfTheMatchClubs"
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["ManOfTheMatchClubs"]
+								}
+							]
+						}					
+						,{
+							"name":"MuteScreenFromManOfTheMatchClubsCup"
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["ManOfTheMatchClubsCup"]
+								}
+							]
+						}
+						,{
+							"name":"MuteScreenFromPlayerPerformancePause"
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["PlayerPerformanceFromPause"]
+								}
+							]
+						}	
+						,{
+							"name":"MuteScreenFromOnlineSeasonsSummary"
+							,"transitions":
+							[
+								{
+									"event":"back"
+									,"targets":["OnlineSeasonsSummary"]
+								}
+							]
+						}					
+					]
+				}
+				,{
+					"name":"MatchForfeit"
+					,"onEnter":
+					[
+						["sendScreenEvent", ["UxSetFlowSubState",".eSubState.POSTGAME"]]	
+						, ["loadView", ["screen", "game/screens/postGameFlow/MatchForfeit"]]
+					]
+					,"onExit":
+					[
+						["unloadView", ["screen", "game/screens/postGameFlow/MatchForfeit"]]
+					]
+					,"transitions":
+					[
+						{ "event":"advance", "targets":["PauseMenu"] }
+					]
+				}
+			]
+		}
+		,{
+			"name":"OnlineInGameDisconnectFlow"
+			,"type":"external"
+			,"file":"/online/onlineInGameDisconnectFlow.nav"
+			,"inputs":
+			{
+				"ConnectionWithOpponentLostPopup":"in_ConnectionWithOpponentLostPopup"
+				,"ConnectionWithOpponentLostEomPopup":"in_ConnectionWithOpponentLostEomPopup"
+				,"MismatchingSquadPopup":"in_MismatchingSquadPopup"
+				,"MismatchingSquadEomPopup":"in_MismatchingSquadEomPopup"
+				,"IdlePlayerPopup":"in_IdlePlayerPopup"
+				,"IdlePlayerEomPopup":"in_IdlePlayerEomPopup"
+				,"MismatchingChangelistPopup":"in_MismatchingChangelistPopup"
+				,"MismatchingChangelistEomPopup":"in_MismatchingChangelistEomPopup"
+				,"OnlineDesyncPopup":"in_OnlineDesyncPopup"
+				,"KickFromOtp_CaptainKick":"in_KickFromOtp_CaptainKick"
+				,"KickFromOtp_ClubsForfeit":"in_KickFromOtp_ClubsForfeit"
+				,"KickFromOtp_ClubsOpponentForfeit":"in_KickFromOtp_ClubsOpponentForfeit"
+				,"KickFromOtp_CoopForfeit":"in_KickFromOtp_CoopForfeit"
+				,"KickFromOtp_CoopOpponentForfeit":"in_KickFromOtp_CoopOpponentForfeit"
+			}
+			,"outputs":
+			{
+				"out_PauseMenu":"PauseMenu"
+				,"out_Quit":"quit"
+			}
+		}
+	]
+}
