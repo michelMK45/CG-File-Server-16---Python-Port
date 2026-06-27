@@ -192,6 +192,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.camera_tab = None
         self.setup_tab = None
         self._setup_status_vars: dict = {}
+        self._setup_install_vars: dict = {}
         self.banner_title_label = None
         self.help_label = None
         self.page_banner = None

@@ -298,9 +298,12 @@ class StadiumRuntime:
         else:
             raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
         dest = app.exedir / "data" / "sceneassets"
-        # Clear stale files from the other injection slot before writing new ones
+        # Clear both slots before writing: removes stale custom files from the
+        # other slot and any vanilla files placed by apply_bootstrap_files from
+        # the current slot, so FIFA never reads a partially-overwritten file.
         other_id = "261" if injid == "176" else "176"
         clear_stadium_inj_files(dest, other_id)
+        clear_stadium_inj_files(dest, injid)
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
         glare3 = stad / "3"
