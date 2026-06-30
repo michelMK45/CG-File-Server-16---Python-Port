@@ -402,8 +402,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.exedir / "data" / "movies",
         ):
             checkdirs(path)
-        extra_setup(self.Psource, self.Pdest, "4", "4", "4")
-        extra_setup(self.Psource, self.Pdest, "9", "9", "9")
+        extra_setup(self.Psource, self.Pdest, "4", "policeofficer", "4")
+        extra_setup(self.Psource, self.Pdest, "9", "policeofficer", "9")
         extra_setup(self.Nsource, self.Ndest, "0", "netcolor", "0")
         extra_setup(self.PitchMowsource, self.PitchMowdest, "0", "pitchmowpattern", "0")
         copy(self.exedir / "FSW" / "stadium", self.exedir / "data" / "sceneassets")

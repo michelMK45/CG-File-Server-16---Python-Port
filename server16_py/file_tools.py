@@ -384,12 +384,13 @@ def extra_setup(source_dir: str | Path, dest_dir: str | Path, source_index: str,
         return
     token = f"_{source_index}"
     replacement = f"_{dest_index}"
+    check = f"{asset_prefix}_{source_index}_"
     for item in src_root.rglob("*"):
         if not item.is_file():
             continue
-        target_name = item.name.replace(token, replacement) if token in item.name else item.name
-        if asset_prefix.lower() not in target_name.lower() and asset_prefix not in {"4", "9"}:
+        if check.lower() not in item.name.lower():
             continue
+        target_name = item.name.replace(token, replacement)
         _copy_file_if_needed(item, dest_root / target_name)
 
 

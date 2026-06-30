@@ -1365,6 +1365,8 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
         source_row(left_col, "setup.item.fsw_stadium", "fsw_stadium")
         source_row(left_col, "setup.item.fsw_nav", "fsw_nav")
+        source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
+        source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
 
         section(left_col, "setup.section.user_folders")
         status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -1476,8 +1478,13 @@ class UIMixin:
             if not p.exists() or next((f for f in p.iterdir() if f.is_file()), None) is None:
                 return False
 
-        # FSW Stadium and Nav folders
-        for path in (exedir / "FSW" / "Stadium", exedir / "FSW" / "Nav"):
+        # FSW Stadium, Nav, ScoreBoard and TVLogo folders
+        for path in (
+            exedir / "FSW" / "Stadium",
+            exedir / "FSW" / "Nav",
+            exedir / "FSW" / "ScoreBoard",
+            exedir / "FSW" / "TVLogo",
+        ):
             if not _Path(path).exists():
                 return False
 
@@ -1545,7 +1552,7 @@ class UIMixin:
             p = Path(path)
             if not p.exists():
                 return -1
-            return sum(1 for f in p.iterdir() if f.is_file())
+            return sum(1 for f in p.iterdir() if f.is_file() and f.suffix.lower() != ".png")
 
         na = self.tr("setup.status.not_applicable")
         missing = self.tr("setup.status.missing")
@@ -1584,7 +1591,12 @@ class UIMixin:
             else:
                 _set(key, True, self.tr("setup.status.files").format(count=count))
 
-        for key, path in (("fsw_stadium", exedir / "FSW" / "Stadium"), ("fsw_nav", exedir / "FSW" / "Nav")):
+        for key, path in (
+            ("fsw_stadium", exedir / "FSW" / "Stadium"),
+            ("fsw_nav", exedir / "FSW" / "Nav"),
+            ("fsw_scoreboard", exedir / "FSW" / "ScoreBoard"),
+            ("fsw_tvlogo", exedir / "FSW" / "TVLogo"),
+        ):
             exists = Path(path).exists()
             _set(key, exists, ok_text if exists else missing)
 
@@ -1651,12 +1663,14 @@ class UIMixin:
             return
 
         install_vars = getattr(self, "_setup_install_vars", {})
-        do_settings = install_vars.get("settings_ini", tk.BooleanVar(value=True)).get()
-        do_police   = install_vars.get("fsw_police",   tk.BooleanVar(value=True)).get()
-        do_nets     = install_vars.get("fsw_nets",     tk.BooleanVar(value=True)).get()
-        do_pitch    = install_vars.get("fsw_pitch",    tk.BooleanVar(value=True)).get()
-        do_stadium  = install_vars.get("fsw_stadium",  tk.BooleanVar(value=True)).get()
-        do_nav      = install_vars.get("fsw_nav",      tk.BooleanVar(value=True)).get()
+        do_settings    = install_vars.get("settings_ini",  tk.BooleanVar(value=True)).get()
+        do_police      = install_vars.get("fsw_police",     tk.BooleanVar(value=True)).get()
+        do_nets        = install_vars.get("fsw_nets",       tk.BooleanVar(value=True)).get()
+        do_pitch       = install_vars.get("fsw_pitch",      tk.BooleanVar(value=True)).get()
+        do_stadium     = install_vars.get("fsw_stadium",    tk.BooleanVar(value=True)).get()
+        do_nav         = install_vars.get("fsw_nav",        tk.BooleanVar(value=True)).get()
+        do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
+        do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
@@ -1669,6 +1683,8 @@ class UIMixin:
         def _set_pb(value: float) -> None:
             if pb:
                 self.after(0, lambda v=value: pb.configure(value=v))
+
+        _setup_succeeded = [False]
 
         def _work() -> None:
             try:
@@ -1705,6 +1721,10 @@ class UIMixin:
                     skip_categories.add("pitch")
                 if not do_stadium:
                     skip_categories.add("stadium")
+                if not do_scoreboard:
+                    skip_categories.add("scoreboard")
+                if not do_tvlogo:
+                    skip_categories.add("tvlogo")
 
                 def _on_extract_progress(step: int, total: int) -> None:
                     _set_pb(10 + 80 * step / total)
@@ -1720,6 +1740,7 @@ class UIMixin:
                 self.setuppaths(load_team_database=False)
                 self.apply_bootstrap_files()
                 _set_pb(100)
+                _setup_succeeded[0] = True
             except Exception as exc:
                 self.log(f"Setup error: {exc}")
             finally:
@@ -1732,6 +1753,11 @@ class UIMixin:
             self.refresh_setup_tab()
             if btn:
                 btn.configure(state="normal")
+            if _setup_succeeded[0]:
+                messagebox.showinfo(
+                    self.tr("message.setup.complete_title"),
+                    self.tr("message.setup.complete_body"),
+                )
 
         threading.Thread(target=_work, daemon=True).start()
 
@@ -1771,7 +1797,7 @@ class UIMixin:
                 failed = 0
                 for i, big in enumerate(big_files):
                     try:
-                        BhFile.Regenerate(str(big), False)
+                        BhFile.Regenerate(str(big), True)
                         self.log(f"  {big.name} -> ok")
                         ok += 1
                     except Exception as exc:
