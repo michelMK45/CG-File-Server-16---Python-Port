@@ -91,7 +91,7 @@ class SettingsMixin:
         self.Ndest = self.exedir / "data" / "sceneassets" / "goalnet"
         self.PitchMowdest = self.exedir / "data" / "sceneassets" / "pitch"
         self.settings_ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
-        if not self.settings_ini.path.exists():
+        if not self.settings_ini.path.exists() and self.fifaEXE != "default":
             import shutil as _shutil
             src_ini = self.resource_dir / "install_data" / "FSW" / "settings.ini"
             if src_ini.exists():

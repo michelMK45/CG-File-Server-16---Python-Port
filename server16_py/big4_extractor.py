@@ -80,6 +80,8 @@ def extract_fsw_sources(
     exedir: Path,
     fsw_dir: Path,
     log: Callable[[str], None] | None = None,
+    skip: set[str] | None = None,
+    on_progress: Callable[[int, int], None] | None = None,
 ) -> None:
     """
     Extract vanilla FIFA 16 game files from the installation's .big archives
@@ -92,41 +94,94 @@ def extract_fsw_sources(
       FSW/Stadium/crowdplacement/ — crowd_176/261 placement data
       FSW/Stadium/fx/      — glares_176/261 light effect files
       FSW/Stadium/stadium/ — default stadium_176/261 model + textures
+      FSW/ScoreBoard/overlays/                      — overlay_9*.big scoreboard files
+      FSW/ScoreBoard/globalcomponents/overlaycomponents_9/ — overlaycomponents_9.big
+      FSW/TVLogo/          — overlay_9105.big default TV logo
+
+    skip: optional set of category names to omit — "police", "nets", "pitch", "stadium",
+          "scoreboard", "tvlogo"
     """
+    skip = skip or set()
+
     police_dir = fsw_dir / "Police"
     nets_dir = fsw_dir / "Nets"
     pitch_dir = fsw_dir / "PitchMowPattern"
     crowdplace_dir = fsw_dir / "Stadium" / "crowdplacement"
     fx_dir = fsw_dir / "Stadium" / "fx"
     stadium_dir = fsw_dir / "Stadium" / "stadium"
+    scoreboard_overlays_dir = fsw_dir / "ScoreBoard" / "overlays"
+    scoreboard_components_dir = fsw_dir / "ScoreBoard" / "globalcomponents" / "overlaycomponents_9"
+    tvlogo_dir = fsw_dir / "TVLogo"
 
     # data_graphic2.big: police variants 5, 6, 9 — nets 0-17 — pitch 0-15
     g2 = exedir / "data_graphic2.big"
-    if log:
-        log(f"BIG4: scanning {g2.name}")
-    _extract_matching(g2, [
-        ("policeofficer_", police_dir),
-        ("netcolor_", nets_dir),
-        ("pitchmowpattern_", pitch_dir),
-    ], log)
+    rules_g2 = []
+    if "police" not in skip:
+        rules_g2.append(("policeofficer_", police_dir))
+    if "nets" not in skip:
+        rules_g2.append(("netcolor_", nets_dir))
+    if "pitch" not in skip:
+        rules_g2.append(("pitchmowpattern_", pitch_dir))
+
+    # data_front_end.big: scoreboard overlay files and TV logo
+    rules_fe = []
+    if "scoreboard" not in skip:
+        rules_fe.append(("overlaycomponents_9", scoreboard_components_dir))
+    if "tvlogo" not in skip:
+        rules_fe.append(("overlay_9105", tvlogo_dir))  # must precede overlay_9 rule
+    if "scoreboard" not in skip:
+        rules_fe.append(("overlay_9", scoreboard_overlays_dir))
+
+    steps_done = 0
+    total_steps = sum([bool(rules_g2), True, "stadium" not in skip, bool(rules_fe)])
+
+    if rules_g2:
+        if log:
+            log(f"BIG4: scanning {g2.name}")
+        _extract_matching(g2, rules_g2, log)
+        steps_done += 1
+        if on_progress:
+            on_progress(steps_done, total_steps)
 
     # data_graphic2_extra.big: police 1-4, 7, 8, 10 — crowdplacement 176/261 — glares 176/261
     g2x = exedir / "data_graphic2_extra.big"
-    if log:
-        log(f"BIG4: scanning {g2x.name}")
-    _extract_matching(g2x, [
-        ("policeofficer_", police_dir),
-        ("crowd_176_", crowdplace_dir),
-        ("crowd_261_", crowdplace_dir),
-        ("glares_176_", fx_dir),
-        ("glares_261_", fx_dir),
-    ], log)
+    rules_g2x = []
+    if "police" not in skip:
+        rules_g2x.append(("policeofficer_", police_dir))
+    if "stadium" not in skip:
+        rules_g2x += [
+            ("crowd_176_", crowdplace_dir),
+            ("crowd_261_", crowdplace_dir),
+            ("glares_176_", fx_dir),
+            ("glares_261_", fx_dir),
+        ]
+    if rules_g2x:
+        if log:
+            log(f"BIG4: scanning {g2x.name}")
+        _extract_matching(g2x, rules_g2x, log)
+    steps_done += 1
+    if on_progress:
+        on_progress(steps_done, total_steps)
 
     # data_graphic1_extra.big: default stadium_176 and stadium_261 meshes + textures
-    g1x = exedir / "data_graphic1_extra.big"
-    if log:
-        log(f"BIG4: scanning {g1x.name}")
-    _extract_matching(g1x, [
-        ("stadium_176", stadium_dir),
-        ("stadium_261", stadium_dir),
-    ], log)
+    if "stadium" not in skip:
+        g1x = exedir / "data_graphic1_extra.big"
+        if log:
+            log(f"BIG4: scanning {g1x.name}")
+        _extract_matching(g1x, [
+            ("stadium_176", stadium_dir),
+            ("stadium_261", stadium_dir),
+        ], log)
+        steps_done += 1
+        if on_progress:
+            on_progress(steps_done, total_steps)
+
+    # data_front_end.big: scoreboard overlays and default TV logo
+    if rules_fe:
+        fe = exedir / "data_front_end.big"
+        if log:
+            log(f"BIG4: scanning {fe.name}")
+        _extract_matching(fe, rules_fe, log)
+        steps_done += 1
+        if on_progress:
+            on_progress(steps_done, total_steps)

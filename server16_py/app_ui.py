@@ -1276,7 +1276,7 @@ class UIMixin:
         footer.pack(side="bottom", fill="x", padx=12, pady=(4, 12))
         pb_row = tk.Frame(footer, bg=self.card)
         pb_row.pack(fill="x", pady=(0, 6))
-        self._setup_progressbar = ttk.Progressbar(pb_row, mode="indeterminate", style="Accent.Horizontal.TProgressbar")
+        self._setup_progressbar = ttk.Progressbar(pb_row, mode="determinate", maximum=100, style="Accent.Horizontal.TProgressbar")
         self._setup_progressbar.pack(side="left", fill="x", expand=True)
         self._setup_progress_label = tk.Label(pb_row, text="", bg=self.card, fg=self.muted, font=("Bahnschrift", 9), width=22, anchor="w")
         self._setup_progress_label.pack(side="left", padx=(8, 0))
@@ -1335,17 +1335,38 @@ class UIMixin:
             status_lbl.pack(side="right", padx=(4, 4))
             self._setup_status_vars[item_key] = (dot, status_lbl)
 
+        def source_row(parent: tk.Frame, label_key: str, item_key: str) -> None:
+            var = tk.BooleanVar(value=True)
+            self._setup_install_vars[item_key] = var
+            row = tk.Frame(parent, bg=self.card)
+            row.pack(fill="x", pady=2)
+            tk.Checkbutton(
+                row, variable=var,
+                bg=self.card, activebackground=self.card,
+                fg=self.fg, selectcolor=self.panel,
+                relief="flat", bd=0, cursor="hand2",
+                highlightthickness=0,
+            ).pack(side="left")
+            dot = tk.Label(row, text="○", bg=self.card, fg=self.muted, font=("Bahnschrift", 11), width=2)
+            dot.pack(side="left")
+            tk.Label(row, text=self.tr(label_key), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
+            status_lbl = tk.Label(row, text=self.tr("setup.status.not_applicable"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9), anchor="e")
+            status_lbl.pack(side="right", padx=(4, 4))
+            self._setup_status_vars[item_key] = (dot, status_lbl)
+
         # Left column: prerequisites + FSW sources + user folders
         section(left_col, "setup.section.prerequisites")
         status_row(left_col, "setup.item.fifa_exe", "fifa_exe")
 
         section(left_col, "setup.section.fsw_sources")
-        status_row(left_col, "setup.item.settings_ini", "settings_ini")
-        status_row(left_col, "setup.item.fsw_police", "fsw_police")
-        status_row(left_col, "setup.item.fsw_nets", "fsw_nets")
-        status_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
-        status_row(left_col, "setup.item.fsw_stadium", "fsw_stadium")
-        status_row(left_col, "setup.item.fsw_nav", "fsw_nav")
+        source_row(left_col, "setup.item.settings_ini", "settings_ini")
+        source_row(left_col, "setup.item.fsw_police", "fsw_police")
+        source_row(left_col, "setup.item.fsw_nets", "fsw_nets")
+        source_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
+        source_row(left_col, "setup.item.fsw_stadium", "fsw_stadium")
+        source_row(left_col, "setup.item.fsw_nav", "fsw_nav")
+        source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
+        source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
 
         section(left_col, "setup.section.user_folders")
         status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -1457,8 +1478,13 @@ class UIMixin:
             if not p.exists() or next((f for f in p.iterdir() if f.is_file()), None) is None:
                 return False
 
-        # FSW Stadium and Nav folders
-        for path in (exedir / "FSW" / "Stadium", exedir / "FSW" / "Nav"):
+        # FSW Stadium, Nav, ScoreBoard and TVLogo folders
+        for path in (
+            exedir / "FSW" / "Stadium",
+            exedir / "FSW" / "Nav",
+            exedir / "FSW" / "ScoreBoard",
+            exedir / "FSW" / "TVLogo",
+        ):
             if not _Path(path).exists():
                 return False
 
@@ -1526,7 +1552,7 @@ class UIMixin:
             p = Path(path)
             if not p.exists():
                 return -1
-            return sum(1 for f in p.iterdir() if f.is_file())
+            return sum(1 for f in p.iterdir() if f.is_file() and f.suffix.lower() != ".png")
 
         na = self.tr("setup.status.not_applicable")
         missing = self.tr("setup.status.missing")
@@ -1565,7 +1591,12 @@ class UIMixin:
             else:
                 _set(key, True, self.tr("setup.status.files").format(count=count))
 
-        for key, path in (("fsw_stadium", exedir / "FSW" / "Stadium"), ("fsw_nav", exedir / "FSW" / "Nav")):
+        for key, path in (
+            ("fsw_stadium", exedir / "FSW" / "Stadium"),
+            ("fsw_nav", exedir / "FSW" / "Nav"),
+            ("fsw_scoreboard", exedir / "FSW" / "ScoreBoard"),
+            ("fsw_tvlogo", exedir / "FSW" / "TVLogo"),
+        ):
             exists = Path(path).exists()
             _set(key, exists, ok_text if exists else missing)
 
@@ -1623,6 +1654,7 @@ class UIMixin:
     def _run_setup(self) -> None:
         import shutil
         import threading
+        from pathlib import Path as _Path
         from tkinter import messagebox
         from .big4_extractor import extract_fsw_sources
 
@@ -1630,31 +1662,85 @@ class UIMixin:
             messagebox.showwarning(self.tr("message.fifa16"), self.tr("message.warning.select_fifa_first"))
             return
 
+        install_vars = getattr(self, "_setup_install_vars", {})
+        do_settings    = install_vars.get("settings_ini",  tk.BooleanVar(value=True)).get()
+        do_police      = install_vars.get("fsw_police",     tk.BooleanVar(value=True)).get()
+        do_nets        = install_vars.get("fsw_nets",       tk.BooleanVar(value=True)).get()
+        do_pitch       = install_vars.get("fsw_pitch",      tk.BooleanVar(value=True)).get()
+        do_stadium     = install_vars.get("fsw_stadium",    tk.BooleanVar(value=True)).get()
+        do_nav         = install_vars.get("fsw_nav",        tk.BooleanVar(value=True)).get()
+        do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
+        do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
+
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
             btn.configure(state="disabled")
 
         pb = getattr(self, "_setup_progressbar", None)
         if pb:
-            pb.start(12)
+            pb["value"] = 0
+
+        def _set_pb(value: float) -> None:
+            if pb:
+                self.after(0, lambda v=value: pb.configure(value=v))
+
+        _setup_succeeded = [False]
 
         def _work() -> None:
             try:
                 src = self.resource_dir / "install_data"
                 if src.exists():
                     self.after(0, self._set_setup_progress, self.tr("progress.setup.copying"))
-                    shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True)
+
+                    def _ignore(src_dir: str, names: list) -> set:
+                        p = _Path(src_dir)
+                        skipped: set = set()
+                        if not do_settings and p.name == "FSW" and "settings.ini" in names:
+                            skipped.add("settings.ini")
+                        if not do_nav and p.name == "FSW" and "Nav" in names:
+                            skipped.add("Nav")
+                        if not do_stadium and p.name == "Stadium" and p.parent.name == "FSW" and "crowdchair" in names:
+                            skipped.add("crowdchair")
+                        return skipped
+
+                    shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)
                     self.log(f"install_data copied to {self.exedir}")
                 else:
                     self.log("install_data folder not found, skipping bundled copy")
 
+                _set_pb(10)
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.extracting"))
                 self.log("Extracting FSW sources from game archives...")
-                extract_fsw_sources(self.exedir, self.exedir / "FSW", log=self.log)
 
+                skip_categories: set = set()
+                if not do_police:
+                    skip_categories.add("police")
+                if not do_nets:
+                    skip_categories.add("nets")
+                if not do_pitch:
+                    skip_categories.add("pitch")
+                if not do_stadium:
+                    skip_categories.add("stadium")
+                if not do_scoreboard:
+                    skip_categories.add("scoreboard")
+                if not do_tvlogo:
+                    skip_categories.add("tvlogo")
+
+                def _on_extract_progress(step: int, total: int) -> None:
+                    _set_pb(10 + 80 * step / total)
+
+                extract_fsw_sources(
+                    self.exedir, self.exedir / "FSW",
+                    log=self.log, skip=skip_categories,
+                    on_progress=_on_extract_progress,
+                )
+
+                _set_pb(90)
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.bootstrap"))
                 self.setuppaths(load_team_database=False)
                 self.apply_bootstrap_files()
+                _set_pb(100)
+                _setup_succeeded[0] = True
             except Exception as exc:
                 self.log(f"Setup error: {exc}")
             finally:
@@ -1662,26 +1748,29 @@ class UIMixin:
 
         def _done() -> None:
             if pb:
-                pb.stop()
                 pb["value"] = 0
             self._set_setup_progress("")
             self.refresh_setup_tab()
             if btn:
                 btn.configure(state="normal")
+            if _setup_succeeded[0]:
+                messagebox.showinfo(
+                    self.tr("message.setup.complete_title"),
+                    self.tr("message.setup.complete_body"),
+                )
 
         threading.Thread(target=_work, daemon=True).start()
 
     def _run_regen_bh(self) -> None:
-        import subprocess
         import threading
 
         candidates = [
-            self.resource_dir / "bin" / "regen-cli.exe",
-            self.base_dir / "bin" / "regen-cli.exe",
+            self.resource_dir / "bin" / "FifaLibrary14.dll",
+            self.base_dir / "bin" / "FifaLibrary14.dll",
         ]
-        regen_exe = next((c for c in candidates if c.exists()), None)
-        if regen_exe is None:
-            self.log("Regenerate BH: regen-cli.exe not found in bin/")
+        dll_path = next((c for c in candidates if c.exists()), None)
+        if dll_path is None:
+            self.log("Regenerate BH: FifaLibrary14.dll not found in bin/")
             return
 
         btn = getattr(self, "_regen_bh_btn", None)
@@ -1690,27 +1779,34 @@ class UIMixin:
 
         pb = getattr(self, "_setup_progressbar", None)
         if pb:
-            pb.start(12)
+            pb["value"] = 0
 
         def _work() -> None:
             try:
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.regen_bh"))
                 self.log(f"Regenerate BH: running for {self.exedir}")
-                result = subprocess.run(
-                    [str(regen_exe), "--gamedir", str(self.exedir)],
-                    capture_output=True, text=True, timeout=120,
-                )
-                for line in result.stdout.splitlines():
-                    if line.strip():
-                        self.log(f"  {line.strip()}")
-                if result.returncode == 0:
-                    self.log("Regenerate BH: done")
-                else:
-                    self.log(f"Regenerate BH: exit code {result.returncode}")
-                    if result.stderr:
-                        self.log(result.stderr.strip())
-            except subprocess.TimeoutExpired:
-                self.log("Regenerate BH: timed out after 120s")
+                import clr
+                clr.AddReference(str(dll_path.resolve()))
+                from FifaLibrary import BhFile
+                big_files = sorted(self.exedir.glob("*.big"))
+                if not big_files:
+                    self.log("Regenerate BH: no .big files found in game directory")
+                    return
+                total = len(big_files)
+                ok = 0
+                failed = 0
+                for i, big in enumerate(big_files):
+                    try:
+                        BhFile.Regenerate(str(big), True)
+                        self.log(f"  {big.name} -> ok")
+                        ok += 1
+                    except Exception as exc:
+                        self.log(f"  {big.name} -> failed: {exc}")
+                        failed += 1
+                    value = (i + 1) / total * 100
+                    if pb:
+                        self.after(0, lambda v=value: pb.configure(value=v))
+                self.log(f"Regenerate BH: done ({ok} ok, {failed} failed)")
             except Exception as exc:
                 self.log(f"Regenerate BH failed: {exc}")
             finally:
@@ -1718,7 +1814,6 @@ class UIMixin:
 
         def _done() -> None:
             if pb:
-                pb.stop()
                 pb["value"] = 0
             self._set_setup_progress("")
             if btn:

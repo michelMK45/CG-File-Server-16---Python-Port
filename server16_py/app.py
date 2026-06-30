@@ -192,6 +192,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.camera_tab = None
         self.setup_tab = None
         self._setup_status_vars: dict = {}
+        self._setup_install_vars: dict = {}
         self.banner_title_label = None
         self.help_label = None
         self.page_banner = None
@@ -401,8 +402,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.exedir / "data" / "movies",
         ):
             checkdirs(path)
-        extra_setup(self.Psource, self.Pdest, "4", "4", "4")
-        extra_setup(self.Psource, self.Pdest, "9", "9", "9")
+        extra_setup(self.Psource, self.Pdest, "4", "policeofficer", "4")
+        extra_setup(self.Psource, self.Pdest, "9", "policeofficer", "9")
         extra_setup(self.Nsource, self.Ndest, "0", "netcolor", "0")
         extra_setup(self.PitchMowsource, self.PitchMowdest, "0", "pitchmowpattern", "0")
         copy(self.exedir / "FSW" / "stadium", self.exedir / "data" / "sceneassets")
