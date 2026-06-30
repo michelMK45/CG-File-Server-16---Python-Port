@@ -8,7 +8,6 @@ a = Analysis(
         ('bin\\cgfs16_overlay.dll', 'bin'),
         ('bin\\cgfs16_inject.exe',  'bin'),
         ('bin\\FifaLibrary14.dll',  'bin'),
-        ('bin\\regen-cli.exe',      'bin'),
     ],
     datas=[
         ('server16_py\\offsets.json', 'server16_py'),

@@ -8,7 +8,6 @@ set "DISTPATH=dist"
 set "OVERLAY_DLL=bin\cgfs16_overlay.dll"
 set "INJECTOR_EXE=bin\cgfs16_inject.exe"
 set "FIFA_LIBRARY=bin\FifaLibrary14.dll"
-set "REGEN_CLI=bin\regen-cli.exe"
 
 echo ============================================================
 echo  CGFS16 - Full Build
@@ -31,8 +30,6 @@ if errorlevel 1 exit /b 1
 call :require_file "%INJECTOR_EXE%" "Overlay injector"
 if errorlevel 1 exit /b 1
 call :require_file "%FIFA_LIBRARY%" "FIFA database library"
-if errorlevel 1 exit /b 1
-call :require_file "%REGEN_CLI%" "BH regenerator CLI"
 if errorlevel 1 exit /b 1
 
 echo [3/3] Running PyInstaller ...

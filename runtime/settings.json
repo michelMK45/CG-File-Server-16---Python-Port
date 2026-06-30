@@ -1,10 +1,5 @@
 {
-  "FIFAEXE": "E:/Fifa/FIFA 16 test/py/fifa16.exe",
-  "CAMERAPACKAGE": "",
-  "SHOW_STADIUM_LOADING_NOTIFICATION": true,
-  "SHOW_OVERLAY": true,
-  "KEEP_OPEN_ON_GAME_CLOSE": true,
-  "LANGUAGE": "en",
+  "FIFAEXE": "default",
   "discord_rpc": {
     "enabled": true,
     "client_id": "1495719449700077630",
