@@ -13,6 +13,7 @@ a = Analysis(
         ('server16_py\\offsets.json', 'server16_py'),
         ('server16_py\\locales', 'server16_py\\locales'),
         ('server16.ico', '.'),
+        ('install_data', 'install_data'),
     ],
     hiddenimports=['clr', 'rarfile'],
     hookspath=[],
