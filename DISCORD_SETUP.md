@@ -28,7 +28,7 @@ The app reads from:
 - `data/db/fifa_ng_db.db`
 - `data/db/fifa_ng_db-meta.xml`
 
-using `pythonnet` + `FifaLibrary14.dll`.
+using `pythonnet` + `FifaLibrary16.dll`.
 
 ### Team Name Resolution
 
@@ -134,7 +134,7 @@ If Discord shows numeric values (for teams/stadiums), verify:
   - `data/db/fifa_ng_db.db`
   - `data/db/fifa_ng_db-meta.xml`
 2. `pythonnet` is installed
-3. `bin/FifaLibrary14.dll` exists
+3. `bin/FifaLibrary16.dll` exists
 4. Logs in `runtime/server16.log` do not show database load errors
 
 ### "pypresence not installed"

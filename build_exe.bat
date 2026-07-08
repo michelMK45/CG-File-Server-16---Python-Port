@@ -7,7 +7,7 @@ set "WORKPATH=build\pyinstaller"
 set "DISTPATH=dist"
 set "OVERLAY_DLL=bin\cgfs16_overlay.dll"
 set "INJECTOR_EXE=bin\cgfs16_inject.exe"
-set "FIFA_LIBRARY=bin\FifaLibrary14.dll"
+set "FIFA_LIBRARY=bin\FifaLibrary16.dll"
 
 echo ============================================================
 echo  CGFS16 - Full Build
@@ -32,7 +32,11 @@ if errorlevel 1 exit /b 1
 call :require_file "%FIFA_LIBRARY%" "FIFA database library"
 if errorlevel 1 exit /b 1
 
-echo [3/3] Running PyInstaller ...
+echo [3/4] Setting up 32-bit Python for BH regeneration...
+call "scripts\setup_python32.bat"
+if errorlevel 1 exit /b 1
+
+echo [4/4] Running PyInstaller ...
 pyinstaller ^
   --noconfirm ^
   --clean ^

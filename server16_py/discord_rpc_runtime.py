@@ -32,6 +32,8 @@ except ImportError:
 
 _PREVIEW_CACHE_TTL = 23 * 3600  # 23 hours (Discord webhook URLs expire ~24h)
 _PENDING_SENTINEL = "__pending__"
+_FAILED_SENTINEL = "__failed__"
+_FAILURE_COOLDOWN = 5 * 60  # don't retry a failed upload for 5 minutes
 
 
 class StadiumPreviewUploader:
@@ -74,7 +76,7 @@ class StadiumPreviewUploader:
             if entry is None:
                 return None
             url, ts = entry
-            if url == _PENDING_SENTINEL:
+            if url in (_PENDING_SENTINEL, _FAILED_SENTINEL):
                 return None
             if time.time() - ts > _PREVIEW_CACHE_TTL:
                 del self._cache[stadium_name]
@@ -111,8 +113,14 @@ class StadiumPreviewUploader:
 
         # Avoid launching duplicate threads for the same stadium
         with self._lock:
-            if stadium_name in self._cache:
-                return None  # Upload already in-flight
+            entry = self._cache.get(stadium_name)
+            if entry is not None:
+                sentinel, ts = entry
+                still_cooling_down = (
+                    sentinel == _FAILED_SENTINEL and time.time() - ts < _FAILURE_COOLDOWN
+                )
+                if sentinel == _PENDING_SENTINEL or still_cooling_down:
+                    return None  # Upload already in-flight, or recently failed
             # Reserve the slot so a second call won't start another thread
             self._cache[stadium_name] = (_PENDING_SENTINEL, time.time())
 
@@ -215,7 +223,7 @@ class StadiumPreviewUploader:
                 url = self._upload_to_discord_webhook(image_bytes, filename, content_type, webhook_url)
             if not url:
                 self._logger.warning(f"Preview upload returned no URL for '{stadium_name}' (provider={provider})")
-                self._evict(stadium_name)
+                self._mark_failed(stadium_name)
                 return
             # Strip trailing '&' that Discord CDN sometimes appends to signed URLs.
             url = url.rstrip("&")
@@ -230,7 +238,7 @@ class StadiumPreviewUploader:
                     self._logger.debug(f"Upload callback error: {e}")
         except Exception as e:
             self._logger.warning(f"Failed to upload stadium preview for '{stadium_name}': {e}")
-            self._evict(stadium_name)
+            self._mark_failed(stadium_name)
 
     def _with_wait_true(self, webhook_url: str) -> str:
         """Ensure webhook URL includes wait=true so Discord returns attachment metadata."""
@@ -240,10 +248,10 @@ class StadiumPreviewUploader:
         new_query = urlencode(query_items)
         return urlunsplit((parts.scheme, parts.netloc, parts.path, new_query, parts.fragment))
 
-    def _evict(self, stadium_name: str) -> None:
-        """Remove a pending/failed cache entry so a future call can retry."""
+    def _mark_failed(self, stadium_name: str) -> None:
+        """Record a failed upload so retries wait out _FAILURE_COOLDOWN instead of spamming."""
         with self._lock:
-            self._cache.pop(stadium_name, None)
+            self._cache[stadium_name] = (_FAILED_SENTINEL, time.time())
 
 try:
     from pypresence import Presence

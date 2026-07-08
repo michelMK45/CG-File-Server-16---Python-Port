@@ -7,11 +7,14 @@ a = Analysis(
     binaries=[
         ('bin\\cgfs16_overlay.dll', 'bin'),
         ('bin\\cgfs16_inject.exe',  'bin'),
-        ('bin\\FifaLibrary14.dll',  'bin'),
+        ('bin\\FifaLibrary16.dll',  'bin'),
     ],
     datas=[
         ('server16_py\\offsets.json', 'server16_py'),
+        ('server16_py\\bh_worker.py', 'server16_py'),
+        ('server16_py\\db_worker.py', 'server16_py'),
         ('server16_py\\locales', 'server16_py\\locales'),
+        ('bin\\python32', 'bin\\python32'),
         ('server16.ico', '.'),
         ('install_data', 'install_data'),
     ],

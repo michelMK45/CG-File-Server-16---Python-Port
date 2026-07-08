@@ -22,6 +22,55 @@ except Exception:
     _D3DOverlayInjector = None  # type: ignore[assignment,misc]
 
 
+def _find_python32(extra_dirs: list | None = None) -> list[str] | None:
+    """Return a command prefix for a 32-bit Python interpreter, or None if unavailable.
+
+    Checks bundled python32/ first, then the Windows Python Launcher, then common paths.
+    Pass extra_dirs (e.g. [resource_dir, base_dir]) to locate a bundled interpreter.
+    """
+    import subprocess
+    import glob as _glob
+    import os
+    from pathlib import Path as _Path
+
+    # Bundled embeddable Python (bin/python32/python.exe)
+    for d in (extra_dirs or []):
+        candidate = _Path(d) / "bin" / "python32" / "python.exe"
+        if candidate.exists():
+            return [str(candidate)]
+
+    # Windows Python Launcher (py -3-32)
+    try:
+        r = subprocess.run(
+            ["py", "-3-32", "-c", "import sys; print(sys.version)"],
+            capture_output=True, text=True, timeout=10,
+        )
+        if r.returncode == 0:
+            return ["py", "-3-32"]
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # Common x86 install paths — verify pointer size to confirm 32-bit
+    patterns = [
+        r"C:\Python3*-32\python.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Python\Python3*-32\python.exe"),
+        r"C:\Program Files (x86)\Python3*\python.exe",
+    ]
+    for pat in patterns:
+        for match in sorted(_glob.glob(pat), reverse=True):
+            try:
+                r = subprocess.run(
+                    [match, "-c", "import struct; print(struct.calcsize('P'))"],
+                    capture_output=True, text=True, timeout=10,
+                )
+                if r.returncode == 0 and r.stdout.strip() == "4":
+                    return [match]
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+
+    return None
+
+
 class UIMixin:
     """Window construction, theming, and all widget interaction — part of Server16App via multiple inheritance."""
 
@@ -1763,20 +1812,40 @@ class UIMixin:
 
     def _run_regen_bh(self) -> None:
         import threading
+        import subprocess
+        import json as _json
+        from pathlib import Path as _Path
 
-        candidates = [
-            self.resource_dir / "bin" / "FifaLibrary14.dll",
-            self.base_dir / "bin" / "FifaLibrary14.dll",
+        dll_candidates = [
+            self.resource_dir / "bin" / "FifaLibrary16.dll",
+            self.base_dir / "bin" / "FifaLibrary16.dll",
         ]
-        dll_path = next((c for c in candidates if c.exists()), None)
+        dll_path = next((c for c in dll_candidates if c.exists()), None)
         if dll_path is None:
-            self.log("Regenerate BH: FifaLibrary14.dll not found in bin/")
+            self.log("Regenerate BH: FifaLibrary16.dll not found in bin/")
+            return
+
+        worker_candidates = [
+            self.resource_dir / "server16_py" / "bh_worker.py",
+            self.base_dir / "server16_py" / "bh_worker.py",
+            _Path(__file__).resolve().parent / "bh_worker.py",
+        ]
+        worker_path = next((c for c in worker_candidates if c.exists()), None)
+        if worker_path is None:
+            self.log("Regenerate BH: bh_worker.py not found")
+            return
+
+        python32 = _find_python32(extra_dirs=[self.resource_dir, self.base_dir])
+        if python32 is None:
+            self.log(
+                "Regenerate BH: 32-bit Python not found. "
+                "Install Python x86 from python.org and retry."
+            )
             return
 
         btn = getattr(self, "_regen_bh_btn", None)
         if btn:
             btn.configure(state="disabled")
-
         pb = getattr(self, "_setup_progressbar", None)
         if pb:
             pb["value"] = 0
@@ -1785,28 +1854,37 @@ class UIMixin:
             try:
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.regen_bh"))
                 self.log(f"Regenerate BH: running for {self.exedir}")
-                import clr
-                clr.AddReference(str(dll_path.resolve()))
-                from FifaLibrary import BhFile
-                big_files = sorted(self.exedir.glob("*.big"))
-                if not big_files:
-                    self.log("Regenerate BH: no .big files found in game directory")
-                    return
-                total = len(big_files)
-                ok = 0
-                failed = 0
-                for i, big in enumerate(big_files):
+                cmd = python32 + [str(worker_path), str(dll_path), str(self.exedir)]
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                )
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
                     try:
-                        BhFile.Regenerate(str(big), True)
-                        self.log(f"  {big.name} -> ok")
-                        ok += 1
-                    except Exception as exc:
-                        self.log(f"  {big.name} -> failed: {exc}")
-                        failed += 1
-                    value = (i + 1) / total * 100
-                    if pb:
-                        self.after(0, lambda v=value: pb.configure(value=v))
-                self.log(f"Regenerate BH: done ({ok} ok, {failed} failed)")
+                        msg = _json.loads(line)
+                    except ValueError:
+                        self.log(f"  [worker] {line}")
+                        continue
+                    t = msg.get("t")
+                    if t == "progress":
+                        status = "ok" if msg.get("ok") else f"failed: {msg.get('error', '')}"
+                        self.log(f"  {msg['file']} -> {status}")
+                        if pb:
+                            value = msg["i"] / msg["total"] * 100
+                            self.after(0, lambda v=value: pb.configure(value=v))
+                    elif t == "done":
+                        self.log(f"Regenerate BH: done ({msg['ok']} ok, {msg['failed']} failed)")
+                    elif t == "error":
+                        self.log(f"Regenerate BH failed: {msg['msg']}")
+                proc.wait()
             except Exception as exc:
                 self.log(f"Regenerate BH failed: {exc}")
             finally:

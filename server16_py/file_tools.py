@@ -11,6 +11,10 @@ from pathlib import Path
 
 try:
     import rarfile as _rarmod
+    # Windows ships with "tar" (bsdtar); tell rarfile to use it so that
+    # extraction works even when unrar.exe / 7z are not installed.
+    if sys.platform == "win32" and _rarmod.BSDTAR_TOOL == "bsdtar":
+        _rarmod.BSDTAR_TOOL = "tar"
 except ImportError:
     _rarmod = None
 

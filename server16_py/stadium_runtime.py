@@ -242,6 +242,16 @@ class StadiumRuntime:
                 except Exception as exc:
                     app.log(f"Failed to pre-write stadium name to memory", exc)
 
+        # NOTE: the injection slot ID is intentionally NOT pre-written here.
+        # Writing it before the background copy job has cleared/populated the
+        # target slot's files created a race: if FIFA read the new injID from
+        # memory before the (often archive-extraction-based) file copy finished,
+        # it would find an empty/partial slot and silently fall back to the
+        # vanilla default stadium for that container (176/261 mismatch bug).
+        # finish_stadium_apply() writes+verifies (with readback and retry) the
+        # injID only after the copy job has fully completed, which is the only
+        # safe time to do so.
+
         def worker() -> None:
             try:
                 payload = self.run_stadium_copy_job(section_id, section_name, injid, chosen_stadium=chosen_stadium)
@@ -309,12 +319,8 @@ class StadiumRuntime:
         else:
             raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
         dest = app.exedir / "data" / "sceneassets"
-        # Clear both slots before writing: removes stale custom files from the
-        # other slot and any vanilla files placed by apply_bootstrap_files from
-        # the current slot, so FIFA never reads a partially-overwritten file.
         other_id = "261" if injid == "176" else "176"
         clear_stadium_inj_files(dest, other_id)
-        clear_stadium_inj_files(dest, injid)
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
         glare3 = stad / "3"
@@ -373,6 +379,22 @@ class StadiumRuntime:
         if stadmovie:
             copy_if_exists(stad / "StadiumMovie.vp8", app.Movdata)
             copy_if_exists(stad / "StadiumBumper.big", app.MOVBUMP)
+        # Verify that at least the stadium model was written — if not, log a warning
+        # so users can diagnose archive extraction issues (e.g. unsupported RAR format).
+        key_dst = dest / "stadium" / f"stadium_{injid}.rx3"
+        if not key_dst.exists():
+            present = [
+                name
+                for name in (
+                    f"stadium_{injid}_1_textures.rx3",
+                    f"stadium_{injid}_3_textures.rx3",
+                )
+                if (dest / "stadium" / name).exists()
+            ]
+            app.log(
+                f"Warning: stadium model not found at {key_dst} after copy. "
+                + (f"Partial files present: {present}" if present else "No slot files written — check archive format.")
+            )
         # Clean up temp dir if we extracted an archive
         if _temp_dir is not None:
             try:
