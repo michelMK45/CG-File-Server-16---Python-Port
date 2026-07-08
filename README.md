@@ -60,8 +60,11 @@ Main overlay:
 - `server16_py/settings_editor.py`: settings editing UI.
 - `server16_py/dialogs.py`: assignment dialogs.
 - `server16_py/file_tools.py`: shared file-copying, archive extraction, and setup helpers.
+- `server16_py/fifa_db.py`: reads team/stadium names from the FIFA t3db database via the `db_worker.py` subprocess bridge.
+- `server16_py/db_worker.py` / `server16_py/bh_worker.py`: 32-bit subprocess workers that load `FifaLibrary16.dll` (x86-only) to read the database and regenerate BH entries, respectively.
 - `runtime/`: local runtime data such as settings and logs.
 - `legacy/`: reference material from the original project/conversion process.
+- `scripts/setup_python32.bat`: provisions the bundled 32-bit Python interpreter used by the workers above.
 - `build_exe.bat`: convenience build script for Windows.
 - `Server16Python.spec`: PyInstaller spec file.
 
@@ -75,9 +78,18 @@ Main overlay:
   - `Pillow`
   - `pygame`
   - `rarfile` for native RAR extraction when available
+  - `pypresence` for Discord Rich Presence (optional, see [DISCORD_SETUP.md](DISCORD_SETUP.md))
   - `pyinstaller` for packaging
 
-RAR stadium archives can also be extracted through the Windows `tar` command when `rarfile` is not installed. Depending on your environment, additional packages may be needed if they are introduced by future changes.
+RAR stadium archives can also be extracted through the Windows `tar` command when `rarfile` is not installed (and `rarfile` itself is configured to use it as a fallback when `unrar`/`7z` are unavailable). Depending on your environment, additional packages may be needed if they are introduced by future changes.
+
+### FIFA Database Reading (32-bit Bridge)
+
+Team names, stadium names, and BH regeneration are read/written through `bin/FifaLibrary16.dll`, which is x86-only. Since the main app can run as 64-bit Python, these operations are delegated to a dedicated 32-bit Python subprocess:
+
+- Run `scripts\setup_python32.bat` once to provision a 32-bit Python embeddable (with `pythonnet` installed) at `bin/python32/`. It is idempotent and is also run automatically by `build_exe.bat`.
+- If `bin/python32/` is not present, the app falls back to the Windows Python Launcher (`py -3-32`) or common x86 install paths.
+- Without a working 32-bit interpreter, Discord Rich Presence team/stadium name resolution and the **Regenerate BH** action in the Setup tab will be unavailable.
 
 ## Running From Source
 
@@ -92,7 +104,7 @@ Example:
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install psutil pillow pygame rarfile pyinstaller
+python -m pip install psutil pillow pygame rarfile pypresence pyinstaller
 python main.py
 ```
 
@@ -378,7 +390,7 @@ Suggested GitHub release contents:
 - release notes summarizing major fixes and improvements
 - optional screenshots or changelog excerpts
 
-Previous release notes: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md)
+Previous release notes: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md)
 
 ## Credits
 
