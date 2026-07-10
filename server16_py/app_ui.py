@@ -359,6 +359,7 @@ class UIMixin:
         self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
         self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
         self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
+        self.tabview.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_setup_notice()
 
@@ -1416,6 +1417,15 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_nav", "fsw_nav")
         source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
         source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
+        source_row(left_col, "setup.item.revmod_lua", "revmod_lua")
+        # Total-conversion mods (e.g. FIFA Infinity) ship their own data/fifarna/lua
+        # and don't need ours, and even a clean vanilla install only needs it when
+        # assets aren't loading — so this one starts unchecked, unlike every other
+        # source_row above. Users opt in explicitly instead of Setup installing it
+        # (and potentially overwriting a working mod's lua) by default.
+        _revmod_var = self._setup_install_vars.get("revmod_lua")
+        if _revmod_var is not None:
+            _revmod_var.set(False)
 
         section(left_col, "setup.section.user_folders")
         status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -1507,6 +1517,53 @@ class UIMixin:
     def _go_to_setup_tab(self) -> None:
         self.tabview.select(self.setup_tab)
 
+    def _on_tab_changed(self, event=None) -> None:
+        if self.tabview is None:
+            return
+        try:
+            current = self.tabview.nametowidget(self.tabview.select())
+        except Exception:
+            return
+        if current is self.setup_tab:
+            # Re-scan on every visit so users always see live status instead of a
+            # possibly stale snapshot from whenever the tab was last built/refreshed.
+            self.refresh_setup_tab()
+
+    def _lua_assets_missing_files(self) -> list[str] | None:
+        """Compare data/fifarna/lua file-by-file against the bundled install_data source.
+
+        Returns the list of relative paths that are missing or size-mismatched
+        (empty list means a complete, verified install), or None if the bundled
+        source can't be located — callers should fall back to an existence check
+        in that case. This catches partial/interrupted copies (e.g. a single Rev
+        Mod lua file missing) that a plain folder-exists check would miss and
+        silently report as OK.
+        """
+        from pathlib import Path as _Path
+
+        src_root = None
+        for base in (self.resource_dir, self.base_dir):
+            candidate = _Path(base) / "install_data" / "data" / "fifarna" / "lua"
+            if candidate.exists():
+                src_root = candidate
+                break
+        if src_root is None:
+            return None
+
+        dest_root = self.exedir / "data" / "fifarna" / "lua"
+        missing: list[str] = []
+        for f in src_root.rglob("*"):
+            if not f.is_file():
+                continue
+            rel = f.relative_to(src_root)
+            dest_file = dest_root / rel
+            try:
+                if not dest_file.exists() or dest_file.stat().st_size != f.stat().st_size:
+                    missing.append(str(rel))
+            except OSError:
+                missing.append(str(rel))
+        return missing
+
     def _is_setup_complete(self) -> bool:
         if not hasattr(self, "fifaEXE") or self.fifaEXE == "default":
             return False
@@ -1550,9 +1607,14 @@ class UIMixin:
             exedir / "data" / "ui" / "nav",
             exedir / "data" / "movies",
             exedir / "data" / "bcdata" / "camera",
-            exedir / "data" / "fifarna" / "lua" / "assets",
         ]
         if not all(_Path(p).exists() for p in dest_paths):
+            return False
+
+        # Any lua asset system counts as satisfied here — a total-conversion mod's own
+        # data/fifarna/lua (e.g. FIFA Infinity) is just as valid as our bundled one.
+        dest_lua_root = exedir / "data" / "fifarna" / "lua"
+        if not (dest_lua_root.exists() and any(dest_lua_root.rglob("*.lua"))):
             return False
 
         # User GBD folders
@@ -1664,10 +1726,24 @@ class UIMixin:
             ("dest_nav", exedir / "data" / "ui" / "nav"),
             ("dest_movies", exedir / "data" / "movies"),
             ("dest_camera", exedir / "data" / "bcdata" / "camera"),
-            ("dest_lua", exedir / "data" / "fifarna" / "lua" / "assets"),
         ):
             exists = Path(path).exists()
             _set(key, exists, ok_text if exists else missing)
+
+        dest_lua_root = exedir / "data" / "fifarna" / "lua"
+        lua_present = dest_lua_root.exists() and any(dest_lua_root.rglob("*.lua"))
+        lua_missing = self._lua_assets_missing_files()
+        if lua_missing is None:
+            _set("dest_lua", lua_present, ok_text if lua_present else missing)
+        elif not lua_present:
+            _set("dest_lua", False, missing)
+        elif not lua_missing:
+            _set("dest_lua", True, ok_text)
+        else:
+            # Something is already there but doesn't match our bundle exactly — could be
+            # a total-conversion mod's own lua (e.g. FIFA Infinity) or a prior partial
+            # install of ours. Either way, don't imply it's broken; just flag it as custom.
+            _set("dest_lua", None, self.tr("setup.status.lua_custom"))
 
         # User content folders
         for key, path in (
@@ -1681,22 +1757,10 @@ class UIMixin:
 
         regen_btn = getattr(self, "_regen_bh_btn", None)
         if regen_btn:
-            dest_paths = [
-                self.Pdest, self.Ndest, self.PitchMowdest,
-                exedir / "data" / "sceneassets" / "stadium",
-                exedir / "data" / "sceneassets" / "fx",
-                exedir / "data" / "sceneassets" / "crowdplacement",
-                exedir / "data" / "sceneassets" / "crowdchair",
-                self.TVdata,
-                self.Scoredata / "game",
-                exedir / "data" / "ui" / "TV",
-                exedir / "data" / "ui" / "nav",
-                exedir / "data" / "movies",
-                exedir / "data" / "bcdata" / "camera",
-                exedir / "data" / "fifarna" / "lua" / "assets",
-            ]
-            setup_ok = Path(self.fifaEXE).exists() and all(Path(p).exists() for p in dest_paths)
-            regen_btn.configure(state="normal" if setup_ok else "disabled")
+            # Regen BH only needs a valid game directory to glob *.big files from —
+            # it doesn't depend on our FSW/lua setup having completed successfully.
+            game_dir_ok = Path(self.fifaEXE).exists()
+            regen_btn.configure(state="normal" if game_dir_ok else "disabled")
 
         self._update_setup_notice()
 
@@ -1720,6 +1784,7 @@ class UIMixin:
         do_nav         = install_vars.get("fsw_nav",        tk.BooleanVar(value=True)).get()
         do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
         do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
+        do_revmod_lua  = install_vars.get("revmod_lua",     tk.BooleanVar(value=True)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
@@ -1750,6 +1815,8 @@ class UIMixin:
                             skipped.add("Nav")
                         if not do_stadium and p.name == "Stadium" and p.parent.name == "FSW" and "crowdchair" in names:
                             skipped.add("crowdchair")
+                        if not do_revmod_lua and p.name == "fifarna" and "lua" in names:
+                            skipped.add("lua")
                         return skipped
 
                     shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)

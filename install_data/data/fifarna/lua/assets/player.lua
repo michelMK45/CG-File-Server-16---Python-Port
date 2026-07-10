@@ -2838,11 +2838,19 @@ end
 
 
 
-newNumberType = true
+-- Defaults to the vanilla kitnumbers_X_Y.rx3 identifier scheme so numbers still
+-- render correctly even if assignments/general.lua fails to load or load order
+-- shifts — useOriginalKitNumberIdentifier() is a no-op here but kept for the
+-- custom "numbers_font_color_digit" scheme via disableOriginalKitNumberIdentifier().
+newNumberType = false
 
 
 function useOriginalKitNumberIdentifier()
 newNumberType = false
+end
+
+function disableOriginalKitNumberIdentifier()
+newNumberType = true
 end
 
 
