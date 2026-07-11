@@ -279,6 +279,7 @@
   "setup.item.fsw_scoreboard": "Overlays de placar",
   "setup.item.fsw_tvlogo": "Logo de TV",
   "setup.item.revmod_lua": "Assets Lua do Rev Mod (instalar somente se os assets não carregarem)",
+  "setup.item.custom_kit_numbers": "Ativar números de camisa personalizados (marque se fontes não-padrão mostrarem texturas quadriculadas)",
   "setup.item.dest_slc": "data/sceneassets/slc",
   "setup.item.dest_goalnet": "data/sceneassets/goalnet",
   "setup.item.dest_pitch": "data/sceneassets/pitch",

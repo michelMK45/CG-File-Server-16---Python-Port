@@ -1149,6 +1149,14 @@ class UIMixin:
         self.settings.keep_open_on_game_close = self.keep_open_var.get()
         self.settings.save()
 
+    def _toggle_custom_kit_numbers(self) -> None:
+        from .file_tools import set_kit_number_scheme
+
+        custom = self._setup_install_vars["custom_kit_numbers"].get()
+        self.settings.custom_kit_numbers = custom
+        general_lua = self.exedir / "data" / "fifarna" / "lua" / "assignments" / "general.lua"
+        set_kit_number_scheme(general_lua, custom)
+
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
         self.settings.save()
@@ -1426,6 +1434,21 @@ class UIMixin:
         _revmod_var = self._setup_install_vars.get("revmod_lua")
         if _revmod_var is not None:
             _revmod_var.set(False)
+
+        _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
+        self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
+        _kit_numbers_row = tk.Frame(left_col, bg=self.card)
+        _kit_numbers_row.pack(fill="x", pady=2)
+        tk.Checkbutton(
+            _kit_numbers_row, variable=_kit_numbers_var,
+            command=self._toggle_custom_kit_numbers,
+            bg=self.card, activebackground=self.card,
+            fg=self.fg, selectcolor=self.panel,
+            relief="flat", bd=0, cursor="hand2",
+            highlightthickness=0,
+        ).pack(side="left")
+        tk.Label(_kit_numbers_row, text="  ", bg=self.card, width=2).pack(side="left")
+        tk.Label(_kit_numbers_row, text=self.tr("setup.item.custom_kit_numbers"), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
 
         section(left_col, "setup.section.user_folders")
         status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -1785,6 +1808,7 @@ class UIMixin:
         do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
         do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
         do_revmod_lua  = install_vars.get("revmod_lua",     tk.BooleanVar(value=True)).get()
+        do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
@@ -1821,6 +1845,12 @@ class UIMixin:
 
                     shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)
                     self.log(f"install_data copied to {self.exedir}")
+                    if do_revmod_lua:
+                        from .file_tools import set_kit_number_scheme
+                        set_kit_number_scheme(
+                            self.exedir / "data" / "fifarna" / "lua" / "assignments" / "general.lua",
+                            do_custom_kit_numbers,
+                        )
                 else:
                     self.log("install_data folder not found, skipping bundled copy")
 

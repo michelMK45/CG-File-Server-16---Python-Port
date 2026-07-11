@@ -239,6 +239,7 @@
   "setup.item.fsw_scoreboard": "Overlays de marcador",
   "setup.item.fsw_tvlogo": "Logo de TV",
   "setup.item.revmod_lua": "Assets Lua de Rev Mod (instalar solo si los assets no cargan)",
+  "setup.item.custom_kit_numbers": "Activar números de dorsal personalizados (marcar si las fuentes no-default muestran texturas de cuadros)",
   "setup.item.dest_slc": "data/sceneassets/slc",
   "setup.item.dest_goalnet": "data/sceneassets/goalnet",
   "setup.item.dest_pitch": "data/sceneassets/pitch",

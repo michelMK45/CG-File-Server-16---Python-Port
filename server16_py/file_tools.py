@@ -340,6 +340,33 @@ def copy_if_exists(src: str | Path, dst: str | Path) -> None:
     _copy_file_if_needed(src_path, Path(dst))
 
 
+def set_kit_number_scheme(general_lua_path: str | Path, custom: bool) -> None:
+    """Toggle which kit-number texture naming scheme general.lua asks the engine to use.
+
+    Community kitnumbers_X_Y.rx3 font packs are built against one of two
+    conventions; whichever one general.lua doesn't select shows a
+    checkerboard/missing-texture placeholder for every font using it.
+    """
+    path = Path(general_lua_path)
+    if not path.exists():
+        return
+    text = path.read_text(encoding="utf-8")
+    target_call = "disableOriginalKitNumberIdentifier()" if custom else "useOriginalKitNumberIdentifier()"
+    other_call = "useOriginalKitNumberIdentifier()" if custom else "disableOriginalKitNumberIdentifier()"
+    if other_call in text:
+        path.write_text(text.replace(other_call, target_call, 1), encoding="utf-8")
+
+
+def copy_or_clear(src: str | Path, dst: str | Path) -> None:
+    """Copy src to dst if it exists; otherwise delete any stale dst left by a previous stadium."""
+    src_path = Path(src)
+    dst_path = Path(dst)
+    if src_path.exists():
+        _copy_file_if_needed(src_path, dst_path)
+    else:
+        dst_path.unlink(missing_ok=True)
+
+
 def copy_tvlogo(src: str | Path, dst: str | Path) -> str:
     src_path = Path(src)
     if not src_path.exists():

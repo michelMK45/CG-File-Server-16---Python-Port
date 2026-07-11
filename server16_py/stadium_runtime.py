@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
-from .file_tools import clear_bcgameplay, clear_goalpost, clear_stadium_inj_files, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
+from .file_tools import clear_bcgameplay, clear_goalpost, clear_stadium_inj_files, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
@@ -329,7 +329,7 @@ class StadiumRuntime:
             ("Copying stadium model", lambda: copy_if_exists(stad / "model.rx3", dest / "stadium" / f"stadium_{injid}.rx3")),
             ("Copying day textures", lambda: copy_if_exists(stad / "texture_day.rx3", dest / "stadium" / f"stadium_{injid}_1_textures.rx3")),
             ("Copying night textures", lambda: copy_if_exists(stad / "texture_night.rx3", dest / "stadium" / f"stadium_{injid}_3_textures.rx3")),
-            ("Copying entrance scene", lambda: copy_if_exists(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat", app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")),
+            ("Copying entrance scene", lambda: copy_or_clear(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat", app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")),
             ("Copying gameplay camera", lambda: copy_bcgameplay(stad / "GameplayCamGBD", app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")),
             ("Copying crowd day", lambda: copy_if_exists(stad / "crowd_day.dat", dest / "crowdplacement" / f"crowd_{injid}_1.dat")),
             ("Copying crowd night", lambda: copy_if_exists(stad / "crowd_night.dat", dest / "crowdplacement" / f"crowd_{injid}_3.dat")),

@@ -30,6 +30,7 @@ class SettingsStore:
         "SHOW_OVERLAY": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "LANGUAGE": "en",
+        "CUSTOM_KIT_NUMBERS": False,
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
         # feature works out-of-the-box in the compiled EXE without needing to
@@ -111,6 +112,15 @@ class SettingsStore:
     @keep_open_on_game_close.setter
     def keep_open_on_game_close(self, value: bool) -> None:
         self.data["KEEP_OPEN_ON_GAME_CLOSE"] = bool(value)
+        self.save()
+
+    @property
+    def custom_kit_numbers(self) -> bool:
+        return bool(self.data.get("CUSTOM_KIT_NUMBERS", False))
+
+    @custom_kit_numbers.setter
+    def custom_kit_numbers(self, value: bool) -> None:
+        self.data["CUSTOM_KIT_NUMBERS"] = bool(value)
         self.save()
 
     @property

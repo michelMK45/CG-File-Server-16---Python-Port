@@ -339,6 +339,7 @@
   "setup.item.fsw_scoreboard": "ScoreBoard Overlays",
   "setup.item.fsw_tvlogo": "TV Logo",
   "setup.item.revmod_lua": "Rev Mod Lua Assets (only install if assets are not loading)",
+  "setup.item.custom_kit_numbers": "Enable custom kit numbers (check if non-default kit number fonts show checkered textures)",
   "setup.item.dest_slc": "data/sceneassets/slc",
   "setup.item.dest_goalnet": "data/sceneassets/goalnet",
   "setup.item.dest_pitch": "data/sceneassets/pitch",
