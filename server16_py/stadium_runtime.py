@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
-from .file_tools import clear_bcgameplay, clear_goalpost, clear_stadium_inj_files, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, set_inj_id, is_archive, extract_archive
+from .file_tools import clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
@@ -320,7 +320,9 @@ class StadiumRuntime:
             raise RuntimeError(f"Assigned stadium folder or archive not found: {source_path}")
         dest = app.exedir / "data" / "sceneassets"
         other_id = "261" if injid == "176" else "176"
-        clear_stadium_inj_files(dest, other_id)
+        # Reset the other slot to its vanilla default rather than emptying it, so it's
+        # never left in a broken/missing state (see restore_stadium_inj_files docstring).
+        restore_stadium_inj_files(dest, app.exedir / "FSW" / "Stadium", other_id)
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
         glare3 = stad / "3"

@@ -1990,7 +1990,13 @@ function GetRMKit(idx,pos)
 	kitstring = kitstring.."data/sceneassets/kit/kit_6004_"..db.player[idx].kitType.."_"..db.player[idx].defaulttournid..".rx3;"
 	
 	kitstring = kitstring.."data/sceneassets/kit/kit_"..db.player[idx].genkit.."_"..db.player[idx].kitType.."_0.rx3;"
-	kitstring = kitstring.."data/sceneassets/kit/kit_"..db.player[idx].kit.."_"..db.player[idx].kitType.."_0.rx3"
+	kitstring = kitstring.."data/sceneassets/kit/kit_"..db.player[idx].kit.."_"..db.player[idx].kitType.."_0.rx3;"
+	-- Guaranteed fallback: db.player[idx].kit is only normalized into the
+	-- 6004-6009 referee kit range when the raw DB value is > 6100 (see "PL REF
+	-- KIT FIX" above). Competitions whose referee kit id falls outside that
+	-- range leave kit un-normalized, so every candidate above can miss and the
+	-- chain would otherwise end on an asset that doesn't exist -> checkerboard.
+	kitstring = kitstring.."data/sceneassets/kit/kit_6004_"..db.player[idx].kitType.."_0.rx3"
 	end
 	
 	--FEMALE REFEREE KITS

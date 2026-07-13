@@ -381,7 +381,11 @@ class UIMixin:
         self.dashboard_window_id = self.dashboard_canvas.create_window((0, 0), window=dashboard, anchor="nw")
         dashboard.bind("<Configure>", self._on_dashboard_configure)
         self.dashboard_canvas.bind("<Configure>", self._on_dashboard_canvas_configure)
-        self.dashboard_canvas.bind_all("<MouseWheel>", self._on_dashboard_mousewheel)
+        # add="+" — multiple tabs each bind_all their own scoped mousewheel handler
+        # (see _on_dashboard_mousewheel / _on_setup_mousewheel); without "+" each new
+        # bind_all replaces the previous one on the shared "all" bindtag, leaving only
+        # the most-recently-built tab's canvas able to scroll.
+        self.dashboard_canvas.bind_all("<MouseWheel>", self._on_dashboard_mousewheel, add="+")
         dashboard.grid_columnconfigure(0, weight=3)
         dashboard.grid_columnconfigure(1, weight=2)
         dashboard.grid_rowconfigure(0, weight=1)
@@ -721,31 +725,30 @@ class UIMixin:
         if self.dashboard_canvas is not None and self.dashboard_window_id is not None:
             self.dashboard_canvas.itemconfigure(self.dashboard_window_id, width=width)
 
-    def _on_dashboard_mousewheel(self, event) -> None:
-        if self.tabview is None or self.dashboard_canvas is None:
-            return
-        current = self.tabview.nametowidget(self.tabview.select())
-        if current is not self.dashboard_tab:
-            return
+    def _event_widget_belongs_to(self, event, *containers) -> bool:
+        """True if event's target widget is one of, or nested inside, any of containers.
+
+        bind_all fires for every widget in the app, so callers must check this
+        before acting — otherwise a global mousewheel handler bound by one tab
+        would also fire while scrolling over unrelated widgets/tabs.
+        """
         widget = event.widget
         if isinstance(widget, str):
             try:
                 widget = self.nametowidget(widget)
             except Exception:
-                widget = None
+                return False
         if widget is None:
-            return
+            return False
         try:
             if widget.winfo_toplevel() is not self._window():
-                return
+                return False
         except Exception:
-            return
+            return False
         cursor = widget
-        belongs_to_dashboard = False
         while cursor is not None:
-            if cursor is self.dashboard_canvas or cursor is self.dashboard_content:
-                belongs_to_dashboard = True
-                break
+            if cursor in containers:
+                return True
             try:
                 parent_name = cursor.winfo_parent()
             except Exception:
@@ -756,9 +759,27 @@ class UIMixin:
                 cursor = cursor._nametowidget(parent_name)
             except Exception:
                 break
-        if not belongs_to_dashboard:
+        return False
+
+    def _on_dashboard_mousewheel(self, event) -> None:
+        if self.tabview is None or self.dashboard_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.dashboard_tab:
+            return
+        if not self._event_widget_belongs_to(event, self.dashboard_canvas, self.dashboard_content):
             return
         self.dashboard_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_setup_mousewheel(self, event) -> None:
+        if self.tabview is None or self._setup_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.setup_tab:
+            return
+        if not self._event_widget_belongs_to(event, self._setup_canvas, self._setup_canvas_body):
+            return
+        self._setup_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _build_placeholder(self, parent: tk.Misc, width: int, height: int, text: str, bg: str | None = None) -> tk.Canvas:
         bg_color = bg or self.card_soft
@@ -1150,12 +1171,24 @@ class UIMixin:
         self.settings.save()
 
     def _toggle_custom_kit_numbers(self) -> None:
-        from .file_tools import set_kit_number_scheme
+        from .file_tools import general_lua_is_foreign, set_kit_number_scheme
 
         custom = self._setup_install_vars["custom_kit_numbers"].get()
         self.settings.custom_kit_numbers = custom
         general_lua = self.exedir / "data" / "fifarna" / "lua" / "assignments" / "general.lua"
-        set_kit_number_scheme(general_lua, custom)
+        template = None
+        for base in (self.resource_dir, self.base_dir):
+            candidate = base / "install_data" / "data" / "fifarna" / "lua" / "assignments" / "general.lua"
+            if candidate.exists():
+                template = candidate
+                break
+        if template is not None and general_lua_is_foreign(general_lua, template):
+            messagebox.showwarning(
+                self.tr("message.kit_numbers"),
+                self.tr("message.warning.foreign_general_lua"),
+            )
+            return
+        set_kit_number_scheme(general_lua, custom, template)
 
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
@@ -1367,7 +1400,11 @@ class UIMixin:
 
         body.bind("<Configure>", _on_body_configure)
         canvas.bind("<Configure>", _on_canvas_configure)
-        canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+        self._setup_canvas = canvas
+        self._setup_canvas_body = body
+        # add="+" — see the comment on the dashboard's bind_all for why this must
+        # not replace other tabs' scoped mousewheel handlers.
+        canvas.bind_all("<MouseWheel>", self._on_setup_mousewheel, add="+")
 
         body.columnconfigure(0, weight=1, uniform="setupcol")
         body.columnconfigure(1, weight=1, uniform="setupcol")
@@ -1425,30 +1462,6 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_nav", "fsw_nav")
         source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
         source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
-        source_row(left_col, "setup.item.revmod_lua", "revmod_lua")
-        # Total-conversion mods (e.g. FIFA Infinity) ship their own data/fifarna/lua
-        # and don't need ours, and even a clean vanilla install only needs it when
-        # assets aren't loading — so this one starts unchecked, unlike every other
-        # source_row above. Users opt in explicitly instead of Setup installing it
-        # (and potentially overwriting a working mod's lua) by default.
-        _revmod_var = self._setup_install_vars.get("revmod_lua")
-        if _revmod_var is not None:
-            _revmod_var.set(False)
-
-        _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
-        self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
-        _kit_numbers_row = tk.Frame(left_col, bg=self.card)
-        _kit_numbers_row.pack(fill="x", pady=2)
-        tk.Checkbutton(
-            _kit_numbers_row, variable=_kit_numbers_var,
-            command=self._toggle_custom_kit_numbers,
-            bg=self.card, activebackground=self.card,
-            fg=self.fg, selectcolor=self.panel,
-            relief="flat", bd=0, cursor="hand2",
-            highlightthickness=0,
-        ).pack(side="left")
-        tk.Label(_kit_numbers_row, text="  ", bg=self.card, width=2).pack(side="left")
-        tk.Label(_kit_numbers_row, text=self.tr("setup.item.custom_kit_numbers"), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
 
         section(left_col, "setup.section.user_folders")
         status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -1471,6 +1484,35 @@ class UIMixin:
         status_row(right_col, "setup.item.dest_nav", "dest_nav")
         status_row(right_col, "setup.item.dest_movies", "dest_movies")
         status_row(right_col, "setup.item.dest_camera", "dest_camera")
+
+        # "Extra" section: everything here is optional and never required for a
+        # working install — a clean install loads stadiums fine through CGFS's
+        # own injection without any of this. Total-conversion mods (e.g. FIFA
+        # Infinity) ship their own data/fifarna/lua and don't need ours, and
+        # installing ours over a mod's lua can overwrite a working config — so
+        # it's grouped separately and starts unchecked, unlike the source_row
+        # items above.
+        section(right_col, "setup.section.extra")
+        source_row(right_col, "setup.item.revmod_lua", "revmod_lua")
+        _revmod_var = self._setup_install_vars.get("revmod_lua")
+        if _revmod_var is not None:
+            _revmod_var.set(False)
+
+        _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
+        self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
+        _kit_numbers_row = tk.Frame(right_col, bg=self.card)
+        _kit_numbers_row.pack(fill="x", pady=2)
+        tk.Checkbutton(
+            _kit_numbers_row, variable=_kit_numbers_var,
+            command=self._toggle_custom_kit_numbers,
+            bg=self.card, activebackground=self.card,
+            fg=self.fg, selectcolor=self.panel,
+            relief="flat", bd=0, cursor="hand2",
+            highlightthickness=0,
+        ).pack(side="left")
+        tk.Label(_kit_numbers_row, text="  ", bg=self.card, width=2).pack(side="left")
+        tk.Label(_kit_numbers_row, text=self.tr("setup.item.custom_kit_numbers"), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
+
         status_row(right_col, "setup.item.dest_lua", "dest_lua")
 
         self.refresh_setup_tab()
@@ -1634,11 +1676,9 @@ class UIMixin:
         if not all(_Path(p).exists() for p in dest_paths):
             return False
 
-        # Any lua asset system counts as satisfied here — a total-conversion mod's own
-        # data/fifarna/lua (e.g. FIFA Infinity) is just as valid as our bundled one.
-        dest_lua_root = exedir / "data" / "fifarna" / "lua"
-        if not (dest_lua_root.exists() and any(dest_lua_root.rglob("*.lua"))):
-            return False
+        # data/fifarna/lua is intentionally not checked here — it's an optional,
+        # last-resort extra. A clean install loads stadiums fine through CGFS's
+        # own injection without any lua present at all.
 
         # User GBD folders
         for path in (self.targetpath, self.TVLogo, self.ScoreBoard, self.Movies):
@@ -1756,11 +1796,11 @@ class UIMixin:
         dest_lua_root = exedir / "data" / "fifarna" / "lua"
         lua_present = dest_lua_root.exists() and any(dest_lua_root.rglob("*.lua"))
         lua_missing = self._lua_assets_missing_files()
-        if lua_missing is None:
-            _set("dest_lua", lua_present, ok_text if lua_present else missing)
-        elif not lua_present:
-            _set("dest_lua", False, missing)
-        elif not lua_missing:
+        # Lua is optional — a clean install loads stadiums fine through CGFS's own
+        # injection without it, so an absent lua is never flagged as an error here.
+        if not lua_present:
+            _set("dest_lua", None, self.tr("setup.status.lua_optional_not_installed"))
+        elif lua_missing is None or not lua_missing:
             _set("dest_lua", True, ok_text)
         else:
             # Something is already there but doesn't match our bundle exactly — could be

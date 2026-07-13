@@ -283,23 +283,41 @@ def clear_bcgameplay(dst_dir: Path, restore_dir: Path) -> None:
             dst.unlink()
 
 
-def clear_stadium_inj_files(sceneassets_dir: Path, inj_id: str) -> None:
-    """Delete all injected stadium files for a given injection ID from sceneassets."""
+def _stadium_inj_file_pairs(sceneassets_dir: Path, fsw_stadium_dir: Path, inj_id: str) -> list[tuple[Path, Path]]:
     sid = inj_id
-    candidates = [
-        sceneassets_dir / "stadium" / f"stadium_{sid}.rx3",
-        sceneassets_dir / "stadium" / f"stadium_{sid}_1_textures.rx3",
-        sceneassets_dir / "stadium" / f"stadium_{sid}_3_textures.rx3",
-        sceneassets_dir / "crowdplacement" / f"crowd_{sid}_1.dat",
-        sceneassets_dir / "crowdplacement" / f"crowd_{sid}_3.dat",
-        sceneassets_dir / "crowdchair" / f"specificchair_0_{sid}.rx3",
+    pairs = [
+        (fsw_stadium_dir / "stadium" / f"stadium_{sid}.rx3", sceneassets_dir / "stadium" / f"stadium_{sid}.rx3"),
+        (fsw_stadium_dir / "stadium" / f"stadium_{sid}_1_textures.rx3", sceneassets_dir / "stadium" / f"stadium_{sid}_1_textures.rx3"),
+        (fsw_stadium_dir / "stadium" / f"stadium_{sid}_3_textures.rx3", sceneassets_dir / "stadium" / f"stadium_{sid}_3_textures.rx3"),
+        (fsw_stadium_dir / "crowdplacement" / f"crowd_{sid}_1.dat", sceneassets_dir / "crowdplacement" / f"crowd_{sid}_1.dat"),
+        (fsw_stadium_dir / "crowdplacement" / f"crowd_{sid}_3.dat", sceneassets_dir / "crowdplacement" / f"crowd_{sid}_3.dat"),
+        (fsw_stadium_dir / "crowdchair" / f"specificchair_0_{sid}.rx3", sceneassets_dir / "crowdchair" / f"specificchair_0_{sid}.rx3"),
     ]
     for suffix in range(4):
         for day_night in ("1", "3"):
-            candidates.append(sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.rx3")
-            candidates.append(sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.lnx")
-    for path in candidates:
-        path.unlink(missing_ok=True)
+            pairs.append((
+                fsw_stadium_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.rx3",
+                sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.rx3",
+            ))
+            pairs.append((
+                fsw_stadium_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.lnx",
+                sceneassets_dir / "fx" / f"glares_{sid}_{day_night}_{suffix}.lnx",
+            ))
+    return pairs
+
+
+def restore_stadium_inj_files(sceneassets_dir: Path, fsw_stadium_dir: Path, inj_id: str) -> None:
+    """Reset a stadium injection slot back to the vanilla default, restoring each file
+    from the FSW/Stadium backup extracted by Setup — or deleting it if no backup exists.
+
+    Used to free up the "other" (currently unused) injection slot before writing a new
+    custom stadium into the active one. Leaving that slot as a complete vanilla stadium
+    — rather than emptying it outright — means a later BH regen or the game itself always
+    finds valid content there instead of nothing, so that slot never gets stuck showing a
+    broken/missing stadium until the next full Setup run.
+    """
+    for src, dst in _stadium_inj_file_pairs(sceneassets_dir, fsw_stadium_dir, inj_id):
+        copy_or_clear(src, dst)
 
 
 def sync_tree(src: str | Path, dst: str | Path, *, skip_suffixes: set[str] | None = None) -> int:
@@ -340,21 +358,63 @@ def copy_if_exists(src: str | Path, dst: str | Path) -> None:
     _copy_file_if_needed(src_path, Path(dst))
 
 
-def set_kit_number_scheme(general_lua_path: str | Path, custom: bool) -> None:
+def _is_cgfs_general_lua(text: str, template_text: str) -> bool:
+    """True if `text` is CGFS's bundled general.lua, unmodified or with the
+    kit-number toggle already applied by set_kit_number_scheme()."""
+    normalized = text.replace("disableOriginalKitNumberIdentifier()", "useOriginalKitNumberIdentifier()")
+    return normalized == template_text
+
+
+def general_lua_is_foreign(general_lua_path: str | Path, template_path: str | Path) -> bool:
+    """True if general_lua_path exists but isn't recognized as CGFS's bundled general.lua.
+
+    Used to detect a total-conversion mod's own general.lua (e.g. FIFA Infinity)
+    before offering to toggle the kit-number scheme on it.
+    """
+    path = Path(general_lua_path)
+    template = Path(template_path)
+    if not path.exists() or not template.exists():
+        return False
+    return not _is_cgfs_general_lua(path.read_text(encoding="utf-8"), template.read_text(encoding="utf-8"))
+
+
+def set_kit_number_scheme(
+    general_lua_path: str | Path,
+    custom: bool,
+    template_path: str | Path | None = None,
+) -> bool:
     """Toggle which kit-number texture naming scheme general.lua asks the engine to use.
 
     Community kitnumbers_X_Y.rx3 font packs are built against one of two
     conventions; whichever one general.lua doesn't select shows a
     checkerboard/missing-texture placeholder for every font using it.
+
+    If template_path is given, the file is only edited when its contents match
+    the CGFS-bundled template (see _is_cgfs_general_lua) — a total-conversion
+    mod's own general.lua (e.g. FIFA Infinity) is left untouched so this never
+    silently overwrites a working mod's Lua config.
+
+    Returns True if the file was updated, False if left untouched (missing,
+    already in the desired state, or not recognized as CGFS's own file).
     """
     path = Path(general_lua_path)
     if not path.exists():
-        return
+        return False
     text = path.read_text(encoding="utf-8")
+
+    if template_path is not None:
+        template = Path(template_path)
+        if not template.exists():
+            return False
+        if not _is_cgfs_general_lua(text, template.read_text(encoding="utf-8")):
+            return False
+
     target_call = "disableOriginalKitNumberIdentifier()" if custom else "useOriginalKitNumberIdentifier()"
     other_call = "useOriginalKitNumberIdentifier()" if custom else "disableOriginalKitNumberIdentifier()"
     if other_call in text:
         path.write_text(text.replace(other_call, target_call, 1), encoding="utf-8")
+        return True
+    return False
 
 
 def copy_or_clear(src: str | Path, dst: str | Path) -> None:
