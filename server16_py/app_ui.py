@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
 from .file_tools import resolve_stadium_preview_path
+from .kit_mixer import KIT_TYPES
 from .update_checker import UpdateCheckResult
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
 
@@ -20,6 +21,20 @@ try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
 except Exception:
     _D3DOverlayInjector = None  # type: ignore[assignment,misc]
+
+# Kit Mixer tab — role keys (display order) and picker "kinds". "image" is used by
+# jersey/shorts/crest (list = existing kit .rx3, import = loose PNG); "rx3" by the
+# kit-numbers pickers (list and import are both .rx3); "dds" by the kit-UI thumbnail
+# picker (list and import are both .dds).
+KITMIX_KEEP_LABEL = "-- keep current --"
+KITMIX_IMPORTED_LABEL_PREFIX = "[image] "
+KITMIX_IMPORTED_RX3_LABEL_PREFIX = "[file] "
+KITMIX_IMPORTED_DDS_LABEL_PREFIX = "[file] "
+KITMIX_PICKER_KINDS = {
+    "image": ("rx3", "img", KITMIX_IMPORTED_LABEL_PREFIX, [("Images", "*.png *.bmp *.jpg *.jpeg"), ("All files", "*.*")], "dialog.kitmix.import_image"),
+    "rx3": ("rx3", "rx3", KITMIX_IMPORTED_RX3_LABEL_PREFIX, [("RX3 files", "*.rx3"), ("All files", "*.*")], "dialog.kitmix.import_rx3"),
+    "dds": ("dds", "dds", KITMIX_IMPORTED_DDS_LABEL_PREFIX, [("DDS files", "*.dds"), ("All files", "*.*")], "dialog.kitmix.import_dds"),
+}
 
 
 def _find_python32(extra_dirs: list | None = None) -> list[str] | None:
@@ -354,11 +369,14 @@ class UIMixin:
         self.audio_tab = tk.Frame(self.tabview, bg=self.bg)
         self.camera_tab = tk.Frame(self.tabview, bg=self.bg)
         self.setup_tab = tk.Frame(self.tabview, bg=self.bg)
+        self.kits_tab = tk.Frame(self.tabview, bg=self.bg)
         self.tabview.add(self.dashboard_tab, text=self.tr("tab.dashboard"))
+        self.tabview.add(self.kits_tab, text=self.tr("tab.kits"))
         self.tabview.add(self.audio_tab, text=self.tr("tab.chants"))
         self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
         self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
         self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
+        self.tabview.select(self.dashboard_tab)
         self.tabview.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         self._build_setup_notice()
@@ -406,6 +424,7 @@ class UIMixin:
         self._build_audio_card()
         self._build_camera_tab()
         self._build_setup_tab()
+        self._build_kits_tab()
         self._build_logs_card()
         self._apply_main_localization()
 
@@ -687,6 +706,29 @@ class UIMixin:
             self._card_title_bindings = []
         self._card_title_bindings.append((title_label, title_key, subtitle_label, subtitle_key))
         return card
+
+    def _dark_listbox(self, parent: tk.Misc, **kwargs) -> tk.Listbox:
+        return tk.Listbox(
+            parent,
+            bg=self.panel,
+            fg=self.fg,
+            selectbackground="#19324d",
+            selectforeground=self.fg,
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#243654",
+            activestyle="none",
+            **kwargs,
+        )
+
+    def _dark_label(self, parent: tk.Misc, text: str, muted: bool = False, **kwargs) -> tk.Label:
+        return tk.Label(
+            parent,
+            text=text,
+            bg=kwargs.pop("bg", self.card),
+            fg=self.muted if muted else self.fg,
+            **kwargs,
+        )
 
     def _register_info_label(self, key: str, widget: tk.Widget) -> None:
         self.info_labels.setdefault(key, []).append(widget)
@@ -1040,6 +1082,443 @@ class UIMixin:
         self._build_stat(body, 1, 1, "stat.status", "status", self.display_value("idle"))
         ttk.Button(card, text=self.tr("button.edit_asset_settings"), command=self.open_assets_settings_editor).pack(fill="x", padx=12, pady=(0, 12))
 
+    def _build_kits_tab(self) -> None:
+        outer = tk.Frame(self.kits_tab, bg=self.bg)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        card = self._card(outer, "card.kitmix.title", "card.kitmix.subtitle")
+        card.pack(fill="both", expand=True)
+
+        self.kitmix_team_id = tk.StringVar(value="")
+        self.kitmix_kittype_labels = {key: key.capitalize() for key in KIT_TYPES}
+        self.kitmix_kittype = tk.StringVar(value=self.kitmix_kittype_labels.get("home", "Home"))
+        self._kitmix_jersey_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_shorts_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_crest_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_jersey_numbers_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_shorts_numbers_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_kitui_source: dict = {"mode": "keep", "path": None}
+        self._kitmix_preview_images: dict = {}
+        self._kitmix_preview_labels: dict = {}
+        self._kitmix_preview_generation: dict = {}
+
+        top = tk.Frame(card, bg=self.card)
+        top.pack(fill="x", padx=12, pady=(0, 6))
+        self._dark_label(top, self.tr("dialog.kitmix.team_id"), bg=self.card, muted=True).pack(side="left")
+        ttk.Entry(top, textvariable=self.kitmix_team_id, width=10).pack(side="left", padx=(6, 12))
+        self._dark_label(top, self.tr("dialog.kitmix.kit_type"), bg=self.card, muted=True).pack(side="left")
+        ttk.Combobox(
+            top, state="readonly", textvariable=self.kitmix_kittype,
+            values=tuple(self.kitmix_kittype_labels.values()), width=10,
+            style="Server16.TCombobox",
+        ).pack(side="left", padx=(6, 12))
+        ttk.Button(top, text=self.tr("dialog.kitmix.refresh"), command=self._kitmix_refresh_lists).pack(side="left")
+        self.kitmix_team_name_label = self._dark_label(top, "", bg=self.card, muted=True)
+        self.kitmix_team_name_label.pack(side="left", padx=(12, 0))
+
+        search_row = tk.Frame(card, bg=self.card)
+        search_row.pack(fill="x", padx=12, pady=(0, 4))
+        self.kitmix_team_search_var = tk.StringVar()
+        self._kitmix_team_search_placeholder_active = False
+        self._kitmix_team_search_ids: list[str] = []
+        search_entry = tk.Entry(
+            search_row,
+            textvariable=self.kitmix_team_search_var,
+            bg=self.panel_alt,
+            fg=self.fg,
+            insertbackground=self.fg,
+            relief="flat",
+            font=("Consolas", 10),
+        )
+        search_entry.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        search_entry.insert(0, self.tr("dialog.kitmix.find_team_by_name"))
+        search_entry.configure(fg=self.muted)
+        self._kitmix_team_search_placeholder_active = True
+
+        def _clear_team_search_placeholder(_event=None) -> None:
+            if self._kitmix_team_search_placeholder_active:
+                search_entry.delete(0, "end")
+                search_entry.configure(fg=self.fg)
+                self._kitmix_team_search_placeholder_active = False
+
+        search_entry.bind("<FocusIn>", _clear_team_search_placeholder)
+        search_entry.bind("<KeyRelease>", self._kitmix_on_team_search)
+        ttk.Button(search_row, text=self.tr("button.use_home_team"), command=self._kitmix_use_home_team).pack(side="left", padx=(0, 6))
+        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitmix_use_away_team).pack(side="left")
+
+        self.kitmix_team_search_results = self._dark_listbox(card, height=4, exportselection=False, font=("Consolas", 9))
+        self.kitmix_team_search_results.bind("<<ListboxSelect>>", self._kitmix_on_team_search_select)
+
+        crest_warning = self._dark_label(
+            card, self.tr("dialog.kitmix.crest_warning"), bg=self.card, muted=True, wraplength=1000, justify="left",
+        )
+        crest_warning.pack(fill="x", padx=12, pady=(0, 6))
+        self._kitmix_team_search_results_anchor = crest_warning
+
+        # Fixed footer — packed before the scroll area so it stays visible.
+        footer = tk.Frame(card, bg=self.card)
+        footer.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
+        self.kitmix_status_label = tk.Label(footer, text=self.display_value("idle"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9))
+        self.kitmix_status_label.pack(anchor="w", pady=(0, 4))
+        btn_row = tk.Frame(footer, bg=self.card)
+        btn_row.pack(fill="x")
+        btn_row.grid_columnconfigure(0, weight=1)
+        btn_row.grid_columnconfigure(1, weight=1)
+        ttk.Button(btn_row, text=self.tr("button.select_and_assign"), command=self._kitmix_submit).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("button.restore_kit_original"), command=self.restore_kit_original).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        # Scrollable body: source pickers grid + previews.
+        scroll_host = tk.Frame(card, bg=self.card)
+        scroll_host.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        canvas = tk.Canvas(scroll_host, bg=self.card, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        body = tk.Frame(canvas, bg=self.card)
+        canvas_win = canvas.create_window((0, 0), window=body, anchor="nw")
+
+        def _on_body_configure(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(canvas_win, width=e.width)
+
+        body.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        self._kits_canvas = canvas
+        self._kits_canvas_body = body
+        # add="+" — see the comment on the dashboard's bind_all for why this must
+        # not replace other tabs' scoped mousewheel handlers.
+        canvas.bind_all("<MouseWheel>", self._on_kits_mousewheel, add="+")
+
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+        body.grid_columnconfigure(2, weight=1)
+
+        self._kitmix_jersey_list = self._kitmix_build_source_picker(body, 0, 0, self.tr("dialog.kitmix.jersey"), self._kitmix_jersey_source, role_key="jersey")
+        self._kitmix_shorts_list = self._kitmix_build_source_picker(body, 1, 0, self.tr("dialog.kitmix.shorts"), self._kitmix_shorts_source, role_key="shorts")
+        self._kitmix_crest_list = self._kitmix_build_source_picker(body, 2, 0, self.tr("dialog.kitmix.crest"), self._kitmix_crest_source, role_key="crest")
+        self._kitmix_jersey_numbers_list = self._kitmix_build_source_picker(
+            body, 0, 1, self.tr("dialog.kitmix.jersey_numbers"), self._kitmix_jersey_numbers_source,
+            import_kind="rx3", list_fn=lambda team_id: self.kit_mixer.list_available_kitnumbers(team_id),
+            role_key="jersey_numbers",
+        )
+        self._kitmix_shorts_numbers_list = self._kitmix_build_source_picker(
+            body, 1, 1, self.tr("dialog.kitmix.shorts_numbers"), self._kitmix_shorts_numbers_source,
+            import_kind="rx3", list_fn=lambda team_id: self.kit_mixer.list_available_kitnumbers(team_id),
+            role_key="shorts_numbers",
+        )
+        self._kitmix_kitui_list = self._kitmix_build_source_picker(
+            body, 2, 1, self.tr("dialog.kitmix.kitui"), self._kitmix_kitui_source,
+            import_kind="dds", list_fn=lambda team_id: self.kit_mixer.list_available_kitui(team_id),
+            role_key="kitui",
+        )
+
+        self._kitmix_refresh_lists()
+
+    def _kitmix_card(self, parent: tk.Misc, title: str) -> tk.Frame:
+        card = tk.Frame(parent, bg=self.card, highlightthickness=1, highlightbackground="#243654")
+        header = tk.Frame(card, bg=self.card)
+        header.pack(fill="x", padx=14, pady=(12, 8))
+        tk.Label(header, text=title, bg=self.card, fg=self.fg, font=("Bahnschrift", 13, "bold")).pack(anchor="w")
+        return card
+
+    def _kitmix_build_source_picker(
+        self, parent: tk.Misc, column: int, row: int, title: str, source: dict,
+        import_kind: str = "image", list_fn=None, role_key: str = "",
+    ) -> tk.Listbox:
+        from pathlib import Path
+
+        list_mode, imported_mode, imported_prefix, filetypes, button_key = KITMIX_PICKER_KINDS[import_kind]
+        card = self._kitmix_card(parent, title)
+        card.grid(
+            row=row, column=column, sticky="nsew",
+            padx=(0 if column == 0 else 6, 0 if column == 2 else 6),
+            pady=(0 if row == 0 else 8, 0),
+        )
+        body_row = tk.Frame(card, bg=self.card)
+        body_row.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        listbox = self._dark_listbox(body_row, exportselection=False, height=10, font=("Consolas", 10))
+        listbox.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        listbox._list_fn = list_fn or (lambda team_id: self.kit_mixer.list_available_kits(team_id))
+
+        if role_key:
+            self._kitmix_build_inline_preview(body_row, role_key)
+
+        def on_select(_event=None) -> None:
+            sel = listbox.curselection()
+            if not sel:
+                return
+            label = listbox.get(sel[0])
+            if label == KITMIX_KEEP_LABEL:
+                source["mode"] = "keep"
+                source["path"] = None
+            elif label.startswith(imported_prefix):
+                # path was stashed on the listbox when the file was imported
+                source["mode"] = imported_mode
+                source["path"] = getattr(listbox, "_imported_path", None)
+            else:
+                source["mode"] = list_mode
+                source["path"] = getattr(listbox, "_kit_paths", {}).get(label)
+            if role_key:
+                self._kitmix_on_source_changed(role_key, source)
+
+        listbox.bind("<<ListboxSelect>>", on_select)
+
+        def import_file() -> None:
+            path = filedialog.askopenfilename(title=self.tr(button_key), filetypes=filetypes)
+            if not path:
+                return
+            listbox._imported_path = path
+            label = f"{imported_prefix}{Path(path).name}"
+            listbox.delete(0, "end")
+            listbox.insert("end", KITMIX_KEEP_LABEL)
+            listbox.insert("end", label)
+            for kit_name in getattr(listbox, "_kit_paths", {}):
+                listbox.insert("end", kit_name)
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(1)
+            source["mode"] = imported_mode
+            source["path"] = path
+            if role_key:
+                self._kitmix_on_source_changed(role_key, source)
+
+        ttk.Button(card, text=self.tr(button_key), command=import_file).pack(fill="x", padx=12, pady=(0, 12))
+        return listbox
+
+    def _kitmix_populate_list(self, listbox: tk.Listbox, source: dict, role_key: str = "") -> None:
+        team_id = self.kitmix_team_id.get().strip()
+        kits = listbox._list_fn(team_id) if team_id else []
+        kit_paths = {p.name: str(p) for p in kits}
+        listbox._kit_paths = kit_paths
+        listbox.delete(0, "end")
+        listbox.insert("end", KITMIX_KEEP_LABEL)
+        for name in kit_paths:
+            listbox.insert("end", name)
+        listbox.selection_clear(0, "end")
+        listbox.selection_set(0)
+        source["mode"] = "keep"
+        source["path"] = None
+        if role_key:
+            self._kitmix_on_source_changed(role_key, source)
+
+    def _kitmix_refresh_lists(self) -> None:
+        team_id = self.kitmix_team_id.get().strip()
+        name = self._resolve_team_name(team_id) if team_id else None
+        if self.kitmix_team_name_label is not None:
+            label_text = name or ""
+            if team_id:
+                folder_name = self.kit_mixer.kits_folder_name(team_id)
+                if folder_name != team_id:
+                    label_text = f"{label_text} ({folder_name})" if label_text else folder_name
+            self.kitmix_team_name_label.configure(text=label_text)
+        self._kitmix_populate_list(self._kitmix_jersey_list, self._kitmix_jersey_source, "jersey")
+        self._kitmix_populate_list(self._kitmix_shorts_list, self._kitmix_shorts_source, "shorts")
+        self._kitmix_populate_list(self._kitmix_crest_list, self._kitmix_crest_source, "crest")
+        self._kitmix_populate_list(self._kitmix_jersey_numbers_list, self._kitmix_jersey_numbers_source, "jersey_numbers")
+        self._kitmix_populate_list(self._kitmix_shorts_numbers_list, self._kitmix_shorts_numbers_source, "shorts_numbers")
+        self._kitmix_populate_list(self._kitmix_kitui_list, self._kitmix_kitui_source, "kitui")
+
+    def _kitmix_on_tab_shown(self) -> None:
+        if not self.kitmix_team_id.get().strip():
+            default_team = self.HID or self.AID or ""
+            if default_team:
+                self.kitmix_team_id.set(default_team)
+        self._kitmix_refresh_lists()
+
+    def _kitmix_on_team_search(self, _event=None) -> None:
+        query = self.kitmix_team_search_var.get().strip().lower()
+        self.kitmix_team_search_results.delete(0, "end")
+        self._kitmix_team_search_ids = []
+        if not query:
+            self.kitmix_team_search_results.pack_forget()
+            return
+        self.kitmix_team_search_results.pack(
+            fill="x", padx=12, pady=(0, 6), before=self._kitmix_team_search_results_anchor,
+        )
+        team_db = self.team_db
+        if team_db is None:
+            self.kitmix_team_search_results.insert("end", self.tr("dialog.kitmix.team_db_unavailable"))
+            return
+        matches = sorted(
+            ((team_id, name) for team_id, name in team_db.team_cache.items() if query in name.lower()),
+            key=lambda pair: pair[1].lower(),
+        )
+        if not matches:
+            self.kitmix_team_search_results.insert("end", self.tr("dialog.kitmix.no_team_matches"))
+            return
+        for team_id, name in matches[:30]:
+            self.kitmix_team_search_results.insert("end", f"{name}  ({team_id})")
+            self._kitmix_team_search_ids.append(team_id)
+
+    def _kitmix_on_team_search_select(self, _event=None) -> None:
+        selection = self.kitmix_team_search_results.curselection()
+        if not selection or selection[0] >= len(self._kitmix_team_search_ids):
+            return
+        self._kitmix_select_team(self._kitmix_team_search_ids[selection[0]])
+
+    def _kitmix_use_home_team(self) -> None:
+        self._kitmix_use_match_team(self.HID)
+
+    def _kitmix_use_away_team(self) -> None:
+        self._kitmix_use_match_team(self.AID)
+
+    def _kitmix_use_match_team(self, team_id: str) -> None:
+        team_id = (team_id or "").strip()
+        if not team_id:
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.no_match_team"))
+            return
+        self._kitmix_select_team(team_id)
+
+    def _kitmix_select_team(self, team_id: str) -> None:
+        self.kitmix_team_id.set(team_id)
+        self.kitmix_team_search_var.set("")
+        self.kitmix_team_search_results.delete(0, "end")
+        self.kitmix_team_search_results.pack_forget()
+        self._kitmix_team_search_ids = []
+        self._kitmix_refresh_lists()
+
+    def _kitmix_build_inline_preview(self, parent: tk.Misc, role_key: str) -> None:
+        frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        frame.pack(side="left", fill="y")
+        label = tk.Label(
+            frame, text=self.tr("dialog.kitmix.no_changes"), bg=self.panel, fg=self.muted,
+            anchor="center", justify="center", wraplength=88, font=("Bahnschrift", 8),
+        )
+        label.pack(padx=6, pady=6, ipadx=2, ipady=2)
+        label.image_size = (88, 88)
+        self._kitmix_preview_labels[role_key] = label
+
+    def _kitmix_on_source_changed(self, role_key: str, source: dict) -> None:
+        from pathlib import Path
+
+        generation = self._kitmix_preview_generation.get(role_key, 0) + 1
+        self._kitmix_preview_generation[role_key] = generation
+        mode = source.get("mode", "keep")
+        path = source.get("path")
+
+        if mode == "keep" or not path:
+            self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.no_changes"))
+            return
+
+        if mode == "img":
+            self._kitmix_show_preview_image_path(role_key, Path(path))
+            return
+
+        # mode == "rx3" or "dds": needs the 32-bit FifaLibrary bridge — render off the UI thread.
+        self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.loading"))
+
+        def worker() -> None:
+            try:
+                png_path = self.kit_mixer.render_preview(path, role_key)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - surfaced as a preview placeholder
+                png_path, error = None, exc
+            self.after(0, lambda: self._kitmix_apply_preview_result(role_key, generation, png_path, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _kitmix_apply_preview_result(self, role_key: str, generation: int, png_path, error) -> None:
+        # A newer selection may have superseded this one while the worker ran.
+        if self._kitmix_preview_generation.get(role_key) != generation:
+            return
+        if error is not None or png_path is None:
+            self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.preview_error"))
+            return
+        self._kitmix_show_preview_image_path(role_key, png_path)
+
+    def _kitmix_show_preview_placeholder(self, role_key: str, text: str) -> None:
+        label = self._kitmix_preview_labels.get(role_key)
+        if not label:
+            return
+        self._kitmix_preview_images.pop(role_key, None)
+        label.configure(image="", text=text, compound="center")
+
+    def _kitmix_show_preview_image_path(self, role_key: str, path) -> None:
+        label = self._kitmix_preview_labels.get(role_key)
+        if not label:
+            return
+        try:
+            image = Image.open(path).convert("RGBA")
+            image.thumbnail(getattr(label, "image_size", (150, 150)))
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.preview_error"))
+            return
+        self._kitmix_preview_images[role_key] = photo
+        label.configure(image=photo, text="", compound="center")
+
+    def _kitmix_submit(self) -> None:
+        if self.fifaEXE == "default":
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
+            return
+        team_id = self.kitmix_team_id.get().strip()
+        if not team_id:
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
+            return
+        kittype_label = self.kitmix_kittype.get()
+        kittype = next((k for k, v in self.kitmix_kittype_labels.items() if v == kittype_label), "home")
+        kittype_code = KIT_TYPES.get(kittype, "0")
+        jersey = dict(self._kitmix_jersey_source)
+        shorts = dict(self._kitmix_shorts_source)
+        crest = dict(self._kitmix_crest_source)
+        jersey_numbers = dict(self._kitmix_jersey_numbers_source)
+        shorts_numbers = dict(self._kitmix_shorts_numbers_source)
+        kitui = dict(self._kitmix_kitui_source)
+
+        window = self._window()
+        window.configure(cursor="watch")
+        window.update_idletasks()
+        try:
+            result = self.kit_mixer.apply_mix(team_id, kittype_code, jersey, shorts, crest)
+            self.log(f"Kit mix applied: team={team_id} kittype={kittype_code} -> {result['output']}")
+            self.kit_mixer.apply_numbers(team_id, kittype_code, jersey_numbers, shorts_numbers)
+            self.kit_mixer.apply_kitui(team_id, kittype_code, kitui)
+            if self.kitmix_status_label is not None:
+                self.kitmix_status_label.configure(text=self.tr("kitmix.applied_prefix", team=team_id))
+            messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitmix.apply_success", team=team_id))
+        except Exception as exc:
+            self.log("Failed to apply kit mix", exc, exc_info=sys.exc_info())
+            messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitmix.apply_failed", error=exc))
+        finally:
+            window.configure(cursor="")
+
+    def _on_kits_mousewheel(self, event) -> None:
+        if self.tabview is None or self._kits_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.kits_tab:
+            return
+        if not self._event_widget_belongs_to(event, self._kits_canvas, self._kits_canvas_body):
+            return
+        self._kits_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def restore_kit_original(self) -> None:
+        if self.fifaEXE == "default":
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
+            return
+        team_id = self.kitmix_team_id.get().strip()
+        if not team_id:
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
+            return
+        try:
+            for kittype in ("0", "1", "2", "3"):
+                if self.kit_mixer.has_backup(team_id, kittype):
+                    self.kit_mixer.restore_original(team_id, kittype)
+                for slot in ("jersey", "shorts"):
+                    if self.kit_mixer.has_backup_numbers(team_id, kittype, slot):
+                        self.kit_mixer.restore_numbers_original(team_id, kittype, slot)
+                if self.kit_mixer.has_backup_kitui(team_id, kittype):
+                    self.kit_mixer.restore_kitui_original(team_id, kittype)
+            self.log(f"Kit restored to original for team {team_id}")
+            messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitmix.restore_success", team=team_id))
+        except Exception as exc:
+            self.log("Failed to restore kit", exc, exc_info=sys.exc_info())
+            messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitmix.restore_failed", error=exc))
+
     def _build_stadium_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.stadium.title", "card.stadium.subtitle")
         card.grid(row=row, column=0, sticky="nsew", pady=(0, 12))
@@ -1165,6 +1644,9 @@ class UIMixin:
         if self.show_stadium_loading_var.get():
             return
         self._hide_stadium_loading_modal()
+
+    def _toggle_kit_mix_sound(self) -> None:
+        self.settings.kit_mix_sound_feedback = self.kit_mix_sound_var.get()
 
     def _toggle_keep_open(self) -> None:
         self.settings.keep_open_on_game_close = self.keep_open_var.get()
@@ -1593,6 +2075,8 @@ class UIMixin:
             # Re-scan on every visit so users always see live status instead of a
             # possibly stale snapshot from whenever the tab was last built/refreshed.
             self.refresh_setup_tab()
+        elif current is self.kits_tab:
+            self._kitmix_on_tab_shown()
 
     def _lua_assets_missing_files(self) -> list[str] | None:
         """Compare data/fifarna/lua file-by-file against the bundled install_data source.

@@ -704,6 +704,7 @@ def asset_specs() -> list[SectionSpec]:
         SectionSpec("movies", "dialog.editor.choice.competition_movies", kind="simple", directory="MoviesGBD"),
         SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD"),
         SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD"),
+        SectionSpec("kitsid", "dialog.editor.choice.kits_ids", kind="simple", directory="FSW\\Kits"),
     ]
 
 

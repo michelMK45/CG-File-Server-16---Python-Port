@@ -19,6 +19,7 @@ from .chants_runtime import ChantsRuntime, MciAudioPlayer
 from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
+from .kit_mixer import KitMixRuntime
 from .memory_access import Memory
 from .localization import LocalizationManager
 from .offsets import Offsets
@@ -191,8 +192,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.audio_tab = None
         self.camera_tab = None
         self.setup_tab = None
+        self.kits_tab = None
         self._setup_canvas = None
         self._setup_canvas_body = None
+        self._kits_canvas = None
+        self._kits_canvas_body = None
         self._setup_status_vars: dict = {}
         self._setup_install_vars: dict = {}
         self.banner_title_label = None
@@ -276,6 +280,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.chants_runtime = ChantsRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
+        self.kit_mixer = KitMixRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)

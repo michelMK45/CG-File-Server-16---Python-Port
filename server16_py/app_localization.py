@@ -70,6 +70,7 @@ class LocalizationMixin:
             self.help_label.configure(text=self.tr("help.overlay_toggle"))
         if self.tabview is not None:
             self.tabview.tab(self.dashboard_tab, text=self.tr("tab.dashboard"))
+            self.tabview.tab(self.kits_tab, text=self.tr("tab.kits"))
             self.tabview.tab(self.audio_tab, text=self.tr("tab.chants"))
             self.tabview.tab(self.camera_tab, text=self.tr("tab.camera"))
             self.tabview.tab(self.logs_tab, text=self.tr("tab.logs"))
