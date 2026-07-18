@@ -8,6 +8,7 @@ and the subprocess invocation in FifaDatabase.connect().
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -18,6 +19,74 @@ if TYPE_CHECKING:
     from .app import Server16App
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+NAME_COLOR_HEX_RE = re.compile(r"^[0-9A-Fa-f]{6}$")
+
+
+def _patch_assign_kit_details(text: str, team_id: str, kittype: str, hex_color: str) -> str:
+    """Rewrite just the namecolour argument of the team's
+    assignKitDetails(team,kit,namefont,namecolour,lay,numberset,numbercolourshirt,
+    numbercolourshort,fit,collar) call (see player.lua) if one already exists for
+    this team_id+kittype, otherwise insert a new call — with -1 ("don't override")
+    placeholders for every other field — right after the team's last
+    identifyTeamKitColours(team_id, ...) line, or at the end of the file if there
+    is none. Only this one call is touched; everything else in the file (jersey/
+    short/sock colours, other kit types' overrides, ...) is left byte-for-byte
+    untouched.
+    """
+    call_re = re.compile(
+        r"assignKitDetails\(\s*" + re.escape(team_id) + r"\s*,\s*" + re.escape(kittype) + r"\s*,\s*([^)]*)\)"
+    )
+    match = call_re.search(text)
+    if match:
+        args = [a.strip() for a in match.group(1).split(",")]
+        if len(args) < 8:
+            raise ValueError(
+                f"Unexpected assignKitDetails({team_id},{kittype},...) call shape in team lua — refusing to patch it"
+            )
+        args[1] = f'"{hex_color}"'
+        new_call = f"assignKitDetails({team_id},{kittype},{','.join(args)})"
+        return text[: match.start()] + new_call + text[match.end() :]
+
+    new_line = f'assignKitDetails({team_id},{kittype},-1,"{hex_color}",-1,-1,-1,-1,-1,-1)\n'
+    insert_re = re.compile(r"^identifyTeamKitColours\(\s*" + re.escape(team_id) + r"\s*,.*$", re.MULTILINE)
+    last = None
+    for last in insert_re.finditer(text):
+        pass
+    if last is not None:
+        pos = last.end()
+        if pos < len(text) and text[pos] == "\n":
+            pos += 1
+        return text[:pos] + new_line + text[pos:]
+
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + new_line
+
+
+def _extract_assign_kit_details_colors(text: str) -> list[tuple[str, str]]:
+    """Scan `text` for every assignKitDetails(team,kittype,namefont,namecolour,...)
+    call and return the (kittype, namecolour) pairs that actually set a name
+    colour (skips entries left as -1, i.e. "don't override"). The team_id the
+    call itself references is deliberately ignored: kit mixing is meant to work
+    across teams (that's the whole point of the Kit Mixer), so a kit folder's
+    bundled lua may well have been written for a different/reference team than
+    the one it's being applied to here — only the (kit type, colour) shape
+    matters. Some custom kits ship one such ready-made lua alongside their
+    textures (see KitMixRuntime.find_kit_lua_sources) with several calls — one
+    per kit type (home/away/keeper/alt-GK/...) — so this returns all of them
+    rather than picking one, letting the caller present them as choices.
+    """
+    results: list[tuple[str, str]] = []
+    for match in re.finditer(r"assignKitDetails\(\s*\w+\s*,\s*(\w+)\s*,\s*([^)]*)\)", text):
+        kittype = match.group(1)
+        args = [a.strip() for a in match.group(2).split(",")]
+        if len(args) < 2:
+            continue
+        namecolour = args[1].strip("\"'")
+        if NAME_COLOR_HEX_RE.match(namecolour):
+            results.append((kittype, namecolour))
+    return results
 
 # EKitType values confirmed via reflection against FifaLibrary16.dll.
 KIT_TYPES: dict[str, str] = {
@@ -78,6 +147,16 @@ def kitui_filename(team_id: str, kittype: str) -> str:
     return f"j0_{team_id}_{kittype}.dds"
 
 
+# Backup filenames are always <original stem>.original.<ext> (see
+# KitMixRuntime.backup_path) — these mirror kit_filename/kitnumbers_filename/
+# kitui_filename/team_<id>.lua so list_modified_kits can recover (team_id,
+# kittype) from whatever backups it finds on disk.
+_KIT_BACKUP_RE = re.compile(r"^kit_(\d+)_(\d+)_\d+\.original\.rx3$")
+_KITNUMBERS_BACKUP_RE = re.compile(r"^specifickitnumbers_(\d+)_\d+_\d+_(\d+)\.original\.rx3$")
+_KITUI_BACKUP_RE = re.compile(r"^j0_(\d+)_(\d+)\.original\.dds$")
+_TEAM_LUA_BACKUP_RE = re.compile(r"^team_(\d+)\.original\.lua$")
+
+
 class KitMixRuntime:
     """Runtime for mixing jersey/shorts+socks textures across kit .rx3 files."""
 
@@ -123,6 +202,24 @@ class KitMixRuntime:
         if not folder.exists():
             return []
         return sorted(folder.glob("*.rx3"), key=lambda p: p.name.lower())
+
+    def kits_lua_dir(self, team_id: str) -> Path:
+        """Some custom kits ship a ready-made team lua alongside their textures,
+        mirroring the live data/fifarna/lua/assignments/teams/ layout under the
+        kit's own FSW folder — same folder resolution as kits_dir/kitnumbers_dir/
+        kitui_dir above, via kits_folder_name(team_id)/[kitsid]."""
+        return self.app.exedir / "FSW" / "Kits" / self.kits_folder_name(team_id) / "fifarna" / "lua" / "assignments" / "teams"
+
+    def find_kit_lua_sources(self, team_id: str) -> list[Path]:
+        """Every *.lua file present in this team's own kit folder (see
+        kits_lua_dir), regardless of filename. Kit mixing is meant to work
+        across teams, so whatever team_id a bundled lua's own assignKitDetails
+        calls reference doesn't have to match team_id here — see
+        _extract_assign_kit_details_colors."""
+        folder = self.kits_lua_dir(team_id)
+        if not folder.exists():
+            return []
+        return sorted(folder.glob("*.lua"))
 
     def live_kitnumbers_path(self, team_id: str, kittype: str, slot: str) -> Path:
         return self.live_kitnumbers_dir() / kitnumbers_filename(team_id, kittype, slot)
@@ -177,6 +274,12 @@ class KitMixRuntime:
         else:
             live_path.parent.mkdir(parents=True, exist_ok=True)
             live_path.write_bytes(backup.read_bytes())
+        # Once restored, the live file matches the original again, so the
+        # backup marker is removed too — has_backup_*/list_modified_kits key
+        # off "a backup file exists" to mean "currently modified", and a
+        # leftover backup after a successful restore would make an
+        # already-reverted team show up as still modified.
+        backup.unlink(missing_ok=True)
 
     def _resolve_template(self, team_id: str, kittype: str) -> Path:
         live = self.live_kit_path(team_id, kittype)
@@ -346,6 +449,137 @@ class KitMixRuntime:
         self._restore(live_path)
         self.app.log(f"Kit UI thumbnail restored to original for team {team_id} ({kittype}): {live_path}")
         return {"team_id": team_id, "kittype": kittype, "output": str(live_path)}
+
+    def live_team_lua_dir(self) -> Path:
+        return self.app.exedir / "data" / "fifarna" / "lua" / "assignments" / "teams"
+
+    def team_lua_path(self, team_id: str) -> Path:
+        return self.live_team_lua_dir() / f"team_{team_id}.lua"
+
+    def has_backup_name_color(self, team_id: str) -> bool:
+        return self.backup_path(self.team_lua_path(team_id)).exists()
+
+    def list_kit_lua_name_colors(self, team_id: str) -> list[tuple[str, str]]:
+        """(kittype, hex_namecolour) pairs found in any lua bundled in this
+        team's kit folder — see find_kit_lua_sources and
+        _extract_assign_kit_details_colors. Used to offer ready-made colours
+        in the UI instead of making the user look up and type the hex value
+        by hand."""
+        results: list[tuple[str, str]] = []
+        for path in self.find_kit_lua_sources(team_id):
+            results.extend(_extract_assign_kit_details_colors(path.read_text(encoding="utf-8")))
+        return results
+
+    def apply_name_color(self, team_id: str, kittype: str, hex_color: str | None) -> dict:
+        """hex_color is a 6-digit RRGGBB string (no '#'), or None/empty to leave
+        the team's Lua untouched.
+
+        Unlike kit numbers (baked into their rx3 texture, see apply_numbers), the
+        jersey name text is drawn live and tinted by kitNameColor — an ARGB value
+        resolved per team+kit by the game's own Lua (getKitNameColour in
+        player.lua) from an assignKitDetails(...) call in the team's own
+        data/fifarna/lua/assignments/teams/team_<id>.lua. Swapping kit textures
+        never touched that file, which is why the name color used to stay stuck
+        on whatever the roster database's default was. This patches just that
+        one call (see _patch_assign_kit_details).
+        """
+        app = self.app
+        if not team_id:
+            raise ValueError("A team ID is required to change the kit name color")
+        if not hex_color:
+            return {"team_id": team_id, "kittype": kittype, "applied": False}
+        if not NAME_COLOR_HEX_RE.match(hex_color):
+            raise ValueError(f"Invalid name color, expected 6 hex digits with no '#': {hex_color!r}")
+
+        live_path = self.team_lua_path(team_id)
+        self._backup_if_needed(live_path)
+
+        text = live_path.read_text(encoding="utf-8") if live_path.exists() else ""
+        patched = _patch_assign_kit_details(text, team_id, kittype, hex_color)
+        live_path.parent.mkdir(parents=True, exist_ok=True)
+        live_path.write_text(patched, encoding="utf-8")
+
+        app.log(f"Kit name color applied for team {team_id} ({kittype}): {live_path}")
+        return {"team_id": team_id, "kittype": kittype, "applied": True, "output": str(live_path)}
+
+    def restore_name_color_original(self, team_id: str) -> dict:
+        """Restores the whole team_<id>.lua file to its pre-kitserver backup.
+        Team-level, not per-kit-type, since all kit types' overrides live in
+        this one shared file."""
+        live_path = self.team_lua_path(team_id)
+        self._restore(live_path)
+        self.app.log(f"Kit name color restored to original for team {team_id}: {live_path}")
+        return {"team_id": team_id, "output": str(live_path)}
+
+    def restore_kit_type(self, team_id: str, kittype: str) -> None:
+        """Restores jersey/shorts texture, both number slots, and the kit UI
+        thumbnail for exactly this team+kit type — but NOT the name color,
+        which lives in one lua file shared by every kit type of the team (see
+        restore_name_color_original). Lets the restore manager revert e.g.
+        just the Home kit while leaving Away modified."""
+        if self.has_backup(team_id, kittype):
+            self.restore_original(team_id, kittype)
+        for slot in ("jersey", "shorts"):
+            if self.has_backup_numbers(team_id, kittype, slot):
+                self.restore_numbers_original(team_id, kittype, slot)
+        if self.has_backup_kitui(team_id, kittype):
+            self.restore_kitui_original(team_id, kittype)
+
+    def list_modified_kits(self) -> list[dict]:
+        """Scan every live location this runtime writes to for *.original.*
+        backups (see _backup_if_needed) and return one entry per (team_id,
+        kittype) — jersey/shorts texture, numbers, and kit UI are genuinely
+        independent per kit type, so each combination gets its own entry
+        (restorable on its own via restore_kit_type, e.g. revert Home but
+        keep Away). The name color lua is shared by every kit type of a team
+        and can't be split the same way (see apply_name_color), so it gets
+        its own entry per team instead, with kittype=None.
+
+        Each entry: {"team_id": ..., "kittype": "0"|None, "kinds": [...]},
+        kinds being a subset of {"kit", "numbers", "kitui", "name_color"}."""
+        kinds_by_team_kit: dict[tuple[str, str], set[str]] = {}
+        name_color_teams: set[str] = set()
+
+        def note(team_id: str, kittype: str, kind: str) -> None:
+            kinds_by_team_kit.setdefault((team_id, kittype), set()).add(kind)
+
+        kit_dir = self.live_kit_dir()
+        if kit_dir.exists():
+            for path in kit_dir.glob("*.original.rx3"):
+                m = _KIT_BACKUP_RE.match(path.name)
+                if m:
+                    note(m.group(1), m.group(2), "kit")
+
+        kitnumbers_dir = self.live_kitnumbers_dir()
+        if kitnumbers_dir.exists():
+            for path in kitnumbers_dir.glob("*.original.rx3"):
+                m = _KITNUMBERS_BACKUP_RE.match(path.name)
+                if m:
+                    note(m.group(1), m.group(2), "numbers")
+
+        kitui_dir = self.live_kitui_dir()
+        if kitui_dir.exists():
+            for path in kitui_dir.glob("*.original.dds"):
+                m = _KITUI_BACKUP_RE.match(path.name)
+                if m:
+                    note(m.group(1), m.group(2), "kitui")
+
+        lua_dir = self.live_team_lua_dir()
+        if lua_dir.exists():
+            for path in lua_dir.glob("*.original.lua"):
+                m = _TEAM_LUA_BACKUP_RE.match(path.name)
+                if m:
+                    name_color_teams.add(m.group(1))
+
+        entries = [
+            {"team_id": team_id, "kittype": kittype, "kinds": sorted(kinds)}
+            for (team_id, kittype), kinds in sorted(
+                kinds_by_team_kit.items(), key=lambda kv: (int(kv[0][0]), int(kv[0][1]))
+            )
+        ]
+        for team_id in sorted(name_color_teams, key=int):
+            entries.append({"team_id": team_id, "kittype": None, "kinds": ["name_color"]})
+        return entries
 
     def preview_dir(self) -> Path:
         return self.app.base_dir / "runtime" / "kitmix_previews"

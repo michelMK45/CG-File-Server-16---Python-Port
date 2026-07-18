@@ -13,7 +13,7 @@ from PIL import Image, ImageTk
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
 from .file_tools import resolve_stadium_preview_path
-from .kit_mixer import KIT_TYPES
+from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .update_checker import UpdateCheckResult
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
 
@@ -1098,6 +1098,7 @@ class UIMixin:
         self._kitmix_jersey_numbers_source: dict = {"mode": "keep", "path": None}
         self._kitmix_shorts_numbers_source: dict = {"mode": "keep", "path": None}
         self._kitmix_kitui_source: dict = {"mode": "keep", "path": None}
+        self.kitmix_namecolor_var = tk.StringVar(value="")
         self._kitmix_preview_images: dict = {}
         self._kitmix_preview_labels: dict = {}
         self._kitmix_preview_generation: dict = {}
@@ -1164,8 +1165,10 @@ class UIMixin:
         btn_row.pack(fill="x")
         btn_row.grid_columnconfigure(0, weight=1)
         btn_row.grid_columnconfigure(1, weight=1)
+        btn_row.grid_columnconfigure(2, weight=1)
         ttk.Button(btn_row, text=self.tr("button.select_and_assign"), command=self._kitmix_submit).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(btn_row, text=self.tr("button.restore_kit_original"), command=self.restore_kit_original).grid(row=0, column=1, sticky="ew", padx=(6, 0))
+        ttk.Button(btn_row, text=self.tr("button.restore_kit_original"), command=self.restore_kit_original).grid(row=0, column=1, sticky="ew", padx=(6, 6))
+        ttk.Button(btn_row, text=self.tr("button.restore_manager"), command=self._open_kit_restore_manager).grid(row=0, column=2, sticky="ew", padx=(6, 0))
 
         # Scrollable body: source pickers grid + previews.
         scroll_host = tk.Frame(card, bg=self.card)
@@ -1215,8 +1218,89 @@ class UIMixin:
             import_kind="dds", list_fn=lambda team_id: self.kit_mixer.list_available_kitui(team_id),
             role_key="kitui",
         )
+        self._kitmix_build_namecolor_picker(body, 2, 0)
 
         self._kitmix_refresh_lists()
+
+    def _kitmix_build_namecolor_picker(self, parent: tk.Misc, row: int, column: int) -> None:
+        card = self._kitmix_card(parent, self.tr("dialog.kitmix.name_color"))
+        card.grid(row=row, column=column, columnspan=3, sticky="ew", pady=(8, 0))
+        body_row = tk.Frame(card, bg=self.card)
+        body_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        self._kitmix_namecolor_swatch = tk.Label(
+            body_row, text="  ", bg=self.card_soft, width=3,
+            relief="flat", highlightthickness=1, highlightbackground="#243654",
+        )
+        self._kitmix_namecolor_swatch.pack(side="left", padx=(0, 8))
+
+        entry = ttk.Entry(body_row, textvariable=self.kitmix_namecolor_var, width=10)
+        entry.pack(side="left", padx=(0, 8))
+        self.kitmix_namecolor_var.trace_add("write", lambda *_: self._kitmix_update_namecolor_swatch())
+
+        def pick_color() -> None:
+            from tkinter import colorchooser
+
+            current = self.kitmix_namecolor_var.get().strip().lstrip("#")
+            initial = f"#{current}" if NAME_COLOR_HEX_RE.match(current) else None
+            _, hex_value = colorchooser.askcolor(color=initial, title=self.tr("dialog.kitmix.pick_color"))
+            if hex_value:
+                self.kitmix_namecolor_var.set(hex_value.lstrip("#").upper())
+
+        ttk.Button(body_row, text=self.tr("dialog.kitmix.pick_color"), command=pick_color).pack(side="left", padx=(0, 8))
+        self._dark_label(body_row, self.tr("dialog.kitmix.name_color_hint"), bg=self.card, muted=True).pack(side="left", padx=(0, 8))
+
+        self._kitmix_namecolor_combo_var = tk.StringVar(value="")
+        self._kitmix_namecolor_combo = ttk.Combobox(
+            body_row, state="disabled", textvariable=self._kitmix_namecolor_combo_var,
+            values=(), width=24, style="Server16.TCombobox",
+        )
+        self._kitmix_namecolor_combo.pack(side="left")
+        self._kitmix_namecolor_combo.bind("<<ComboboxSelected>>", self._kitmix_on_namecolor_option_select)
+        self._kitmix_namecolor_option_values: list[str] = []
+
+        self._kitmix_update_namecolor_swatch()
+
+    def _kitmix_refresh_namecolor_options(self) -> None:
+        combo = getattr(self, "_kitmix_namecolor_combo", None)
+        if combo is None:
+            return
+        team_id = self.kitmix_team_id.get().strip()
+        self._kitmix_namecolor_option_values = []
+        found = self.kit_mixer.list_kit_lua_name_colors(team_id) if team_id else []
+        if not found:
+            combo.configure(values=(), state="disabled")
+            self._kitmix_namecolor_combo_var.set(self.tr("dialog.kitmix.name_color_none_found"))
+            return
+        code_labels = {code: self.kitmix_kittype_labels.get(name, name) for name, code in KIT_TYPES.items()}
+        labels = []
+        for kittype, hex_value in found:
+            label = code_labels.get(kittype, f"{self.tr('dialog.kitmix.kit_type')} {kittype}")
+            labels.append(f"{label}: #{hex_value.upper()}")
+            self._kitmix_namecolor_option_values.append(hex_value)
+        combo.configure(values=tuple(labels), state="readonly")
+        self._kitmix_namecolor_combo_var.set(self.tr("dialog.kitmix.name_color_found"))
+
+    def _kitmix_on_namecolor_option_select(self, _event=None) -> None:
+        combo = self._kitmix_namecolor_combo
+        values = combo.cget("values")
+        current = self._kitmix_namecolor_combo_var.get()
+        if current not in values:
+            return
+        idx = values.index(current)
+        if idx >= len(self._kitmix_namecolor_option_values):
+            return
+        self.kitmix_namecolor_var.set(self._kitmix_namecolor_option_values[idx].upper())
+
+    def _kitmix_update_namecolor_swatch(self) -> None:
+        swatch = getattr(self, "_kitmix_namecolor_swatch", None)
+        if swatch is None:
+            return
+        hex_value = self.kitmix_namecolor_var.get().strip().lstrip("#")
+        if NAME_COLOR_HEX_RE.match(hex_value):
+            swatch.configure(bg=f"#{hex_value}")
+        else:
+            swatch.configure(bg=self.card_soft)
 
     def _kitmix_card(self, parent: tk.Misc, title: str) -> tk.Frame:
         card = tk.Frame(parent, bg=self.card, highlightthickness=1, highlightbackground="#243654")
@@ -1321,6 +1405,8 @@ class UIMixin:
         self._kitmix_populate_list(self._kitmix_jersey_numbers_list, self._kitmix_jersey_numbers_source, "jersey_numbers")
         self._kitmix_populate_list(self._kitmix_shorts_numbers_list, self._kitmix_shorts_numbers_source, "shorts_numbers")
         self._kitmix_populate_list(self._kitmix_kitui_list, self._kitmix_kitui_source, "kitui")
+        self.kitmix_namecolor_var.set("")
+        self._kitmix_refresh_namecolor_options()
 
     def _kitmix_on_tab_shown(self) -> None:
         if not self.kitmix_team_id.get().strip():
@@ -1477,6 +1563,8 @@ class UIMixin:
             self.log(f"Kit mix applied: team={team_id} kittype={kittype_code} -> {result['output']}")
             self.kit_mixer.apply_numbers(team_id, kittype_code, jersey_numbers, shorts_numbers)
             self.kit_mixer.apply_kitui(team_id, kittype_code, kitui)
+            namecolor_hex = self.kitmix_namecolor_var.get().strip().lstrip("#") or None
+            self.kit_mixer.apply_name_color(team_id, kittype_code, namecolor_hex)
             if self.kitmix_status_label is not None:
                 self.kitmix_status_label.configure(text=self.tr("kitmix.applied_prefix", team=team_id))
             messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitmix.apply_success", team=team_id))
@@ -1496,6 +1584,22 @@ class UIMixin:
             return
         self._kits_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
+    def _restore_team_kit(self, team_id: str) -> None:
+        """Reverts every kit asset (jersey/shorts, both number slots, kit UI
+        thumbnail, name color) this runtime has ever backed up for team_id,
+        across all four kit types. Shared by the single-team "Restore
+        Original" button and the bulk restore manager dialog."""
+        for kittype in ("0", "1", "2", "3"):
+            if self.kit_mixer.has_backup(team_id, kittype):
+                self.kit_mixer.restore_original(team_id, kittype)
+            for slot in ("jersey", "shorts"):
+                if self.kit_mixer.has_backup_numbers(team_id, kittype, slot):
+                    self.kit_mixer.restore_numbers_original(team_id, kittype, slot)
+            if self.kit_mixer.has_backup_kitui(team_id, kittype):
+                self.kit_mixer.restore_kitui_original(team_id, kittype)
+        if self.kit_mixer.has_backup_name_color(team_id):
+            self.kit_mixer.restore_name_color_original(team_id)
+
     def restore_kit_original(self) -> None:
         if self.fifaEXE == "default":
             messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
@@ -1505,19 +1609,97 @@ class UIMixin:
             messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
             return
         try:
-            for kittype in ("0", "1", "2", "3"):
-                if self.kit_mixer.has_backup(team_id, kittype):
-                    self.kit_mixer.restore_original(team_id, kittype)
-                for slot in ("jersey", "shorts"):
-                    if self.kit_mixer.has_backup_numbers(team_id, kittype, slot):
-                        self.kit_mixer.restore_numbers_original(team_id, kittype, slot)
-                if self.kit_mixer.has_backup_kitui(team_id, kittype):
-                    self.kit_mixer.restore_kitui_original(team_id, kittype)
+            self._restore_team_kit(team_id)
             self.log(f"Kit restored to original for team {team_id}")
             messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitmix.restore_success", team=team_id))
         except Exception as exc:
             self.log("Failed to restore kit", exc, exc_info=sys.exc_info())
             messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitmix.restore_failed", error=exc))
+
+    def _open_kit_restore_manager(self) -> None:
+        if self.fifaEXE == "default":
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
+            return
+
+        entries = self.kit_mixer.list_modified_kits()
+        code_labels = {code: self.kitmix_kittype_labels.get(name, code) for name, code in KIT_TYPES.items()}
+        kind_labels = {
+            "kit": f"{self.tr('dialog.kitmix.jersey')}/{self.tr('dialog.kitmix.shorts')}",
+            "numbers": self.tr("dialog.kitmix.jersey_numbers"),
+            "kitui": self.tr("dialog.kitmix.kitui"),
+        }
+
+        win = tk.Toplevel(self._window())
+        win.title(self.tr("dialog.kitmix.restore_manager_title"))
+        win.configure(bg=self.card)
+        win.geometry("460x420")
+        win.transient(self._window())
+        win.grab_set()
+
+        self._dark_label(
+            win, self.tr("dialog.kitmix.restore_manager_hint"), bg=self.card, muted=True,
+            wraplength=420, justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+
+        listbox = self._dark_listbox(win, selectmode="extended", exportselection=False, font=("Consolas", 10))
+        listbox.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+
+        if not entries:
+            listbox.insert("end", self.tr("dialog.kitmix.restore_manager_none"))
+            listbox.configure(state="disabled")
+        else:
+            for entry in entries:
+                team_id = entry["team_id"]
+                kittype = entry["kittype"]
+                name = self._resolve_team_name(team_id) or ""
+                team_label = f"{name} ({team_id})" if name else team_id
+                if kittype is None:
+                    listbox.insert("end", f"{team_label} — {self.tr('dialog.kitmix.name_color_all_kits')}")
+                else:
+                    kittype_label = code_labels.get(kittype, kittype)
+                    kinds = ", ".join(kind_labels.get(k, k) for k in entry["kinds"])
+                    listbox.insert("end", f"{team_label} — {kittype_label}: {kinds}")
+
+        btn_row = tk.Frame(win, bg=self.card)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def select_all() -> None:
+            listbox.selection_set(0, "end")
+
+        def do_restore() -> None:
+            selection = listbox.curselection()
+            if not entries or not selection:
+                return
+            restored_labels: list[str] = []
+            failed_labels: list[str] = []
+            restored_team_ids: set[str] = set()
+            for i in selection:
+                entry = entries[i]
+                team_id = entry["team_id"]
+                kittype = entry["kittype"]
+                label = listbox.get(i)
+                try:
+                    if kittype is None:
+                        self.kit_mixer.restore_name_color_original(team_id)
+                    else:
+                        self.kit_mixer.restore_kit_type(team_id, kittype)
+                    restored_labels.append(label)
+                    restored_team_ids.add(team_id)
+                except Exception as exc:
+                    self.log(f"Failed to restore {label}", exc, exc_info=sys.exc_info())
+                    failed_labels.append(label)
+            if restored_labels:
+                self.log(f"Bulk-restored: {', '.join(restored_labels)}")
+            if self.kitmix_team_id.get().strip() in restored_team_ids:
+                self._kitmix_refresh_lists()
+            win.destroy()
+            if failed_labels:
+                messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitmix.restore_failed", error=", ".join(failed_labels)))
+            elif restored_labels:
+                messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitmix.restore_success", team=", ".join(restored_labels)))
+
+        ttk.Button(btn_row, text=self.tr("dialog.kitmix.select_all"), command=select_all).pack(side="left")
+        ttk.Button(btn_row, text=self.tr("button.restore_kit_original"), command=do_restore).pack(side="right")
 
     def _build_stadium_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.stadium.title", "card.stadium.subtitle")
