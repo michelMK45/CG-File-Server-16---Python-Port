@@ -195,10 +195,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.kits_tab = None
         self._setup_canvas = None
         self._setup_canvas_body = None
+        self._assets_canvas = None
+        self._assets_canvas_body = None
         self._kits_canvas = None
         self._kits_canvas_body = None
         self._setup_status_vars: dict = {}
         self._setup_install_vars: dict = {}
+        self._assets_extract_vars: dict = {}
         self.banner_title_label = None
         self.help_label = None
         self.page_banner = None

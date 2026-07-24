@@ -788,8 +788,12 @@ class AboutDialog(BaseDialog):
     def __init__(self, master: tk.Misc, version: str) -> None:
         super().__init__(master, "dialog.about.title")
         self.resizable(False, False)
-        self.geometry("420x480")
         self._build(version)
+        # Sized from actual packed content rather than a hardcoded WxH —
+        # credits/library rows wrap and grow over time, and a fixed guess
+        # silently clips whatever doesn't fit instead of adapting.
+        self.update_idletasks()
+        self.geometry(f"{self.winfo_reqwidth()}x{self.winfo_reqheight()}")
 
     def _build(self, version: str) -> None:
         header = tk.Frame(self, bg=self.panel, pady=18)
@@ -824,20 +828,27 @@ class AboutDialog(BaseDialog):
 
         tk.Frame(body, bg="#22314b", height=1).pack(fill="x", pady=(0, 14))
 
+        def credit_row(parent: tk.Misc, label_key: str, names: str) -> None:
+            row = tk.Frame(parent, bg=self.bg)
+            row.pack(fill="x", pady=(9, 0))
+            tk.Label(row, text=self.tr(label_key), bg=self.bg, fg=self.muted,
+                     font=("Bahnschrift", 8)).pack(anchor="w")
+            tk.Label(row, text=names, bg=self.bg, fg=self.fg, font=("Bahnschrift", 10, "bold"),
+                     wraplength=360, justify="left", anchor="w").pack(anchor="w", fill="x")
+
         tk.Label(body, text=self.tr("dialog.about.credits"), bg=self.bg, fg=self.muted,
                  font=("Bahnschrift", 8, "bold")).pack(anchor="w")
 
-        for section_key, names in (
-            ("dialog.about.developer", "igorVin"),
-            ("dialog.about.collaborators", "MichelMK, NonoLoko"),
-            ("dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, FIFA 16 COMUNITY"),
-        ):
-            row = tk.Frame(body, bg=self.bg)
-            row.pack(fill="x", pady=(9, 0))
-            tk.Label(row, text=self.tr(section_key), bg=self.bg, fg=self.muted,
-                     font=("Bahnschrift", 8)).pack(anchor="w")
-            tk.Label(row, text=names, bg=self.bg, fg=self.fg,
-                     font=("Bahnschrift", 10, "bold")).pack(anchor="w")
+        credit_row(body, "dialog.about.developer", "igorVin")
+        credit_row(body, "dialog.about.developer_continuing", "MichelMK")
+        credit_row(body, "dialog.about.collaborators", "NonoLoko")
+        credit_row(body, "dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, FIFA 16 COMUNITY")
+
+        tk.Frame(body, bg="#22314b", height=1).pack(fill="x", pady=(14, 0))
+        tk.Label(body, text=self.tr("dialog.about.libraries"), bg=self.bg, fg=self.muted,
+                 font=("Bahnschrift", 8, "bold")).pack(anchor="w", pady=(14, 0))
+
+        credit_row(body, "dialog.about.libraries_fifalib", "FifaLibrary16 (rzocc)")
 
         tk.Frame(self, bg="#22314b", height=1).pack(fill="x")
         foot = tk.Frame(self, bg=self.panel, pady=10)

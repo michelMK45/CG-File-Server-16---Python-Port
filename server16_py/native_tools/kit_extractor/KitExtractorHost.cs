@@ -17,7 +17,8 @@
 //      via pythonnet (this .exe).
 //   2. Launch it with a command line string that IS wrapped in quotes, e.g.
 //      subprocess.Popen('"' + exe_path + '"', ...) rather than
-//      subprocess.Popen([exe_path, ...]) — see _run_extract_kits in app_ui.py.
+//      subprocess.Popen([exe_path, ...]) — see _run_kit_asset_extraction_blocking
+//      in app_ui.py.
 //
 // The game directory is passed via the KITEXTRACTOR_GAMEDIR env var instead of
 // argv, keeping the command line exactly `"<path to this exe>"` so the above
@@ -328,8 +329,16 @@ internal static class Program
             //     teams genuinely have none, so a high failure count here is
             //     expected and not a sign anything is broken — kept as a
             //     best-effort per-team pass since some teams do have one.
+            //
+            // "crest" exports the small team badge shown by CGFS itself on the
+            // Dashboard/overlay (data/ui/imgAssets/crest50x50/light/l<team>.dds
+            // — see app_ui.py's _resolve_team_logo_path), via
+            // Team.Crest50DdsFileName() + ExportFileFromZdata(), the same
+            // filename-then-export idiom "kitui" uses for its thumbnail. One
+            // file per team (not per kittype), so it bypasses the kittype loop
+            // below entirely.
             string assetMode = Environment.GetEnvironmentVariable("KITEXTRACTOR_ASSET") ?? "kit";
-            int itemsPerTeam = (assetMode == "kitnumbers") ? 8 : 4;
+            int itemsPerTeam = (assetMode == "kitnumbers") ? 8 : (assetMode == "crest") ? 1 : 4;
 
             int teamStart = 0;
             int teamCount = teams.Count;
@@ -393,6 +402,38 @@ internal static class Program
             for (int idx = teamStart; idx < teamEnd; idx++)
             {
                 Team team = (Team)teams[idx];
+
+                if (assetMode == "crest")
+                {
+                    i++;
+                    bool exportedCrest = false;
+                    string errorCrest = null;
+                    try
+                    {
+                        string fname = team.Crest50DdsFileName();
+                        exportedCrest = FifaEnvironment.ExportFileFromZdata(fname, gameDir);
+                    }
+                    catch (Exception exc)
+                    {
+                        errorCrest = exc.Message;
+                    }
+
+                    if (exportedCrest) ok++; else failed++;
+
+                    var sbc = new StringBuilder();
+                    sbc.Append("{\"t\":\"progress\",\"i\":").Append(i)
+                       .Append(",\"total\":").Append(total)
+                       .Append(",\"team\":").Append(team.Id)
+                       .Append(",\"ok\":").Append(exportedCrest ? "true" : "false");
+                    if (errorCrest != null)
+                    {
+                        sbc.Append(",\"error\":\"").Append(JsonEscape(errorCrest)).Append("\"");
+                    }
+                    sbc.Append("}");
+                    Emit(sbc.ToString());
+                    continue;
+                }
+
                 for (int kittype = 0; kittype <= 3; kittype++)
                 {
                     if (assetMode == "kitnumbers")
