@@ -8,6 +8,12 @@ set "DISTPATH=dist"
 set "OVERLAY_DLL=bin\cgfs16_overlay.dll"
 set "INJECTOR_EXE=bin\cgfs16_inject.exe"
 set "FIFA_LIBRARY=bin\FifaLibrary16.dll"
+set "KIT_EXTRACTOR_EXE=bin\KitExtractorHost.exe"
+set "UN_CHUNLZMA_EXE=bin\un_chunlzma.exe"
+set "FIFA16_DECRYPTOR_EXE=bin\fifa16_decryptor.exe"
+set "DB_TEMPLATE=bin\Templates\data\db\fifa_ng_db.db"
+set "DB_TEMPLATE_XML=bin\Templates\data\db\fifa_ng_db-meta.xml"
+set "ZLIB_NET_DLL=bin\zlib.net.dll"
 
 echo ============================================================
 echo  CGFS16 - Full Build
@@ -25,11 +31,26 @@ if not exist "bin" mkdir "bin"
 call :build_cpp_helpers
 if errorlevel 1 exit /b 1
 
+call :build_kit_extractor
+if errorlevel 1 exit /b 1
+
 call :require_file "%OVERLAY_DLL%" "Overlay DLL"
 if errorlevel 1 exit /b 1
 call :require_file "%INJECTOR_EXE%" "Overlay injector"
 if errorlevel 1 exit /b 1
 call :require_file "%FIFA_LIBRARY%" "FIFA database library"
+if errorlevel 1 exit /b 1
+call :require_file "%KIT_EXTRACTOR_EXE%" "KitExtractorHost.exe (Extract Kits)"
+if errorlevel 1 exit /b 1
+call :require_file "%UN_CHUNLZMA_EXE%" "un_chunlzma.exe (kit decompressor, ships with Creation Master 16)"
+if errorlevel 1 exit /b 1
+call :require_file "%FIFA16_DECRYPTOR_EXE%" "fifa16_decryptor.exe (db decompressor, ships with FIF Converter)"
+if errorlevel 1 exit /b 1
+call :require_file "%DB_TEMPLATE%" "fifa_ng_db.db template (Extract Kits bootstraps a fresh install's database from this, ships with Creation Master 16's Templates folder)"
+if errorlevel 1 exit /b 1
+call :require_file "%DB_TEMPLATE_XML%" "fifa_ng_db-meta.xml template (same source as fifa_ng_db.db template)"
+if errorlevel 1 exit /b 1
+call :require_file "%ZLIB_NET_DLL%" "zlib.net.dll (Extract Kit UI decompressor, ships with Creation Master 16)"
 if errorlevel 1 exit /b 1
 
 echo [3/4] Setting up 32-bit Python for BH regeneration...
@@ -130,6 +151,38 @@ if exist "%OVERLAY_DLL%" if exist "%INJECTOR_EXE%" (
 
 call :fail "MSVC is unavailable and the prebuilt C++ helpers are missing from bin."
 exit /b 1
+
+:build_kit_extractor
+if /i "%SKIP_KIT_EXTRACTOR_BUILD%"=="1" (
+  echo [INFO] Skipping KitExtractorHost.exe build ^(SKIP_KIT_EXTRACTOR_BUILD=1^), using existing bin\KitExtractorHost.exe.
+  echo.
+  exit /b 0
+)
+
+REM KitExtractorHost.exe is a small .NET Framework x86 console app compiled
+REM with csc.exe (ships with Windows) — see server16_py\native_tools\kit_extractor
+REM for why it must run as a real compiled .exe rather than hosted via pythonnet.
+set "CSC=%WINDIR%\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+if exist "%CSC%" goto compile_kit_extractor
+echo [WARN] csc.exe not found at %CSC% - using existing %KIT_EXTRACTOR_EXE% if present.
+if exist "%KIT_EXTRACTOR_EXE%" (
+  echo [OK] Using existing %KIT_EXTRACTOR_EXE%.
+  echo.
+  exit /b 0
+)
+echo [WARN] %KIT_EXTRACTOR_EXE% is also missing - the "Extract Kits" feature will be unavailable in this build.
+echo.
+exit /b 0
+
+:compile_kit_extractor
+echo Compiling KitExtractorHost.exe ...
+call "server16_py\native_tools\kit_extractor\build.bat"
+if errorlevel 1 (
+  call :fail "KitExtractorHost.exe compilation failed."
+  exit /b 1
+)
+echo.
+exit /b 0
 
 :require_file
 if exist "%~1" exit /b 0

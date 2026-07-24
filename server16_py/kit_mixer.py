@@ -144,7 +144,10 @@ def kitnumbers_filename(team_id: str, kittype: str, slot: str, tourn_id: str = "
 
 
 def kitui_filename(team_id: str, kittype: str) -> str:
-    return f"j0_{team_id}_{kittype}.dds"
+    # Confirmed against a fully-populated install: the kit-type digit is the
+    # "j" prefix (j0=home, j1=away, j2=keeper, j3=third), not a suffix — e.g.
+    # team 1's away kit UI thumbnail is j1_1_0.dds, not j0_1_1.dds.
+    return f"j{kittype}_{team_id}_0.dds"
 
 
 # Backup filenames are always <original stem>.original.<ext> (see
@@ -153,7 +156,7 @@ def kitui_filename(team_id: str, kittype: str) -> str:
 # kittype) from whatever backups it finds on disk.
 _KIT_BACKUP_RE = re.compile(r"^kit_(\d+)_(\d+)_\d+\.original\.rx3$")
 _KITNUMBERS_BACKUP_RE = re.compile(r"^specifickitnumbers_(\d+)_\d+_\d+_(\d+)\.original\.rx3$")
-_KITUI_BACKUP_RE = re.compile(r"^j0_(\d+)_(\d+)\.original\.dds$")
+_KITUI_BACKUP_RE = re.compile(r"^j(\d+)_(\d+)_0\.original\.dds$")
 _TEAM_LUA_BACKUP_RE = re.compile(r"^team_(\d+)\.original\.lua$")
 
 
@@ -423,7 +426,7 @@ class KitMixRuntime:
 
     def apply_kitui(self, team_id: str, kittype: str, cfg: dict | None) -> dict:
         """cfg is a {"mode": "keep"|"dds", "path": "..."} dict for the kit
-        selection screen thumbnail (j0_<team>_<kittype>.dds). Same-format
+        selection screen thumbnail (j<kittype>_<team>_0.dds). Same-format
         plain file copy, like apply_numbers — no FifaLibrary involvement
         needed unless dimensions/compression differ from the target slot."""
         app = self.app
@@ -562,7 +565,10 @@ class KitMixRuntime:
             for path in kitui_dir.glob("*.original.dds"):
                 m = _KITUI_BACKUP_RE.match(path.name)
                 if m:
-                    note(m.group(1), m.group(2), "kitui")
+                    # group(1) is kittype (the "j" prefix digit), group(2) is
+                    # team_id — reversed order vs. the other backup regexes
+                    # because kittype comes first in this filename.
+                    note(m.group(2), m.group(1), "kitui")
 
         lua_dir = self.live_team_lua_dir()
         if lua_dir.exists():

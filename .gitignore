@@ -45,3 +45,10 @@ localpycs/
 *.exp
 *.lib
 .github/agents/copilot-instructions.md.agent.md
+
+# Local build output duplicate — the shipped copy lives in bin/, only the
+# C# source (KitExtractorHost.cs, build.bat) is tracked here.
+server16_py/native_tools/kit_extractor/KitExtractorHost.exe
+
+# Local agent context notes, not part of the shipped project.
+CLAUDE.md

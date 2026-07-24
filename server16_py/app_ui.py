@@ -2023,7 +2023,22 @@ class UIMixin:
         outer = tk.Frame(self.setup_tab, bg=self.bg)
         outer.pack(fill="both", expand=True, padx=10, pady=10)
 
-        card = self._card(outer, "card.setup.title", "card.setup.subtitle")
+        sub_notebook = ttk.Notebook(outer, style="Server16.TNotebook")
+        sub_notebook.pack(fill="both", expand=True)
+        self._setup_sub_notebook = sub_notebook
+
+        general_tab = tk.Frame(sub_notebook, bg=self.bg)
+        assets_tab = tk.Frame(sub_notebook, bg=self.bg)
+        sub_notebook.add(general_tab, text=self.tr("tab.setup.general"))
+        sub_notebook.add(assets_tab, text=self.tr("tab.setup.assets"))
+
+        self._build_setup_general_tab(general_tab)
+        self._build_setup_assets_tab(assets_tab)
+
+        self.refresh_setup_tab()
+
+    def _build_setup_general_tab(self, parent: tk.Frame) -> None:
+        card = self._card(parent, "card.setup.title", "card.setup.subtitle")
         card.pack(fill="both", expand=True)
 
         # Fixed footer — packed before the scroll area so it stays visible
@@ -2179,7 +2194,66 @@ class UIMixin:
 
         status_row(right_col, "setup.item.dest_lua", "dest_lua")
 
-        self.refresh_setup_tab()
+    def _build_setup_assets_tab(self, parent: tk.Frame) -> None:
+        card = self._card(parent, "card.setup_assets.title", "card.setup_assets.subtitle")
+        card.pack(fill="both", expand=True)
+
+        # Fixed footer — progress bar + stop button, same placement pattern as
+        # the General sub-tab's footer.
+        footer = tk.Frame(card, bg=self.card)
+        footer.pack(side="bottom", fill="x", padx=12, pady=(4, 12))
+        pb_row = tk.Frame(footer, bg=self.card)
+        pb_row.pack(fill="x")
+        self._assets_progressbar = ttk.Progressbar(pb_row, mode="determinate", maximum=100, style="Accent.Horizontal.TProgressbar")
+        self._assets_progressbar.pack(side="left", fill="x", expand=True)
+        self._assets_progress_label = tk.Label(pb_row, text="", bg=self.card, fg=self.muted, font=("Bahnschrift", 9), width=22, anchor="w")
+        self._assets_progress_label.pack(side="left", padx=(8, 0))
+        self._assets_stop_btn = ttk.Button(pb_row, text=self.tr("button.stop_extraction"), command=self._stop_extraction, state="disabled")
+        self._assets_stop_btn.pack(side="left", padx=(8, 0))
+
+        body = tk.Frame(card, bg=self.card)
+        body.pack(fill="both", expand=True, padx=12, pady=(6, 0))
+
+        def section(label_key: str) -> None:
+            tk.Frame(body, bg=self.card, height=12).pack(fill="x")
+            tk.Label(body, text=self.tr(label_key), bg=self.card, fg=self.muted, font=("Bahnschrift", 9, "bold")).pack(anchor="w")
+            tk.Frame(body, bg="#243654", height=1).pack(fill="x", pady=(2, 8))
+
+        section("setup_assets.section.database")
+        tk.Label(
+            body, text=self.tr("setup_assets.section.database.hint"), bg=self.card, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=520,
+        ).pack(anchor="w", pady=(0, 6))
+        self._extract_db_btn = ttk.Button(body, text=self.tr("button.extract_database"), command=self._run_extract_database, state="disabled")
+        self._extract_db_btn.pack(anchor="w")
+        self._extract_db_status_label = tk.Label(
+            body, text="", bg=self.card, fg=self.muted, font=("Bahnschrift", 9), anchor="w",
+        )
+        self._extract_db_status_label.pack(anchor="w", pady=(4, 0))
+
+        section("setup_assets.section.kits")
+        tk.Label(
+            body, text=self.tr("setup_assets.section.kits.hint"), bg=self.card, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=520,
+        ).pack(anchor="w", pady=(0, 6))
+        self._extract_kits_btn = ttk.Button(body, text=self.tr("button.extract_kits"), command=self._run_extract_kits, state="disabled")
+        self._extract_kits_btn.pack(anchor="w")
+
+        section("setup_assets.section.kitui")
+        tk.Label(
+            body, text=self.tr("setup_assets.section.kitui.hint"), bg=self.card, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=520,
+        ).pack(anchor="w", pady=(0, 6))
+        self._extract_kitui_btn = ttk.Button(body, text=self.tr("button.extract_kitui"), command=self._run_extract_kitui, state="disabled")
+        self._extract_kitui_btn.pack(anchor="w")
+
+        section("setup_assets.section.kitnumbers")
+        tk.Label(
+            body, text=self.tr("setup_assets.section.kitnumbers.hint"), bg=self.card, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=520,
+        ).pack(anchor="w", pady=(0, 6))
+        self._extract_kitnumbers_btn = ttk.Button(body, text=self.tr("button.extract_kitnumbers"), command=self._run_extract_kitnumbers, state="disabled")
+        self._extract_kitnumbers_btn.pack(anchor="w")
 
     # ── Setup notice (dashboard banner) ───────────────────────────────────────
 
@@ -2408,6 +2482,18 @@ class UIMixin:
             regen_btn = getattr(self, "_regen_bh_btn", None)
             if regen_btn:
                 regen_btn.configure(state="disabled")
+            extract_kits_btn = getattr(self, "_extract_kits_btn", None)
+            if extract_kits_btn:
+                extract_kits_btn.configure(state="disabled")
+            extract_db_btn = getattr(self, "_extract_db_btn", None)
+            if extract_db_btn:
+                extract_db_btn.configure(state="disabled")
+            extract_kitui_btn = getattr(self, "_extract_kitui_btn", None)
+            if extract_kitui_btn:
+                extract_kitui_btn.configure(state="disabled")
+            extract_kitnumbers_btn = getattr(self, "_extract_kitnumbers_btn", None)
+            if extract_kitnumbers_btn:
+                extract_kitnumbers_btn.configure(state="disabled")
             return
 
         from pathlib import Path
@@ -2490,6 +2576,35 @@ class UIMixin:
             # it doesn't depend on our FSW/lua setup having completed successfully.
             game_dir_ok = Path(self.fifaEXE).exists()
             regen_btn.configure(state="normal" if game_dir_ok else "disabled")
+
+        assets_busy = getattr(self, "_assets_extraction_running", False)
+        extract_kits_btn = getattr(self, "_extract_kits_btn", None)
+        if extract_kits_btn and not assets_busy:
+            game_dir_ok = Path(self.fifaEXE).exists()
+            extract_kits_btn.configure(state="normal" if game_dir_ok else "disabled")
+
+        extract_kitui_btn = getattr(self, "_extract_kitui_btn", None)
+        if extract_kitui_btn and not assets_busy:
+            game_dir_ok = Path(self.fifaEXE).exists()
+            extract_kitui_btn.configure(state="normal" if game_dir_ok else "disabled")
+
+        extract_kitnumbers_btn = getattr(self, "_extract_kitnumbers_btn", None)
+        if extract_kitnumbers_btn and not assets_busy:
+            game_dir_ok = Path(self.fifaEXE).exists()
+            extract_kitnumbers_btn.configure(state="normal" if game_dir_ok else "disabled")
+
+        extract_db_btn = getattr(self, "_extract_db_btn", None)
+        db_status_lbl = getattr(self, "_extract_db_status_label", None)
+        if extract_db_btn and not assets_busy:
+            game_dir_ok = Path(self.fifaEXE).exists()
+            # Locked once a database already exists — re-extracting would
+            # overwrite a modded install's own data/db/fifa_ng_db.db with the
+            # generic vanilla template, corrupting it. Delete the file
+            # yourself first if you really need to reset it.
+            db_already_extracted = game_dir_ok and (self.exedir / "data" / "db" / "fifa_ng_db.db").exists()
+            extract_db_btn.configure(state="normal" if (game_dir_ok and not db_already_extracted) else "disabled")
+            if db_status_lbl:
+                db_status_lbl.configure(text=self.tr("setup_assets.database_already_extracted") if db_already_extracted else "")
 
         self._update_setup_notice()
 
@@ -2613,8 +2728,12 @@ class UIMixin:
 
         threading.Thread(target=_work, daemon=True).start()
 
-    def _run_regen_bh(self) -> None:
-        import threading
+    def _run_bh_regen_blocking(self, pb=None) -> tuple[int, int] | None:
+        """Runs bh_worker.py against self.exedir and blocks until it's done,
+        streaming progress to the log and (if given) a progressbar widget.
+        Must be called off the Tk main thread. Returns (ok, failed), or None if
+        the worker couldn't even be launched (missing DLL/interpreter/script —
+        already logged in that case)."""
         import subprocess
         import json as _json
         from pathlib import Path as _Path
@@ -2626,7 +2745,7 @@ class UIMixin:
         dll_path = next((c for c in dll_candidates if c.exists()), None)
         if dll_path is None:
             self.log("Regenerate BH: FifaLibrary16.dll not found in bin/")
-            return
+            return None
 
         worker_candidates = [
             self.resource_dir / "server16_py" / "bh_worker.py",
@@ -2636,7 +2755,7 @@ class UIMixin:
         worker_path = next((c for c in worker_candidates if c.exists()), None)
         if worker_path is None:
             self.log("Regenerate BH: bh_worker.py not found")
-            return
+            return None
 
         python32 = _find_python32(extra_dirs=[self.resource_dir, self.base_dir])
         if python32 is None:
@@ -2644,7 +2763,47 @@ class UIMixin:
                 "Regenerate BH: 32-bit Python not found. "
                 "Install Python x86 from python.org and retry."
             )
-            return
+            return None
+
+        self.after(0, self._set_setup_progress, self.tr("progress.setup.regen_bh"))
+        self.log(f"Regenerate BH: running for {self.exedir}")
+        ok = failed = 0
+        cmd = python32 + [str(worker_path), str(dll_path), str(self.exedir)]
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = _json.loads(line)
+            except ValueError:
+                self.log(f"  [worker] {line}")
+                continue
+            t = msg.get("t")
+            if t == "progress":
+                status = "ok" if msg.get("ok") else f"failed: {msg.get('error', '')}"
+                self.log(f"  {msg['file']} -> {status}")
+                if pb:
+                    value = msg["i"] / msg["total"] * 100
+                    self.after(0, lambda v=value: pb.configure(value=v))
+            elif t == "done":
+                ok, failed = msg.get("ok", 0), msg.get("failed", 0)
+                self.log(f"Regenerate BH: done ({ok} ok, {failed} failed)")
+            elif t == "error":
+                self.log(f"Regenerate BH failed: {msg['msg']}")
+        proc.wait()
+        return ok, failed
+
+    def _run_regen_bh(self) -> None:
+        import threading
 
         btn = getattr(self, "_regen_bh_btn", None)
         if btn:
@@ -2655,39 +2814,7 @@ class UIMixin:
 
         def _work() -> None:
             try:
-                self.after(0, self._set_setup_progress, self.tr("progress.setup.regen_bh"))
-                self.log(f"Regenerate BH: running for {self.exedir}")
-                cmd = python32 + [str(worker_path), str(dll_path), str(self.exedir)]
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    creationflags=subprocess.CREATE_NO_WINDOW,
-                )
-                for line in proc.stdout:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        msg = _json.loads(line)
-                    except ValueError:
-                        self.log(f"  [worker] {line}")
-                        continue
-                    t = msg.get("t")
-                    if t == "progress":
-                        status = "ok" if msg.get("ok") else f"failed: {msg.get('error', '')}"
-                        self.log(f"  {msg['file']} -> {status}")
-                        if pb:
-                            value = msg["i"] / msg["total"] * 100
-                            self.after(0, lambda v=value: pb.configure(value=v))
-                    elif t == "done":
-                        self.log(f"Regenerate BH: done ({msg['ok']} ok, {msg['failed']} failed)")
-                    elif t == "error":
-                        self.log(f"Regenerate BH failed: {msg['msg']}")
-                proc.wait()
+                self._run_bh_regen_blocking(pb)
             except Exception as exc:
                 self.log(f"Regenerate BH failed: {exc}")
             finally:
@@ -2701,6 +2828,379 @@ class UIMixin:
                 btn.configure(state="normal")
 
         threading.Thread(target=_work, daemon=True).start()
+
+    def _find_kit_extractor_exe(self):
+        exe_candidates = [
+            self.resource_dir / "bin" / "KitExtractorHost.exe",
+            self.base_dir / "bin" / "KitExtractorHost.exe",
+        ]
+        return next((c for c in exe_candidates if c.exists()), None)
+
+    def _assets_extraction_begin(self) -> tuple:
+        """Shared setup for Extract Database / Extract Kits / Extract Kit UI /
+        Extract Kit Numbers: disables all four buttons (they share one progress
+        bar/stop button, so only one can run at a time), arms the stop button,
+        and resets the progress bar. Returns the (stop_btn, pb) widgets so
+        callers can restore them."""
+        kits_btn = getattr(self, "_extract_kits_btn", None)
+        db_btn = getattr(self, "_extract_db_btn", None)
+        kitui_btn = getattr(self, "_extract_kitui_btn", None)
+        kitnumbers_btn = getattr(self, "_extract_kitnumbers_btn", None)
+        stop_btn = getattr(self, "_assets_stop_btn", None)
+        for b in (kits_btn, db_btn, kitui_btn, kitnumbers_btn):
+            if b:
+                b.configure(state="disabled")
+        if stop_btn:
+            stop_btn.configure(state="normal")
+        pb = getattr(self, "_assets_progressbar", None)
+        if pb:
+            pb["value"] = 0
+        self._assets_extraction_running = True
+        self._assets_extraction_cancelled = False
+        self._assets_extraction_proc = None
+        return stop_btn, pb
+
+    def _assets_extraction_end(self, stop_btn, pb) -> None:
+        self._assets_extraction_running = False
+        self._assets_extraction_proc = None
+        if pb:
+            pb["value"] = 0
+        self._set_assets_progress("")
+        if stop_btn:
+            stop_btn.configure(state="disabled")
+        # Re-evaluate button state via refresh_setup_tab rather than just
+        # setting "normal" here — Extract Database may have just created
+        # data/db/fifa_ng_db.db, which must immediately re-lock that button.
+        self.refresh_setup_tab()
+
+    def _stop_extraction(self) -> None:
+        """Stops whichever Extract Database/Extract Kits run is currently in
+        progress. Kit extraction runs one KitExtractorHost.exe process per
+        batch, so this kills the current batch's process and stops the loop
+        from starting another one — already-extracted kits are kept."""
+        self._assets_extraction_cancelled = True
+        proc = getattr(self, "_assets_extraction_proc", None)
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.terminate()
+            except Exception as exc:
+                self.log("Stop extraction: failed to terminate process", exc, exc_info=sys.exc_info())
+        self.log("Extraction: stop requested by user")
+
+    def _run_extract_database(self) -> None:
+        import os
+        import threading
+        import subprocess
+        import json as _json
+        from tkinter import messagebox
+
+        exe_path = self._find_kit_extractor_exe()
+        if exe_path is None:
+            self.log("Extract Database: KitExtractorHost.exe not found in bin/")
+            messagebox.showwarning(self.tr("button.extract_database"), self.tr("message.extract_kits.missing_tool"))
+            return
+
+        stop_btn, pb = self._assets_extraction_begin()
+
+        def _work() -> None:
+            fatal_error: str | None = None
+            try:
+                self.after(0, self._set_assets_progress, self.tr("progress.setup.extract_database"))
+                self.log(f"Extract Database: running for {self.exedir}")
+
+                # Zero teams requested: KitExtractorHost.exe still runs its
+                # Initialize/OpenFat/bootstrap-the-db-if-missing/OpenFifaDb
+                # sequence, then its team loop does nothing and it exits
+                # immediately — see KitExtractorHost.cs. Same quoted-command-line
+                # requirement as Extract Kits (see there for why).
+                env = os.environ.copy()
+                env["KITEXTRACTOR_GAMEDIR"] = str(self.exedir)
+                env["KITEXTRACTOR_TEAM_START"] = "0"
+                env["KITEXTRACTOR_TEAM_COUNT"] = "0"
+                env["KITEXTRACTOR_ALLOW_DB_BOOTSTRAP"] = "1"
+                cmdline = f'"{exe_path}"'
+                proc = subprocess.Popen(
+                    cmdline,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding="utf-8",
+                    errors="replace",
+                    creationflags=subprocess.CREATE_NO_WINDOW,
+                    env=env,
+                )
+                self._assets_extraction_proc = proc
+                for line in proc.stdout:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        msg = _json.loads(line)
+                    except ValueError:
+                        self.log(f"  [worker] {line}")
+                        continue
+                    t = msg.get("t")
+                    if t == "ready":
+                        self.log(f"Extract Database: ready ({msg.get('teams', '?')} teams in database)")
+                    elif t == "extracting_db":
+                        self.log("Extract Database: copying template database into place...")
+                    elif t == "error":
+                        fatal_error = msg.get("msg", "unknown error")
+                        self.log(f"Extract Database failed: {fatal_error}")
+                proc.wait()
+                self._assets_extraction_proc = None
+            except Exception as exc:
+                fatal_error = str(exc)
+                self.log(f"Extract Database failed: {exc}")
+            finally:
+                self.after(0, _done, fatal_error)
+
+        def _done(fatal_error: str | None) -> None:
+            self._assets_extraction_end(stop_btn, pb)
+            if self._assets_extraction_cancelled:
+                self.log("Extract Database: cancelled by user")
+                return
+            if fatal_error:
+                messagebox.showerror(self.tr("button.extract_database"), self.tr("message.extract_database.failed", error=fatal_error))
+            else:
+                messagebox.showinfo(self.tr("message.extract_database.complete_title"), self.tr("message.extract_database.complete_body"))
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _run_kit_asset_extraction_blocking(self, asset_mode: str, exe_path, log_label: str, progress_key: str, batch_size: int = 100) -> tuple:
+        """Runs KitExtractorHost.exe in batch_size-team batches for the given
+        asset_mode ("kit", "kitui", or "kitnumbers"), streaming progress to the
+        log and the Assets Extractor progress bar. Blocking — must be called off
+        the Tk main thread (see _run_extract_kits / _run_extract_kitui /
+        _run_extract_kitnumbers). Returns (ok, failed, fatal_error).
+
+        Kit.ExportKitTextures() / the kit-UI / kit-numbers exports all spawn an
+        external decompressor per file, and something in that path leaks a
+        native OS resource (observed as OutOfMemoryException around the ~195th
+        team for the 4-calls/team modes, regardless of which teams those are —
+        a hard resource ceiling, not memory pressure a GC can reclaim). There's
+        no fix available from outside FifaLibrary16.dll, so the roster is
+        processed in small batches, one process per batch, so the OS reclaims
+        whatever's leaking each time a batch's process exits. 100 teams/batch
+        stays well under the observed threshold for the 4-calls/team modes;
+        kitnumbers makes 2x the calls per team (jersey + shorts) so its caller
+        passes a proportionally smaller batch_size."""
+        import os
+        import subprocess
+        import json as _json
+
+        BATCH_SIZE = batch_size
+        ok = failed = 0
+        fatal_error: str | None = None
+        pb = getattr(self, "_assets_progressbar", None)
+
+        self.log(f"{log_label}: running for {self.exedir}")
+        team_start = 0
+        total_teams: int | None = None
+
+        while fatal_error is None and not self._assets_extraction_cancelled:
+            # KitExtractorHost.exe must be launched with a command line that is
+            # exactly '"<path>"' — see the comment at the top of
+            # KitExtractorHost.cs for why a plain argv list corrupts an internal
+            # working-directory computation inside FifaLibrary16.dll. The game
+            # directory, batch range, and asset mode are passed via env vars
+            # instead of argv for the same reason.
+            env = os.environ.copy()
+            env["KITEXTRACTOR_GAMEDIR"] = str(self.exedir)
+            env["KITEXTRACTOR_TEAM_START"] = str(team_start)
+            env["KITEXTRACTOR_TEAM_COUNT"] = str(BATCH_SIZE)
+            env["KITEXTRACTOR_ASSET"] = asset_mode
+            cmdline = f'"{exe_path}"'
+            proc = subprocess.Popen(
+                cmdline,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                env=env,
+            )
+            self._assets_extraction_proc = proc
+            for line in proc.stdout:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    msg = _json.loads(line)
+                except ValueError:
+                    self.log(f"  [worker] {line}")
+                    continue
+                t = msg.get("t")
+                if t == "ready":
+                    total_teams = msg.get("teams")
+                    self.log(
+                        f"{log_label}: batch teams {msg.get('batch_start')}..{msg.get('batch_end')} of {total_teams}"
+                    )
+                elif t == "progress":
+                    if msg.get("ok"):
+                        ok += 1
+                    else:
+                        failed += 1
+                        error = msg.get("error")
+                        if error:
+                            slot = msg.get("slot")
+                            slot_suffix = f" ({slot})" if slot else ""
+                            self.log(f"  team {msg.get('team')} kit {msg.get('kittype')}{slot_suffix} -> failed: {error}")
+                    total = msg.get("total") or 1
+                    i = msg.get("i", 0)
+                    if pb:
+                        value = i / total * 100
+                        self.after(0, lambda v=value: pb.configure(value=v))
+                    text = self.tr(progress_key, current=i, total=total)
+                    self.after(0, self._set_assets_progress, text)
+                elif t == "error":
+                    fatal_error = msg.get("msg", "unknown error")
+                    self.log(f"{log_label} failed: {fatal_error}")
+            proc.wait()
+            self._assets_extraction_proc = None
+
+            team_start += BATCH_SIZE
+            if total_teams is None or team_start >= total_teams:
+                break
+
+        self.log(f"{log_label}: done ({ok} ok, {failed} failed)")
+        return ok, failed, fatal_error
+
+    def _run_extract_kits(self) -> None:
+        import threading
+        from tkinter import messagebox
+
+        exe_path = self._find_kit_extractor_exe()
+        if exe_path is None:
+            self.log("Extract Kits: KitExtractorHost.exe not found in bin/")
+            messagebox.showwarning(self.tr("button.extract_kits"), self.tr("message.extract_kits.missing_tool"))
+            return
+
+        stop_btn, pb = self._assets_extraction_begin()
+
+        def _work() -> None:
+            ok = failed = 0
+            fatal_error: str | None = None
+            try:
+                ok, failed, fatal_error = self._run_kit_asset_extraction_blocking(
+                    "kit", exe_path, "Extract Kits", "progress.setup.extract_kits"
+                )
+            except Exception as exc:
+                fatal_error = str(exc)
+                self.log(f"Extract Kits failed: {exc}")
+            finally:
+                self._assets_extraction_proc = None
+                self.after(0, _done, ok, failed, fatal_error)
+
+        def _done(ok: int, failed: int, fatal_error: str | None) -> None:
+            cancelled = self._assets_extraction_cancelled
+            self._assets_extraction_end(stop_btn, pb)
+            if cancelled:
+                self.log(f"Extract Kits: cancelled by user ({ok} ok, {failed} failed so far)")
+                return
+            if fatal_error:
+                messagebox.showerror(self.tr("button.extract_kits"), self.tr("message.extract_kits.failed", error=fatal_error))
+            else:
+                messagebox.showinfo(
+                    self.tr("message.extract_kits.complete_title"),
+                    self.tr("message.extract_kits.complete_body", ok=ok, failed=failed),
+                )
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _run_extract_kitui(self) -> None:
+        import threading
+        from tkinter import messagebox
+
+        exe_path = self._find_kit_extractor_exe()
+        if exe_path is None:
+            self.log("Extract Kit UI: KitExtractorHost.exe not found in bin/")
+            messagebox.showwarning(self.tr("button.extract_kitui"), self.tr("message.extract_kits.missing_tool"))
+            return
+
+        stop_btn, pb = self._assets_extraction_begin()
+
+        def _work() -> None:
+            ok = failed = 0
+            fatal_error: str | None = None
+            try:
+                ok, failed, fatal_error = self._run_kit_asset_extraction_blocking(
+                    "kitui", exe_path, "Extract Kit UI", "progress.setup.extract_kitui"
+                )
+            except Exception as exc:
+                fatal_error = str(exc)
+                self.log(f"Extract Kit UI failed: {exc}")
+            finally:
+                self._assets_extraction_proc = None
+                self.after(0, _done, ok, failed, fatal_error)
+
+        def _done(ok: int, failed: int, fatal_error: str | None) -> None:
+            cancelled = self._assets_extraction_cancelled
+            self._assets_extraction_end(stop_btn, pb)
+            if cancelled:
+                self.log(f"Extract Kit UI: cancelled by user ({ok} ok, {failed} failed so far)")
+                return
+            if fatal_error:
+                messagebox.showerror(self.tr("button.extract_kitui"), self.tr("message.extract_kitui.failed", error=fatal_error))
+            else:
+                messagebox.showinfo(
+                    self.tr("message.extract_kitui.complete_title"),
+                    self.tr("message.extract_kitui.complete_body", ok=ok, failed=failed),
+                )
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _run_extract_kitnumbers(self) -> None:
+        import threading
+        from tkinter import messagebox
+
+        exe_path = self._find_kit_extractor_exe()
+        if exe_path is None:
+            self.log("Extract Kit Numbers: KitExtractorHost.exe not found in bin/")
+            messagebox.showwarning(self.tr("button.extract_kitnumbers"), self.tr("message.extract_kits.missing_tool"))
+            return
+
+        stop_btn, pb = self._assets_extraction_begin()
+
+        def _work() -> None:
+            ok = failed = 0
+            fatal_error: str | None = None
+            try:
+                # kitnumbers makes 2x the calls per team (jersey + shorts) vs.
+                # kit/kitui, so it gets half the batch size to keep the same
+                # per-batch external-process-spawn ceiling — see
+                # _run_kit_asset_extraction_blocking.
+                ok, failed, fatal_error = self._run_kit_asset_extraction_blocking(
+                    "kitnumbers", exe_path, "Extract Kit Numbers", "progress.setup.extract_kitnumbers", batch_size=50
+                )
+            except Exception as exc:
+                fatal_error = str(exc)
+                self.log(f"Extract Kit Numbers failed: {exc}")
+            finally:
+                self._assets_extraction_proc = None
+                self.after(0, _done, ok, failed, fatal_error)
+
+        def _done(ok: int, failed: int, fatal_error: str | None) -> None:
+            cancelled = self._assets_extraction_cancelled
+            self._assets_extraction_end(stop_btn, pb)
+            if cancelled:
+                self.log(f"Extract Kit Numbers: cancelled by user ({ok} ok, {failed} failed so far)")
+                return
+            if fatal_error:
+                messagebox.showerror(self.tr("button.extract_kitnumbers"), self.tr("message.extract_kitnumbers.failed", error=fatal_error))
+            else:
+                messagebox.showinfo(
+                    self.tr("message.extract_kitnumbers.complete_title"),
+                    self.tr("message.extract_kitnumbers.complete_body", ok=ok, failed=failed),
+                )
+
+        threading.Thread(target=_work, daemon=True).start()
+
+    def _set_assets_progress(self, text: str) -> None:
+        lbl = getattr(self, "_assets_progress_label", None)
+        if lbl:
+            lbl.configure(text=text)
 
     def _set_setup_progress(self, text: str) -> None:
         lbl = getattr(self, "_setup_progress_label", None)
