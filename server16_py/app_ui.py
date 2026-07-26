@@ -2148,6 +2148,7 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_nets", "fsw_nets")
         source_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
         source_row(left_col, "setup.item.fsw_stadium", "fsw_stadium")
+        source_row(left_col, "setup.item.fsw_goalnet", "fsw_goalnet")
         source_row(left_col, "setup.item.fsw_nav", "fsw_nav")
         source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
         source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
@@ -2569,6 +2570,7 @@ class UIMixin:
 
         for key, path in (
             ("fsw_stadium", exedir / "FSW" / "Stadium"),
+            ("fsw_goalnet", exedir / "FSW" / "GoalNet"),
             ("fsw_nav", exedir / "FSW" / "Nav"),
             ("fsw_scoreboard", exedir / "FSW" / "ScoreBoard"),
             ("fsw_tvlogo", exedir / "FSW" / "TVLogo"),
@@ -2668,6 +2670,7 @@ class UIMixin:
         do_nets        = install_vars.get("fsw_nets",       tk.BooleanVar(value=True)).get()
         do_pitch       = install_vars.get("fsw_pitch",      tk.BooleanVar(value=True)).get()
         do_stadium     = install_vars.get("fsw_stadium",    tk.BooleanVar(value=True)).get()
+        do_goalnet     = install_vars.get("fsw_goalnet",    tk.BooleanVar(value=True)).get()
         do_nav         = install_vars.get("fsw_nav",        tk.BooleanVar(value=True)).get()
         do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
         do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
@@ -2731,6 +2734,8 @@ class UIMixin:
                     skip_categories.add("pitch")
                 if not do_stadium:
                     skip_categories.add("stadium")
+                if not do_goalnet:
+                    skip_categories.add("goalnet")
                 if not do_scoreboard:
                     skip_categories.add("scoreboard")
                 if not do_tvlogo:

@@ -110,7 +110,7 @@ class StadiumRuntime:
             # Clear stadium from previous match when this tournament/round is excluded
             app.curstad = ""
             app.ScoreboardStadName = ""
-            clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest")
+            clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
             clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
             return
         section_id = None
@@ -193,7 +193,7 @@ class StadiumRuntime:
         app._hide_stadium_loading_modal()
         app._set_progress(25, "Restoring default stadium")
         copy(app.exedir / "FSW" / "stadium", app.exedir / "data" / "sceneassets")
-        clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest")
+        clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
         clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
         app.curstad = ""
         app.ScoreboardStadName = ""
@@ -354,7 +354,8 @@ class StadiumRuntime:
         )
         goalpost_src = stad / "GoalpostGBD"
         _goalpost_manifest = app.exedir / "FSW" / ".goalpost_manifest"
-        steps.append(("Applying goalpost models", lambda: copy_goalpost(goalpost_src, dest / "goalnet", _goalpost_manifest)))
+        _fsw_goalnet_dir = app.exedir / "FSW" / "GoalNet"
+        steps.append(("Applying goalpost models", lambda: copy_goalpost(goalpost_src, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir)))
         if no_seats.exists():
             steps.append(("Applying crowd chairs", lambda: copy_if_exists(no_seats, app.exedir / "data" / "sceneassets" / "crowdchair" / f"specificchair_0_{injid}.rx3")))
         else:

@@ -227,9 +227,9 @@ def copy(src: str | Path, dst: str | Path) -> None:
             _copy_file_if_needed(item, target)
 
 
-def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path) -> None:
+def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
     """Copy GoalpostGBD files to goalnet, tracking them in a manifest for later cleanup."""
-    clear_goalpost(dst_dir, manifest_path)
+    clear_goalpost(dst_dir, manifest_path, fsw_goalnet_dir)
     if not src_dir.is_dir():
         return
     copied: list[str] = []
@@ -244,14 +244,38 @@ def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path) -> None:
         manifest_path.write_text("\n".join(copied), encoding="utf-8")
 
 
-def clear_goalpost(dst_dir: Path, manifest_path: Path) -> None:
-    if not manifest_path.exists():
+_GOALNET_DEFAULT_NAMES = (
+    "goalnet_0.rx3", "goalnet_1.rx3",
+    "goalpost_0.rx3", "goalpost_0_textures.rx3",
+    "goalpost_1.rx3", "goalpost_1_textures.rx3",
+)
+
+
+def restore_goalnet_defaults(dst_dir: Path, fsw_goalnet_dir: Path) -> None:
+    """Restore the vanilla goalnet/goalpost model files from the FSW backup (extracted
+    from data_graphic2.big by Setup) so the live goalnet folder is never left without a
+    valid loose file after a custom GoalpostGBD stadium is cleared. Without this, the
+    engine has to fall back to reading these assets from the packed .big archive, and
+    that specific loose-file-goes-missing transition is where a previously loaded
+    goalpost model can be left visually stuck instead of reloading.
+    """
+    if not fsw_goalnet_dir.is_dir():
         return
-    for line in manifest_path.read_text(encoding="utf-8").splitlines():
-        target = dst_dir / line.strip()
-        if target.is_file():
-            target.unlink()
-    manifest_path.unlink(missing_ok=True)
+    for name in _GOALNET_DEFAULT_NAMES:
+        src = fsw_goalnet_dir / name
+        if src.is_file():
+            _copy_file_if_needed(src, dst_dir / name)
+
+
+def clear_goalpost(dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
+    if manifest_path.exists():
+        for line in manifest_path.read_text(encoding="utf-8").splitlines():
+            target = dst_dir / line.strip()
+            if target.is_file():
+                target.unlink()
+        manifest_path.unlink(missing_ok=True)
+    if fsw_goalnet_dir is not None:
+        restore_goalnet_defaults(dst_dir, fsw_goalnet_dir)
 
 
 _BCGAMEPLAY_NAMES = ("bcgameplay_176.dat", "bcgameplay_261.dat")

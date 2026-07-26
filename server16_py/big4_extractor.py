@@ -91,6 +91,7 @@ def extract_fsw_sources(
       FSW/Police/          — all policeofficer_*.rx3 variants
       FSW/Nets/            — all netcolor_*_textures.rx3 variants
       FSW/PitchMowPattern/ — all pitchmowpattern_*_textures.rx3 variants
+      FSW/GoalNet/         — default goalnet_*.rx3 / goalpost_*.rx3(_textures) models
       FSW/Stadium/crowdplacement/ — crowd_176/261 placement data
       FSW/Stadium/fx/      — glares_176/261 light effect files
       FSW/Stadium/stadium/ — default stadium_176/261 model + textures
@@ -98,14 +99,15 @@ def extract_fsw_sources(
       FSW/ScoreBoard/globalcomponents/overlaycomponents_9/ — overlaycomponents_9.big
       FSW/TVLogo/          — overlay_9105.big default TV logo
 
-    skip: optional set of category names to omit — "police", "nets", "pitch", "stadium",
-          "scoreboard", "tvlogo"
+    skip: optional set of category names to omit — "police", "nets", "pitch", "goalnet",
+          "stadium", "scoreboard", "tvlogo"
     """
     skip = skip or set()
 
     police_dir = fsw_dir / "Police"
     nets_dir = fsw_dir / "Nets"
     pitch_dir = fsw_dir / "PitchMowPattern"
+    goalnet_dir = fsw_dir / "GoalNet"
     crowdplace_dir = fsw_dir / "Stadium" / "crowdplacement"
     fx_dir = fsw_dir / "Stadium" / "fx"
     stadium_dir = fsw_dir / "Stadium" / "stadium"
@@ -113,7 +115,8 @@ def extract_fsw_sources(
     scoreboard_components_dir = fsw_dir / "ScoreBoard" / "globalcomponents" / "overlaycomponents_9"
     tvlogo_dir = fsw_dir / "TVLogo"
 
-    # data_graphic2.big: police variants 5, 6, 9 — nets 0-17 — pitch 0-15
+    # data_graphic2.big: police variants 5, 6, 9 — nets 0-17 — pitch 0-15 —
+    # default goalnet_0/1.rx3 + goalpost_0/1.rx3(_textures)
     g2 = exedir / "data_graphic2.big"
     rules_g2 = []
     if "police" not in skip:
@@ -122,6 +125,9 @@ def extract_fsw_sources(
         rules_g2.append(("netcolor_", nets_dir))
     if "pitch" not in skip:
         rules_g2.append(("pitchmowpattern_", pitch_dir))
+    if "goalnet" not in skip:
+        rules_g2.append(("goalnet_", goalnet_dir))
+        rules_g2.append(("goalpost_", goalnet_dir))
 
     # data_front_end.big: scoreboard overlay files and TV logo
     rules_fe = []
