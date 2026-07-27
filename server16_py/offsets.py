@@ -42,6 +42,19 @@ class Offsets:
     DASHBOARDHOMEGOALS: list[int] = field(default_factory=lambda: [56, 2984, 1092])
     DASHBOARDAWAYGOALS: list[int] = field(default_factory=lambda: [240, 360, 216, 1444])
 
+    # --- Substitution-count hook (see D:\Proyectos\CGFS16_Python_Port\5-sub\
+    # fifa16-sustituciones-5-contexto.md for the full reverse-engineering session). SUBHOOKRVA
+    # is the ONLY code location confirmed safe to patch — a nearby instruction (+0x4B8998A) was
+    # confirmed in testing to crash the game if patched/breakpointed, and to be silently
+    # reverted by FIFA's anti-tamper protection otherwise. Never repoint this feature at that or
+    # any other unverified address. Do not change these values without re-verifying against a
+    # live FIFA16.exe and documenting why (project hard rule, see CLAUDE.md).
+    SUBHOOKRVA: int = 0x4B8D3E6  # `mov [r12+r14+0xB03C], eax` (8 bytes) — patched with jmp+3 nop
+    SUBREADOFFSET: int = 0xA78C  # struct-relative offset of the "rules" value (= 0xB03C - 0x8B0)
+    SUBHOOKORIGBYTES: list[int] = field(
+        default_factory=lambda: [0x43, 0x89, 0x84, 0x34, 0x3C, 0xB0, 0x00, 0x00]
+    )  # expected original bytes at base_module+SUBHOOKRVA; verified before every install
+
     @classmethod
     def load(cls) -> "Offsets":
         return cls()

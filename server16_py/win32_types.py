@@ -71,6 +71,18 @@ class MSG(ctypes.Structure):
     ]
 
 
+class MEMORY_BASIC_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ("BaseAddress",       ctypes.c_ulonglong),
+        ("AllocationBase",    ctypes.c_ulonglong),
+        ("AllocationProtect", ctypes.c_ulong),
+        ("RegionSize",        ctypes.c_ulonglong),
+        ("State",             ctypes.c_ulong),
+        ("Protect",           ctypes.c_ulong),
+        ("Type",              ctypes.c_ulong),
+    ]
+
+
 # Window style constants
 GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080

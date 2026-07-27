@@ -3,6 +3,8 @@ from __future__ import annotations
 import ctypes
 from typing import TYPE_CHECKING
 
+from .win32_types import MEMORY_BASIC_INFORMATION
+
 if TYPE_CHECKING:
     from .app import Server16App
 
@@ -23,17 +25,6 @@ def _scan_memory(app: "Server16App", pattern: bytes) -> list[int]:
     PAGE_READABLE = {0x02, 0x04, 0x20, 0x40}  # READONLY, READWRITE, EXECUTE_READ, EXECUTE_READWRITE
     PAGE_GUARD = 0x100
     PAGE_NOACCESS = 0x01
-
-    class MEMORY_BASIC_INFORMATION(ctypes.Structure):
-        _fields_ = [
-            ("BaseAddress",       ctypes.c_ulonglong),
-            ("AllocationBase",    ctypes.c_ulonglong),
-            ("AllocationProtect", ctypes.c_ulong),
-            ("RegionSize",        ctypes.c_ulonglong),
-            ("State",             ctypes.c_ulong),
-            ("Protect",           ctypes.c_ulong),
-            ("Type",              ctypes.c_ulong),
-        ]
 
     VirtualQueryEx = kernel32.VirtualQueryEx
     VirtualQueryEx.restype = ctypes.c_size_t

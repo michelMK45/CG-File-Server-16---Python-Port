@@ -14,6 +14,7 @@ from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
 from .file_tools import resolve_stadium_preview_path
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
+from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .update_checker import UpdateCheckResult
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
 
@@ -34,6 +35,27 @@ KITMIX_PICKER_KINDS = {
     "image": ("rx3", "img", KITMIX_IMPORTED_LABEL_PREFIX, [("Images", "*.png *.bmp *.jpg *.jpeg"), ("All files", "*.*")], "dialog.kitmix.import_image"),
     "rx3": ("rx3", "rx3", KITMIX_IMPORTED_RX3_LABEL_PREFIX, [("RX3 files", "*.rx3"), ("All files", "*.*")], "dialog.kitmix.import_rx3"),
     "dds": ("dds", "dds", KITMIX_IMPORTED_DDS_LABEL_PREFIX, [("DDS files", "*.dds"), ("All files", "*.*")], "dialog.kitmix.import_dds"),
+}
+
+# Status codes reported by SubstitutionRuntime -> locale keys shown in the Matchup Live card.
+# "armed" is special-cased in _on_substitution_status to switch to the "_unverified" variant
+# above SUBSTITUTION_VALIDATED_MAX.
+_SUBSTITUTION_STATUS_KEYS = {
+    "idle": "substitutions.status.idle",
+    "invalid": "substitutions.status.invalid",
+    "not_attached": "substitutions.status.fifa_not_attached",
+    "unsafe_build": "substitutions.status.unsafe_build",
+    "already_hooked": "substitutions.status.already_hooked",
+    "alloc_failed": "substitutions.status.alloc_failed",
+    "patch_failed": "substitutions.status.patch_failed",
+    "waiting": "substitutions.status.waiting",
+    "armed": "substitutions.status.armed",
+    "armed_progress": "substitutions.status.armed_progress",
+    "armed_partial": "substitutions.status.armed_partial",
+    "timeout": "substitutions.status.timeout",
+    "invalid_pointer": "substitutions.status.invalid_pointer",
+    "write_failed": "substitutions.status.write_failed",
+    "fifa_changed": "substitutions.status.fifa_changed",
 }
 
 
@@ -1006,13 +1028,15 @@ class UIMixin:
     def _build_matchup_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.matchup.title", "card.matchup.subtitle")
         card.grid(row=row, column=0, sticky="ew", pady=(0, 12))
-        card.configure(height=230)
+        card.configure(height=290)
         card.grid_propagate(False)
         body = tk.Frame(card, bg=self.card)
         body.pack(fill="both", expand=True, padx=12, pady=(6, 12))
         body.grid_columnconfigure(0, weight=2)
         body.grid_columnconfigure(1, weight=1)
         body.grid_columnconfigure(2, weight=2)
+        body.grid_rowconfigure(0, weight=1)
+        body.grid_rowconfigure(1, weight=0)
 
         self._build_team_panel(body, 0, self.tr("team.a"), "home")
         center = tk.Frame(body, bg=self.card)
@@ -1026,6 +1050,51 @@ class UIMixin:
         self._register_info_label("score", score_label)
         self._register_info_label("timer", timer_label)
         self._build_team_panel(body, 2, self.tr("team.b"), "away")
+        self._build_substitution_row(body)
+
+    def _build_substitution_row(self, parent: tk.Misc) -> None:
+        row = tk.Frame(parent, bg=self.card)
+        row.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        self._dark_label(row, self.tr("substitutions.label"), bg=self.card, muted=True).pack(side="left")
+        self.substitution_count_var = tk.StringVar(value=str(self.settings.substitution_count))
+        ttk.Entry(row, textvariable=self.substitution_count_var, width=4).pack(side="left", padx=(6, 6))
+        self.substitution_confirm_button = ttk.Button(
+            row, text=self.tr("button.confirm_substitutions"), command=self._confirm_substitution_count,
+        )
+        self.substitution_confirm_button.pack(side="left", padx=(0, 10))
+        status_label = self._dark_label(row, self.tr("substitutions.status.idle"), bg=self.card, muted=True)
+        status_label.pack(side="left")
+        self._register_info_label("substitution_status", status_label)
+
+    def _confirm_substitution_count(self) -> None:
+        raw = self.substitution_count_var.get().strip()
+        if not raw.isdigit():
+            self._set_display("substitution_status", self.tr("substitutions.status.invalid"))
+            return
+        count = max(SUBSTITUTION_MIN, min(SUBSTITUTION_MAX, int(raw)))
+        self.substitution_count_var.set(str(count))
+        self.settings.substitution_count = count
+        if count > SUBSTITUTION_VALIDATED_MAX:
+            self.log(f"Substitution count {count} exceeds the validated range (<={SUBSTITUTION_VALIDATED_MAX}) — unverified, proceeding at user's request")
+        if self.substitution_confirm_button is not None:
+            self.substitution_confirm_button.configure(state="disabled")
+        self._set_display("substitution_status", self.tr("substitutions.status.installing"))
+        self.apply_substitution_count(count)
+
+    def _on_substitution_status(self, code: str, **kwargs) -> None:
+        final_codes = {
+            "armed", "armed_partial", "timeout", "invalid_pointer", "write_failed", "not_attached",
+            "unsafe_build", "already_hooked", "fifa_changed", "patch_failed", "alloc_failed",
+        }
+        if code == "armed" and kwargs.get("count", 0) > SUBSTITUTION_VALIDATED_MAX:
+            key = "substitutions.status.armed_unverified"
+        else:
+            key = _SUBSTITUTION_STATUS_KEYS.get(code, code)
+        text = self.tr(key, **kwargs)
+        if code in final_codes and self.substitution_confirm_button is not None:
+            self.substitution_confirm_button.configure(state="normal")
+        self._set_display("substitution_status", text)
+        self.log(f"Substitution count [{code}] {text}")
 
     def _build_team_panel(self, parent: tk.Misc, column: int, title: str, prefix: str) -> None:
         panel = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")

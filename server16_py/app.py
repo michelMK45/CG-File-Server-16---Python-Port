@@ -26,6 +26,7 @@ from .offsets import Offsets
 from .settings_editor import SettingsAreaEditor
 from .settings_store import SettingsStore
 from .stadium_runtime import StadiumRuntime
+from .substitution_runtime import SubstitutionRuntime
 from .update_checker import GithubReleaseChecker
 from .win32_types import RECT, POINT
 
@@ -172,6 +173,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.launch_fifa_button = None
         self.assign_scoreboard_button = None
         self.assign_movie_button = None
+        self.substitution_confirm_button = None
         self.exclude_competition_button = None
         self.log_status_label = None
         self.log_autofollow_checkbox = None
@@ -284,6 +286,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
         self.kit_mixer = KitMixRuntime(self)
+        self.substitution_runtime = SubstitutionRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)
@@ -578,6 +581,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def _assign_with_delete(self, comp: str, key: str, value: str, default_value: str, success_message: str) -> None:
         self.assignment_runtime.assign_with_delete(comp, key, value, default_value, success_message)
 
+    def apply_substitution_count(self, count: int) -> None:
+        self.substitution_runtime.apply_substitution_count(count)
+
     # ── Shutdown ───────────────────────────────────────────────────────────────
 
     def on_close(self) -> None:
@@ -615,6 +621,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             pass
         try:
             self._cancel_stadium_loading_hide()
+        except Exception:
+            pass
+        try:
+            self.substitution_runtime.cancel()
         except Exception:
             pass
         try:

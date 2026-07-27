@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into a copy of *base*.
@@ -31,6 +33,9 @@ class SettingsStore:
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "LANGUAGE": "en",
         "CUSTOM_KIT_NUMBERS": False,
+        # FIFA's own vanilla default (3), not the last CE-tested value (5) — a fresh install
+        # should show a familiar baseline rather than an arbitrary number.
+        "SUBSTITUTION_COUNT": 3,
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
         # feature works out-of-the-box in the compiled EXE without needing to
@@ -121,6 +126,16 @@ class SettingsStore:
     @custom_kit_numbers.setter
     def custom_kit_numbers(self, value: bool) -> None:
         self.data["CUSTOM_KIT_NUMBERS"] = bool(value)
+        self.save()
+
+    @property
+    def substitution_count(self) -> int:
+        value = int(self.data.get("SUBSTITUTION_COUNT", 3))
+        return max(SUBSTITUTION_MIN, min(SUBSTITUTION_MAX, value))
+
+    @substitution_count.setter
+    def substitution_count(self, value: int) -> None:
+        self.data["SUBSTITUTION_COUNT"] = max(SUBSTITUTION_MIN, min(SUBSTITUTION_MAX, int(value)))
         self.save()
 
     @property
