@@ -1064,6 +1064,7 @@ class UIMixin:
         self.substitution_confirm_button.pack(side="left", padx=(0, 10))
         auto_apply_check = ttk.Checkbutton(
             row,
+            style="Switch.TCheckbutton",
             text=self.tr("substitutions.auto_apply"),
             variable=self.auto_apply_substitution_var,
             command=self._toggle_auto_apply_substitutions,

@@ -65,35 +65,6 @@ class GameMixin:
         except Exception as exc:
             self.log("Attach notification error", exc, exc_info=sys.exc_info())
 
-    def _show_substitution_remaining_toasts(self) -> None:
-        try:
-            counts = self.substitution_runtime.read_remaining_counts()
-            if not counts:
-                installed, armed_count = self.substitution_runtime.armed_status()
-                self.log(
-                    f"Substitution remaining toast: skipped (hook_installed={installed}, "
-                    f"sides_armed={armed_count}/2 - press Confirm, then have at least one side "
-                    "substitute once before this can show)"
-                )
-                return
-            if len(counts) >= 2:
-                # Both sides known: index 0 is home/local, index 1 is away/visitante (see
-                # read_remaining_counts docstring for the +0x458 address-ordering rationale).
-                labels = [
-                    self._resolve_team_name(self.HID) or self.tr("team.a"),
-                    self._resolve_team_name(self.AID) or self.tr("team.b"),
-                ]
-            else:
-                # Only one side armed so far - its home/away identity isn't knowable yet, so
-                # don't guess a team name.
-                labels = [self.tr("notify.substitutions_title_generic")]
-            for label, remaining in zip(labels, counts):
-                slot = self._show_toast_notification(label, self.tr("notify.substitutions_remaining", count=remaining))
-                if slot != -1:
-                    self.after(8000, lambda s=slot: self._hide_toast_notification(s))
-        except Exception as exc:
-            self.log("Substitution remaining toast error", exc, exc_info=sys.exc_info())
-
     def stats_loop(self) -> None:
         if self._closing:
             return
@@ -133,13 +104,6 @@ class GameMixin:
         if page_name == self.lastpagename:
             return
         self.lastpagename = page_name
-        is_team_sheet = "teamsheets/teamsheeteditor" in page_name.lower()
-        if is_team_sheet and not self._team_sheet_notified:
-            self._team_sheet_notified = True
-            self.log(f"Team Sheet Editor detected (page={page_name!r}) - checking substitution counts")
-            self._show_substitution_remaining_toasts()
-        elif not is_team_sheet:
-            self._team_sheet_notified = False
         if page_name == "game/screens/playNow/KickOffHub":
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None

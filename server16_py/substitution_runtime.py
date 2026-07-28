@@ -88,13 +88,7 @@ class SubstitutionRuntime:
     fifa16-sustituciones-5-contexto.md, "Extensión a equipo VISITANTE"). A single write to
     whichever address shows up first only ever fixes ONE side — usually the local/home side,
     since it tends to substitute first. `_poll_tick` therefore keeps watching (re-arming) after
-    the first side is armed, until both known sides have received the write — and keeps
-    watching (silently, just counting) for the rest of the match after that too, so
-    `read_remaining_counts()` can report an accurate "remaining under YOUR cap" instead of
-    relying on FIFA's own remaining-substitutions counter, which is computed against the
-    vanilla 3-sub rule and clamps at 0 — useless once a custom cap allows more than 3 (confirmed
-    live: after 5 real substitutions with a custom cap of 5, that counter still read as if only
-    3 had been used, undercounting the true remaining count by exactly the excess over 3).
+    the first side is armed, until both known sides have received the write.
 
     The cap value is written to a given side's "rules" address only ONCE, the first time that
     side is seen this match — deliberately not re-written on every later substitution by the
@@ -103,6 +97,16 @@ class SubstitutionRuntime:
     self-decrementing pool (repeated writes of the same cap would silently "refill" it, which
     would explain a rare, hard-to-reproduce report of a side getting more substitutions than its
     configured cap). Writing once removes that possibility either way.
+
+    Note: there is deliberately no live "substitutions remaining" readout exposed anywhere.
+    An earlier attempt tracked it by counting how many times this hook fired per side, but
+    FIFA can process several real substitutions faster than this poll's interval, and the
+    shared slot only ever holds the LATEST captured address (not a running count) — so bursts
+    of substitutions collapse into a single observed event and the count silently undercounts.
+    A correct fix would need the injected shellcode itself to maintain a per-side counter,
+    which is a materially riskier change to the one piece of this codebase that patches live
+    executable code (see the crash history in CLAUDE.md §7) than is justified for a display-only
+    feature — removed rather than shipped inaccurate.
     """
 
     def __init__(self, app: "Server16App") -> None:
@@ -111,10 +115,7 @@ class SubstitutionRuntime:
         self._poll_job = None
         self._poll_generation = 0
         self._pending_count = 0
-        # address -> substitutions used so far this match (>=1 once present). The two
-        # keys, once both known, are home (lower address) and away (higher address) — see
-        # read_remaining_counts()'s docstring for the +0x458 ordering rationale.
-        self._side_states: dict[int, int] = {}
+        self._armed_addresses: set[int] = set()
 
     # ── Public entry point ──────────────────────────────────────────────────
 
@@ -151,7 +152,7 @@ class SubstitutionRuntime:
             return
 
         self._pending_count = count
-        self._side_states = {}
+        self._armed_addresses = set()
         self._report("waiting")
         self._poll_tick(generation, attempts_left=first_side_timeout_ms // POLL_INTERVAL_MS)
 
@@ -165,9 +166,8 @@ class SubstitutionRuntime:
         match are meaningless once that match's data is torn down/reallocated (each match's
         "rules" struct is heap-allocated per-play, not at a stable address — see the class
         docstring and offsets.py's SUBHOOKRVA comment). Without this, a stale address left over
-        from the last match could still satisfy EXPECTED_SIDES and get read from (garbage
-        values in the remaining-substitutions toast) or written to (a write that lands nowhere
-        meaningful in the new match, silently leaving that side's real cap unset).
+        from the last match could satisfy EXPECTED_SIDES immediately in the new match, silently
+        skipping the write that actually sets that side's real cap.
 
         Deliberately does NOT touch the installed hook (still a valid patch in the executable,
         no need to reinstall) and does NOT re-apply the last count automatically — the user
@@ -175,36 +175,7 @@ class SubstitutionRuntime:
         """
         self._poll_generation += 1
         self._cancel_poll()
-        self._side_states = {}
-
-    def armed_status(self) -> tuple[bool, int]:
-        """(hook_installed_this_process, sides_armed_so_far) — for diagnostics/logging only."""
-        installed = self._hook is not None and self._hook.process_id == self.app.memory.process_id
-        return installed, len(self._side_states)
-
-    def read_remaining_counts(self) -> list[int]:
-        """Remaining-substitution counts for however many sides are known so far (0-2), computed
-        as `pending_count - substitutions_used`, where `substitutions_used` is a plain tally of
-        how many times `_poll_tick` has observed the hook fire for that side this match — NOT a
-        value read back from FIFA's own memory (see the class docstring for why: FIFA's own
-        counter is computed against the vanilla 3-sub rule and clamps at 0, so it can't tell the
-        difference between "3 used" and "5 used" once a custom cap exceeds 3).
-
-        Each side only becomes known once that team has made its first real substitution this
-        match (no static pointer chain to it — see offsets.py's SUBHOOKRVA comment), so this
-        deliberately does NOT wait for both sides (EXPECTED_SIDES) before returning something:
-        requiring both meant the toast could never fire the first time a user opens the team
-        sheet, and often not for a long time after that if the CPU-controlled side is slow to
-        substitute. Results are ordered by ascending address — once both sides are known, the
-        away "rules" address is always exactly +0x458 above the home one (confirmed independently
-        twice — see fifa16-sustituciones-5-contexto.md, "Extensión a equipo VISITANTE"), so index
-        0 is home/local and index 1 (if present) is away/visitante. With only one side known, its
-        home/away identity is NOT knowable yet — callers must not assume it's home just because
-        it's the only entry.
-        """
-        if self._hook is None or not self._side_states:
-            return []
-        return [self._pending_count - used for _, used in sorted(self._side_states.items())]
+        self._armed_addresses = set()
 
     # ── Hook install ─────────────────────────────────────────────────────────
 
@@ -308,18 +279,6 @@ class SubstitutionRuntime:
     # ── Bounded poll (arming) + indefinite poll (used-count tracking) ────────
 
     def _poll_tick(self, generation: int, attempts_left: int) -> None:
-        """Runs every POLL_INTERVAL_MS for the whole match once armed starts. Two phases:
-
-        1. Arming (fewer than EXPECTED_SIDES known): bounded by `attempts_left`, exactly as
-           before — gives up with a "timeout"/"armed_partial" status if a side never subs in
-           time.
-        2. Monitoring (both sides known): unbounded — keeps watching purely to keep
-           `_side_states`'s used-counts accurate for `read_remaining_counts()`, since a side can
-           obviously keep substituting after both have been seen once. `attempts_left` is simply
-           carried forward unchanged in this phase (never decremented, so it never times out);
-           the only things that stop it are `reset_for_new_match()` and `cancel()`, both of which
-           bump `_poll_generation` and make every further tick a no-op via the check below.
-        """
         self._poll_job = None
         app = self.app
         if generation != self._poll_generation or app._closing:
@@ -331,8 +290,6 @@ class SubstitutionRuntime:
             self._report("fifa_changed")
             return
 
-        fully_armed = len(self._side_states) >= EXPECTED_SIDES
-
         try:
             raw = app.memory.read_int64(hook.slot_address)
         except Exception as exc:
@@ -340,16 +297,15 @@ class SubstitutionRuntime:
             raw = 0
 
         if raw == 0:
-            if not fully_armed and attempts_left <= 0:
-                if self._side_states:
+            if attempts_left <= 0:
+                if self._armed_addresses:
                     # One side (whichever subbed first) already got the write — report that
                     # instead of a bare timeout, and let the user re-trigger for the other side.
                     self._report("armed_partial", count=self._pending_count)
                 else:
                     self._report("timeout")
                 return
-            next_attempts = attempts_left if fully_armed else attempts_left - 1
-            self._poll_job = app.after(POLL_INTERVAL_MS, lambda: self._poll_tick(generation, next_attempts))
+            self._poll_job = app.after(POLL_INTERVAL_MS, lambda: self._poll_tick(generation, attempts_left - 1))
             return
 
         if not self._is_plausible_target(raw):
@@ -357,30 +313,30 @@ class SubstitutionRuntime:
             self._report("invalid_pointer")
             return
 
-        is_new_side = raw not in self._side_states
+        is_new_side = raw not in self._armed_addresses
         if is_new_side:
-            # First time this side is seen this match: write the custom cap once. Deliberately
-            # NOT re-written on later substitutions by the same side — see the class docstring
-            # for why (unconfirmed whether repeated writes would be harmless or a "refill").
+            # Write the cap only the first time this side is seen this match. Deliberately NOT
+            # re-written on later substitutions by the same side — see the class docstring for
+            # why (unconfirmed whether repeated writes would be harmless or a "refill").
             try:
                 app.memory.write_process_memory(raw, struct.pack("<i", self._pending_count))
             except Exception as exc:
                 app.log("Substitution hook: final write failed", exc, exc_info=True)
                 self._report("write_failed", error=str(exc))
                 return
-            self._side_states[raw] = 1
+            self._armed_addresses.add(raw)
             app.log(
                 f"Substitution hook: armed {self._pending_count} substitutions at 0x{raw:X} "
-                f"({len(self._side_states)}/{EXPECTED_SIDES} sides)"
-            )
-        else:
-            self._side_states[raw] += 1
-            app.log(
-                f"Substitution hook: side 0x{raw:X} made substitution "
-                f"{self._side_states[raw]}/{self._pending_count}"
+                f"({len(self._armed_addresses)}/{EXPECTED_SIDES} sides)"
             )
 
-        # Re-zero the slot so the next firing (same or other side) is detected fresh.
+        if len(self._armed_addresses) >= EXPECTED_SIDES:
+            self._report("armed", count=self._pending_count)
+            return
+
+        # Still only one side armed. Re-zero the slot so the next firing (same or other side)
+        # is detected fresh, then keep watching — the other team's own first substitution may
+        # not happen for a long time yet.
         try:
             app.memory.write_process_memory(hook.slot_address, b"\x00" * 8)
         except Exception as exc:
@@ -388,14 +344,12 @@ class SubstitutionRuntime:
             self._report("write_failed", error=str(exc))
             return
 
-        now_fully_armed = len(self._side_states) >= EXPECTED_SIDES
-        if is_new_side and now_fully_armed:
-            self._report("armed", count=self._pending_count)
-        elif is_new_side:
-            self._report("armed_progress", count=self._pending_count, armed=len(self._side_states))
-
-        next_attempts = attempts_left if now_fully_armed else POLL_TIMEOUT_SECOND_SIDE_MS // POLL_INTERVAL_MS
-        self._poll_job = app.after(POLL_INTERVAL_MS, lambda: self._poll_tick(generation, next_attempts))
+        if is_new_side:
+            self._report("armed_progress", count=self._pending_count, armed=len(self._armed_addresses))
+        self._poll_job = app.after(
+            POLL_INTERVAL_MS,
+            lambda: self._poll_tick(generation, POLL_TIMEOUT_SECOND_SIDE_MS // POLL_INTERVAL_MS),
+        )
 
     def _cancel_poll(self) -> None:
         if self._poll_job is not None:

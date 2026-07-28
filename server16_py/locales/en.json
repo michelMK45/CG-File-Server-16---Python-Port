@@ -51,8 +51,6 @@
   "logs.browsing": "Browsing history",
   "notify.fifa_attached": "FIFA Attached",
   "notify.fifa_attached_detail": "Server connected to FIFA 16",
-  "notify.substitutions_remaining": "{count} substitutions remaining",
-  "notify.substitutions_title_generic": "Substitutions",
   "notify.scoreboard_loaded": "Scoreboard",
   "notify.movie_loaded": "Movie",
   "notify.tvlogo_loaded": "TV Logo",

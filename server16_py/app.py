@@ -66,7 +66,6 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.skillgamechange = False
         self.bumperpagechange = False
         self.matchstarted = False
-        self._team_sheet_notified = False
         self.lastpagename = ""
         self.curstad = ""
         self.StadName = ""
