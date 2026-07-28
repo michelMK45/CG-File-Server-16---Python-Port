@@ -1062,6 +1062,13 @@ class UIMixin:
             row, text=self.tr("button.confirm_substitutions"), command=self._confirm_substitution_count,
         )
         self.substitution_confirm_button.pack(side="left", padx=(0, 10))
+        auto_apply_check = ttk.Checkbutton(
+            row,
+            text=self.tr("substitutions.auto_apply"),
+            variable=self.auto_apply_substitution_var,
+            command=self._toggle_auto_apply_substitutions,
+        )
+        auto_apply_check.pack(side="left", padx=(0, 10))
         status_label = self._dark_label(row, self.tr("substitutions.status.idle"), bg=self.card, muted=True)
         status_label.pack(side="left")
         self._register_info_label("substitution_status", status_label)
@@ -1080,6 +1087,9 @@ class UIMixin:
             self.substitution_confirm_button.configure(state="disabled")
         self._set_display("substitution_status", self.tr("substitutions.status.installing"))
         self.apply_substitution_count(count)
+
+    def _toggle_auto_apply_substitutions(self) -> None:
+        self.settings.auto_apply_substitution_count = self.auto_apply_substitution_var.get()
 
     def _on_substitution_status(self, code: str, **kwargs) -> None:
         final_codes = {

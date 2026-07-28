@@ -36,6 +36,7 @@ class SettingsStore:
         # FIFA's own vanilla default (3), not the last CE-tested value (5) — a fresh install
         # should show a familiar baseline rather than an arbitrary number.
         "SUBSTITUTION_COUNT": 3,
+        "AUTO_APPLY_SUBSTITUTION_COUNT": False,
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
         # feature works out-of-the-box in the compiled EXE without needing to
@@ -136,6 +137,15 @@ class SettingsStore:
     @substitution_count.setter
     def substitution_count(self, value: int) -> None:
         self.data["SUBSTITUTION_COUNT"] = max(SUBSTITUTION_MIN, min(SUBSTITUTION_MAX, int(value)))
+        self.save()
+
+    @property
+    def auto_apply_substitution_count(self) -> bool:
+        return bool(self.data.get("AUTO_APPLY_SUBSTITUTION_COUNT", False))
+
+    @auto_apply_substitution_count.setter
+    def auto_apply_substitution_count(self, value: bool) -> None:
+        self.data["AUTO_APPLY_SUBSTITUTION_COUNT"] = bool(value)
         self.save()
 
     @property

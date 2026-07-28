@@ -54,6 +54,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
+        self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
@@ -65,6 +66,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.skillgamechange = False
         self.bumperpagechange = False
         self.matchstarted = False
+        self._team_sheet_notified = False
         self.lastpagename = ""
         self.curstad = ""
         self.StadName = ""
@@ -581,8 +583,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def _assign_with_delete(self, comp: str, key: str, value: str, default_value: str, success_message: str) -> None:
         self.assignment_runtime.assign_with_delete(comp, key, value, default_value, success_message)
 
-    def apply_substitution_count(self, count: int) -> None:
-        self.substitution_runtime.apply_substitution_count(count)
+    def apply_substitution_count(self, count: int, first_side_timeout_ms: int | None = None) -> None:
+        if first_side_timeout_ms is None:
+            self.substitution_runtime.apply_substitution_count(count)
+        else:
+            self.substitution_runtime.apply_substitution_count(count, first_side_timeout_ms)
 
     # ── Shutdown ───────────────────────────────────────────────────────────────
 
