@@ -858,7 +858,7 @@ class OverlayMixin:
                             break
         elif tab_name == "stadiums" and selected_item:
             try:
-                path = self._resolve_stadium_preview_path(selected_item)
+                path = self._resolve_stadium_preview_path_or_default(selected_item)
                 preview_path = str(path) if path else ""
             except Exception:
                 pass

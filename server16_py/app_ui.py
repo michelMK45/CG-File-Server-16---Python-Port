@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
-from .file_tools import resolve_stadium_preview_path
+from .file_tools import resolve_stadium_preview_path, stadium_preview_fallback_path
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .update_checker import UpdateCheckResult
@@ -559,7 +559,7 @@ class UIMixin:
         if inj is None:
             return False
         inj.show(stadium_name, detail or self.tr("stadium_modal.preparing"), progress,
-                 image_path=str(self._resolve_stadium_preview_path(stadium_name) or ""))
+                 image_path=str(self._resolve_stadium_preview_path_or_default(stadium_name) or ""))
         self._d3d_overlay_shown_at = time.monotonic()
         self._stadium_loading_visible = True
         self.log(f"Stadium notification via D3D overlay: {stadium_name}")
@@ -888,6 +888,18 @@ class UIMixin:
                 return candidate
         return None
 
+    def _resolve_stadium_preview_path_or_default(self, stadium_name: str):
+        """Like `_resolve_stadium_preview_path`, but falls back to the bundled generic
+        stadium image (`resources/stadium-placeholder.png`) when a stadium is actually
+        assigned but has no preview thumbnail of its own."""
+        image_path = self._resolve_stadium_preview_path(stadium_name)
+        if image_path is not None:
+            return image_path
+        stadium_name = (stadium_name or "").strip()
+        if not stadium_name or stadium_name in {"-", "None", "Stadium Module Disable"}:
+            return None
+        return stadium_preview_fallback_path()
+
     def _load_preview_photo(self, image_path, max_size: tuple[int, int]):
         if image_path is None or not image_path.exists():
             return None
@@ -903,7 +915,7 @@ class UIMixin:
         if label is None:
             return
         self._stadium_preview_image = None
-        image_path = self._resolve_stadium_preview_path(stadium_name)
+        image_path = self._resolve_stadium_preview_path_or_default(stadium_name)
         photo = self._load_preview_photo(image_path, (340, 190))
         if photo is None:
             self._stadium_preview_last_value = stadium_name
@@ -917,7 +929,7 @@ class UIMixin:
         if label is None:
             return
         self._stadium_loading_image = None
-        image_path = self._resolve_stadium_preview_path(stadium_name)
+        image_path = self._resolve_stadium_preview_path_or_default(stadium_name)
         photo = self._load_preview_photo(image_path, (300, 138))
         if photo is None:
             label.configure(image="", text="STADIUM\nPREVIEW", compound="center")

@@ -24,6 +24,7 @@ a = Analysis(
         ('bin\\Templates', 'bin\\Templates'),
         ('server16.ico', '.'),
         ('install_data', 'install_data'),
+        ('resources', 'resources'),
     ],
     hiddenimports=['clr', 'rarfile'],
     hookspath=[],

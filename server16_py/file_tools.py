@@ -69,6 +69,28 @@ def stadium_preview_dir(stadium_gbd: str | Path) -> Path:
     return Path(stadium_gbd) / "render" / "thumbnail" / "stadium"
 
 
+def stadium_preview_fallback_path() -> Path | None:
+    """Bundled generic image shown when a stadium has no preview of its own.
+
+    Checked against every base dir a `resources/` folder could live under, in the
+    same order the app icon is resolved (§9 conventions): the PyInstaller MEIPASS
+    bundle dir, then the dir next to the exe/repo root.
+    """
+    candidate_bases = []
+    bundle_dir = getattr(sys, "_MEIPASS", None)
+    if bundle_dir:
+        candidate_bases.append(Path(bundle_dir))
+    if getattr(sys, "frozen", False):
+        candidate_bases.append(Path(sys.executable).resolve().parent)
+    else:
+        candidate_bases.append(Path(__file__).resolve().parent.parent)
+    for base in candidate_bases:
+        candidate = base / "resources" / "stadium-placeholder.png"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def resolve_stadium_preview_path(stadium_gbd: str | Path, stadium_name: str) -> Path | None:
     stadium_name = (stadium_name or "").strip()
     if not stadium_name or stadium_name in {"-", "None", "Stadium Module Disable"}:

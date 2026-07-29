@@ -8,7 +8,7 @@ from tkinter import ttk
 
 from PIL import Image, ImageTk
 
-from .file_tools import discover_stadium_names, resolve_stadium_preview_path
+from .file_tools import discover_stadium_names, resolve_stadium_preview_path, stadium_preview_fallback_path
 
 
 SCOREBOARD_SCOPE_OPTIONS = (
@@ -736,6 +736,8 @@ class StadiumDialog(BaseDialog):
         selected = [self.stadiums.get(i) for i in self.stadiums.curselection()]
         stadium_name = next((name for name in selected if name and name != "None"), "")
         image_path = self._resolve_stadium_preview_path(stadium_name)
+        if image_path is None and stadium_name:
+            image_path = stadium_preview_fallback_path()
         preview_frame = self._preview_frames.get("stadium")
         if preview_frame is not None:
             if image_path is None:
@@ -784,6 +786,7 @@ class AboutDialog(BaseDialog):
     _FORUM = "https://soccergaming.com/forums/threads/cg-file-server-16-python-port.6475909/"
     _TRELLO = "https://trello.com/b/Y5Akq5is/cg-file-server-16-python-port"
     _GITHUB_LEGACY = "https://github.com/igor1043/CG-File-Server-16---Python-Port"
+    _DONATE = "https://paypal.me/michellmk"
 
     def __init__(self, master: tk.Misc, version: str) -> None:
         super().__init__(master, "dialog.about.title")
@@ -820,6 +823,7 @@ class AboutDialog(BaseDialog):
             ("dialog.about.forum", self._FORUM),
             ("dialog.about.trello", self._TRELLO),
             ("dialog.about.github.legacy", self._GITHUB_LEGACY),
+            ("dialog.about.donate", self._DONATE),
         ):
             lbl = tk.Label(links_row, text=self.tr(key), bg=self.bg, fg=self.accent,
                            font=("Bahnschrift", 10, "underline"), cursor="hand2")
