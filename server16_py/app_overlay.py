@@ -16,6 +16,7 @@ from .win32_types import (
     SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     VK_F12, VK_ESCAPE, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
     VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_MENU, VK_RETURN,
+    VK_F7, VK_F8, VK_F9, VK_F10, VK_F11,
     KEYEVENTF_KEYUP,
     WH_MOUSE_LL, WH_KEYBOARD_LL, HC_ACTION,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
@@ -29,7 +30,8 @@ from .win32_types import (
     _D3D_MENU_VIEW_MARGIN, _D3D_MENU_TAB_H, _D3D_MENU_DASH_MIN_H,
     _D3D_MENU_DASH_MAX_H, _D3D_MENU_ITEM_H, _D3D_MENU_HINT_ZONE,
 )
-from .file_tools import discover_stadium_names
+from .file_tools import discover_stadium_names, kit_ui_placeholder_path
+from .kit_mixer import KIT_TYPES
 
 
 class OverlayMixin:
@@ -43,6 +45,10 @@ class OverlayMixin:
             self._sync_d3d_menu_input()
         except Exception as exc:
             self.log("Overlay loop error", exc, exc_info=sys.exc_info())
+        try:
+            self._sync_kit_hotkeys()
+        except Exception as exc:
+            self.log("Kit hotkey loop error", exc, exc_info=sys.exc_info())
         if not self._closing:
             self._overlay_job = self.after(80, self.overlay_loop)
 
@@ -165,6 +171,8 @@ class OverlayMixin:
                 self._overlay_wizard_police = None
                 self._overlay_wizard_pitch = None
                 self._overlay_selected_scope = None
+                self._overlay_selected_kittype = None
+                self._overlay_kit_sets_cache = []
                 self._overlay_scope_phase = True
                 self._update_menu_content()
             else:
@@ -173,6 +181,8 @@ class OverlayMixin:
                 self._overlay_wizard_police = None
                 self._overlay_wizard_pitch = None
                 self._overlay_selected_scope = None
+                self._overlay_selected_kittype = None
+                self._overlay_kit_sets_cache = []
                 self._overlay_scope_phase = False
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
@@ -188,10 +198,8 @@ class OverlayMixin:
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
             elif not self._overlay_scope_phase:
-                self._overlay_scope_phase = True
-                self._overlay_selected_scope = None
+                self._overlay_scope_back()
                 self._overlay_toggle_ready_at = now + 0.22
-                self._update_menu_content()
             else:
                 self._d3d_menu_visible = False
                 self._overlay_toggle_ready_at = now + 0.22
@@ -205,10 +213,8 @@ class OverlayMixin:
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
             elif not self._overlay_scope_phase:
-                self._overlay_scope_phase = True
-                self._overlay_selected_scope = None
+                self._overlay_scope_back()
                 self._overlay_toggle_ready_at = now + 0.22
-                self._update_menu_content()
             else:
                 # Latch the close intent; execute only after B is released so
                 # XInputEnable(TRUE) fires when B is already up — preventing the
@@ -368,6 +374,8 @@ class OverlayMixin:
         self._overlay_wizard_police = None
         self._overlay_wizard_pitch = None
         self._overlay_selected_scope = None
+        self._overlay_selected_kittype = None
+        self._overlay_kit_sets_cache = []
         self._overlay_scope_phase = True
         self._publish_overlay_menu_state()
         if self._d3d_injector is not None:
@@ -439,6 +447,8 @@ class OverlayMixin:
                     Path(exedir) / "FSW" / "Nets",
                 ) if exedir else None
                 items = _list_file_stems(img_dir) or ["0"]
+            elif self._overlay_wizard_phase == "kittype":
+                items = [self.kitmix_kittype_labels[k] for k in KIT_TYPES]
             else:
                 tab_name = self._overlay_tab_names[self._overlay_tab_index]
                 if tab_name == "scoreboards":
@@ -454,6 +464,19 @@ class OverlayMixin:
                     exedir = getattr(self, "exedir", None)
                     if exedir:
                         items = _list_dirs(Path(exedir) / "FSV")
+                elif tab_name == "kits":
+                    team_id = (self.HID if self._overlay_selected_scope == "home" else self.AID) or ""
+                    kittype_code = self._overlay_selected_kittype or "0"
+                    kit_sets = self.kit_mixer.list_kit_sets(team_id, kittype_code) if team_id else []
+                    # A leading None represents the team's own default/
+                    # original kit (what "Restore Original Kit" would revert
+                    # to) — same convention as the F7-F10 hotkey cycle, so
+                    # it's selectable here as just one more entry.
+                    self._overlay_kit_sets_cache = [None] + kit_sets
+                    items = ["Default"] + [
+                        f"{e['tourn_id']}  —  {'Complete' if e['complete'] else 'Partial'}"
+                        for e in kit_sets
+                    ]
         except Exception as exc:
             self.log(f"Menu content error (wizard={self._overlay_wizard_phase}): {exc}")
         self._overlay_items = items
@@ -473,6 +496,9 @@ class OverlayMixin:
             header = f"Police: {self._overlay_wizard_police or '?'}  →  Pitch Mow Pattern"
         elif phase == "net":
             header = f"Pitch: {self._overlay_wizard_pitch or '?'}  →  Net Pattern"
+        elif phase == "kittype":
+            team_label = "Home Team" if self._overlay_selected_scope == "home" else "Away Team"
+            header = f"{team_label}  →  Select Kit Type"
         else:
             scope_label = ""
             if self._overlay_selected_scope is not None:
@@ -481,7 +507,15 @@ class OverlayMixin:
                     if code == self._overlay_selected_scope:
                         scope_label = label
                         break
-            header = f"[{scope_label}]" if scope_label else ""
+            if self._overlay_tab_names[self._overlay_tab_index] == "kits" and scope_label:
+                kittype_label = "Home"
+                for key, code in KIT_TYPES.items():
+                    if code == self._overlay_selected_kittype:
+                        kittype_label = self.kitmix_kittype_labels.get(key, key.capitalize())
+                        break
+                header = f"[{scope_label}]  →  {kittype_label}"
+            else:
+                header = f"[{scope_label}]" if scope_label else ""
         self._overlay_list_header = header
         try:
             inj.set_list_header(header)
@@ -540,7 +574,12 @@ class OverlayMixin:
         list_ymax = menu_y + menu_h - dash_h - _D3D_MENU_HINT_ZONE - 14.0
         tab_w = float(int(menu_w // max(1, len(self._overlay_tab_names))))
 
-        show_split = (self._overlay_tab_index == 1)
+        # index 1 = stadiums, index 4 = kits — both show list + preview image
+        # side-by-side. Must stay in sync with cgfs16_overlay.cpp's own
+        # showSplit check in DrawMenuOverlay11 (Python only computes layout
+        # geometry here; the DLL independently decides the same thing for
+        # its own draw call, see CLAUDE.md's shared-memory IPC section).
+        show_split = self._overlay_tab_index in (1, 4)
         header_h = 30.0
         show_header = bool(self._overlay_list_header)
         if show_split:
@@ -596,6 +635,15 @@ class OverlayMixin:
                 ("Home Team", "0"),
                 ("Round", "1"),
                 ("Tournament", "4"),
+            ]
+        if tab_name == "kits":
+            # Unlike the other tabs, kits are applied immediately to a live
+            # team_id (HID/AID), not written as a persistent settings.ini
+            # assignment — so "scope" here just means "which side", not
+            # round/tournament (see _activate_overlay_selected_item).
+            return [
+                ("Home Team", "home"),
+                ("Away Team", "away"),
             ]
         return []
 
@@ -679,11 +727,33 @@ class OverlayMixin:
             pass
         return ",".join([selected_item, police, pitch, net])
 
+    def _overlay_scope_back(self) -> None:
+        """Returns from a tab's final list to its previous step. For most
+        tabs that's the shared scope step, but kits has an extra kittype
+        wizard step in between scope and the final list (see _wizard_back),
+        so its final list backs up to THAT instead of skipping past it."""
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if tab_name == "kits":
+            self._overlay_wizard_phase = "kittype"
+        else:
+            self._overlay_scope_phase = True
+            self._overlay_selected_scope = None
+        self._update_menu_content()
+
     def _wizard_back(self) -> None:
         if self._overlay_wizard_phase == "net":
             self._overlay_wizard_phase = "pitch"
         elif self._overlay_wizard_phase == "pitch":
             self._overlay_wizard_phase = "police"
+        elif self._overlay_wizard_phase == "kittype":
+            # Unlike stadium's police/pitch/net (steps AFTER the final list,
+            # refining an already-picked stadium), kittype is the ONE step
+            # BEFORE the kits final list — so there's no earlier wizard step
+            # to fall back to, only the team-selection scope step.
+            self._overlay_wizard_phase = None
+            self._overlay_scope_phase = True
+            self._overlay_selected_scope = None
+            self._overlay_selected_kittype = None
         else:
             self._overlay_wizard_phase = None
             self._overlay_wizard_stadium = None
@@ -701,6 +771,9 @@ class OverlayMixin:
             _label, code = scope_options[sel]
             self._overlay_selected_scope = code
             self._overlay_scope_phase = False
+            if tab_name == "kits":
+                self._overlay_wizard_phase = "kittype"
+                self._overlay_selected_kittype = None
             self._update_menu_content()
             return
 
@@ -709,6 +782,10 @@ class OverlayMixin:
             return
 
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if tab_name == "kits":
+            self._activate_kits_selection(source)
+            return
+
         if not self._overlay_items:
             return
         sel = max(0, min(self._overlay_selected_index, len(self._overlay_items) - 1))
@@ -747,6 +824,40 @@ class OverlayMixin:
             self._update_menu_content()
             return
 
+    def _activate_kits_selection(self, source: str) -> None:
+        """Applies the highlighted kit set immediately (live team_id, not a
+        settings.ini assignment — see _get_scope_options_for_tab), then
+        closes the menu, mirroring _write_overlay_assignment's close-on-apply
+        behavior for the other tabs."""
+        if not self._overlay_kit_sets_cache:
+            return
+        sel = max(0, min(self._overlay_selected_index, len(self._overlay_kit_sets_cache) - 1))
+        entry = self._overlay_kit_sets_cache[sel]
+        team_id = (self.HID if self._overlay_selected_scope == "home" else self.AID) or ""
+        kittype_code = self._overlay_selected_kittype or "0"
+        if not team_id:
+            self.log(f"Overlay kit apply skipped ({source}): no {self._overlay_selected_scope} team context")
+            return
+        try:
+            if entry is None:
+                self.kit_mixer.restore_kit_type(team_id, kittype_code)
+                self.log(f"Overlay kit restored to default ({source}): team={team_id} kittype={kittype_code}")
+            else:
+                self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, entry["tourn_id"])
+                self.log(f"Overlay kit applied ({source}): team={team_id} kittype={kittype_code} tourn={entry['tourn_id']}")
+        except Exception as exc:
+            self.log(f"Overlay kit apply failed ({source})", exc, exc_info=sys.exc_info())
+            return
+        self._d3d_menu_visible = False
+        self._overlay_scope_phase = True
+        self._overlay_selected_scope = None
+        self._overlay_wizard_phase = None
+        self._overlay_selected_kittype = None
+        self._overlay_kit_sets_cache = []
+        self._uninstall_mouse_wheel_hook()
+        self._uninstall_keyboard_hook()
+        self._publish_overlay_menu_state()
+
     def _activate_wizard_step(self, source: str) -> None:
         if not self._overlay_items:
             return
@@ -754,7 +865,12 @@ class OverlayMixin:
         selected_item = (self._overlay_items[sel] or "").strip()
         if not selected_item:
             return
-        if self._overlay_wizard_phase == "police":
+        if self._overlay_wizard_phase == "kittype":
+            key = next((k for k, v in self.kitmix_kittype_labels.items() if v == selected_item), "home")
+            self._overlay_selected_kittype = KIT_TYPES.get(key, "0")
+            self._overlay_wizard_phase = None
+            self._update_menu_content()
+        elif self._overlay_wizard_phase == "police":
             self._overlay_wizard_police = selected_item
             self._overlay_wizard_phase = "pitch"
             self._update_menu_content()
@@ -834,7 +950,12 @@ class OverlayMixin:
         preview_path = ""
         phase = self._overlay_wizard_phase
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
-        if phase is not None and selected_item:
+        if phase == "kittype" and selected_item:
+            # Reuses the already-converted crest PNGs app_ui.py maintains for
+            # the dashboard panel (self._home_crest_png/_away_crest_png,
+            # refreshed whenever HID/AID changes) — no new rendering needed.
+            preview_path = (self._home_crest_png if self._overlay_selected_scope == "home" else self._away_crest_png) or ""
+        elif phase is not None and selected_item:
             exedir = getattr(self, "exedir", None)
             if exedir:
                 _exedir = Path(exedir)
@@ -862,10 +983,96 @@ class OverlayMixin:
                 preview_path = str(path) if path else ""
             except Exception:
                 pass
+        elif tab_name == "kits" and selected_item:
+            preview_path = self._resolve_kits_menu_preview()
         try:
             inj.set_preview_image(preview_path)
         except Exception:
             pass
+
+    def _kits_menu_preview_source(self, sel_index: int | None = None) -> tuple[Path | None, str | None]:
+        """Resolves (kitui_source_path, cache_key) for a kits-menu list entry
+        at the given index (defaults to the live current selection),
+        including the synthetic "Default" entry (None in
+        _overlay_kit_sets_cache) — for Default, the preview is the team's own
+        backed-up original kitui if one exists (KitMixRuntime.backup_path),
+        or its current live kitui when nothing's ever been customized (i.e.
+        the live file already IS the default)."""
+        if self._overlay_tab_names[self._overlay_tab_index] != "kits":
+            return None, None
+        sel = self._overlay_selected_index if sel_index is None else sel_index
+        if not (0 <= sel < len(self._overlay_kit_sets_cache)):
+            return None, None
+        entry = self._overlay_kit_sets_cache[sel]
+        team_id = (self.HID if self._overlay_selected_scope == "home" else self.AID) or ""
+        kittype_code = self._overlay_selected_kittype or "0"
+        if entry is None:
+            live_kitui = self.kit_mixer.live_kitui_path(team_id, kittype_code)
+            backup = self.kit_mixer.backup_path(live_kitui)
+            if backup.exists() and backup.stat().st_size > 0:
+                return backup, f"default_{team_id}_{kittype_code}"
+            if live_kitui.exists():
+                return live_kitui, f"default_{team_id}_{kittype_code}"
+            return None, None
+        kitui_path = entry.get("kitui_path")
+        if kitui_path is None:
+            return None, None
+        return kitui_path, f"{entry['tourn_id']}_{kitui_path.name}"
+
+    def _current_kits_preview_cache_key(self) -> str | None:
+        _source, cache_key = self._kits_menu_preview_source()
+        return cache_key
+
+    def _resolve_kits_menu_preview(self) -> str:
+        """Returns a ready-to-show preview path for the currently-highlighted
+        kits-menu list entry — synchronous, never blocks: a kitui .dds file
+        needs the 32-bit worker to convert it to PNG (KitMixRuntime.
+        render_preview), so that conversion always happens on a background
+        thread. Returns the cached PNG if one is already ready, kicks off a
+        background render if not (so revisiting this same item later is
+        instant), and falls back to the generic kit-ui placeholder in the
+        meantime — the exact same placeholder-on-missing-or-pending
+        convention already used by Simple Mode's preview and the
+        hotkey-cycling overlay notification."""
+        kitui_path, cache_key = self._kits_menu_preview_source()
+        if kitui_path is None or cache_key is None:
+            fallback = kit_ui_placeholder_path()
+            return str(fallback) if fallback else ""
+
+        cached = self._overlay_kit_preview_cache.get(cache_key)
+        if cached:
+            return cached
+
+        fallback = kit_ui_placeholder_path()
+        fallback_path = str(fallback) if fallback else ""
+
+        if cache_key not in self._overlay_kit_preview_pending:
+            self._overlay_kit_preview_pending.add(cache_key)
+
+            def worker() -> None:
+                try:
+                    png = self.kit_mixer.render_preview(str(kitui_path), "kitui", cache_key=f"menu_{cache_key}")
+                    png_str = str(png)
+                except Exception:
+                    png_str = None
+                self._overlay_kit_preview_pending.discard(cache_key)
+                if not png_str:
+                    return
+                self._overlay_kit_preview_cache[cache_key] = png_str
+                # Only push a live update if the user is still looking at
+                # this exact item — otherwise the next visit will just find
+                # it already cached above.
+                if self._d3d_menu_visible and self._current_kits_preview_cache_key() == cache_key:
+                    inj = self._d3d_injector
+                    if inj is not None:
+                        try:
+                            inj.set_preview_image(png_str)
+                        except Exception:
+                            pass
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        return fallback_path
 
     def _navigate_menu_items(self, delta: int) -> None:
         """Move selection up/down in the current tab list."""
@@ -1185,6 +1392,182 @@ class OverlayMixin:
         if self._d3d_menu_visible and self._keyboard_hook is not None:
             return vk in self._overlay_blocked_key_down
         return bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
+
+    def _sync_kit_hotkeys(self) -> None:
+        """F7/F8 = home prev/next, F9/F10 = away prev/next — cycles the
+        currently-selected Simple Mode kit type (self.kitmix_kittype) for
+        whichever team is loaded. F11 cycles that shared kit type itself
+        (Home→Away→Keeper→Third→Home...) so it can be changed without
+        switching to the CGFS window — both sides always cycle within
+        whatever type F11 last selected, matching the single shared
+        combobox Simple Mode already has. Fires whenever FIFA is detected,
+        same global-poll semantics as the F12 toggle (self._fifa_hwnd != 0,
+        regardless of OS foreground) — but unlike F12, only while the D3D
+        menu is closed, and only on pages where a kit change is meaningful
+        (team/kit-selection screens, same set as _page_can_have_match_context):
+        confirmed live that FIFA does not re-read kit textures mid-match
+        (same limitation documented for stadium assignment, CLAUDE.md §5.1),
+        so the hotkeys are simply inert during actual play rather than
+        silently applying a change nobody will see."""
+        if not self.kit_hotkeys_var.get():
+            return
+        if self._d3d_menu_visible:
+            return
+        if not self._fifa_hwnd:
+            return
+        if not self._page_can_have_match_context(self.lastpagename):
+            return
+
+        home_prev_down = self._is_overlay_key_down(VK_F7, False)
+        home_next_down = self._is_overlay_key_down(VK_F8, False)
+        away_prev_down = self._is_overlay_key_down(VK_F9, False)
+        away_next_down = self._is_overlay_key_down(VK_F10, False)
+        kit_type_down = self._is_overlay_key_down(VK_F11, False)
+
+        now = time.monotonic()
+        if now >= self._kit_hotkey_ready_at:
+            if home_prev_down and not self._kit_home_prev_down:
+                self._trigger_kit_cycle("home", -1)
+                self._kit_hotkey_ready_at = now + 0.25
+            elif home_next_down and not self._kit_home_next_down:
+                self._trigger_kit_cycle("home", 1)
+                self._kit_hotkey_ready_at = now + 0.25
+            elif away_prev_down and not self._kit_away_prev_down:
+                self._trigger_kit_cycle("away", -1)
+                self._kit_hotkey_ready_at = now + 0.25
+            elif away_next_down and not self._kit_away_next_down:
+                self._trigger_kit_cycle("away", 1)
+                self._kit_hotkey_ready_at = now + 0.25
+            elif kit_type_down and not self._kit_type_cycle_down:
+                self._cycle_kit_type()
+                self._kit_hotkey_ready_at = now + 0.25
+
+        self._kit_home_prev_down = home_prev_down
+        self._kit_home_next_down = home_next_down
+        self._kit_away_prev_down = away_prev_down
+        self._kit_away_next_down = away_next_down
+        self._kit_type_cycle_down = kit_type_down
+
+    def _cycle_kit_type(self) -> None:
+        keys = list(KIT_TYPES.keys())  # ["home", "away", "keeper", "third"], stable insertion order
+        current_code = self._kitsimple_current_kittype_code()
+        current_key = next((k for k, v in KIT_TYPES.items() if v == current_code), keys[0])
+        next_key = keys[(keys.index(current_key) + 1) % len(keys)]
+        self.kitmix_kittype.set(self.kitmix_kittype_labels.get(next_key, next_key.capitalize()))
+        self._show_kit_type_notification(next_key)
+
+    def _show_kit_type_notification(self, kittype_key: str) -> None:
+        if self._stadium_task_running:
+            return
+        inj = self._d3d_injector
+        if inj is None or not inj.is_injected():
+            return
+        title = self.tr("dialog.kitmix.kit_type")
+        detail = self.kitmix_kittype_labels.get(kittype_key, kittype_key.capitalize())
+        if self._kit_hotkey_hide_job is not None:
+            try:
+                self.after_cancel(self._kit_hotkey_hide_job)
+            except Exception:
+                pass
+            self._kit_hotkey_hide_job = None
+        inj.show(title, detail, 100.0, "", panel_title=self.tr("kitsimple.hotkey_panel_title"))
+        self._kit_hotkey_shown_at = time.monotonic()
+        self._kit_hotkey_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
+
+    def _trigger_kit_cycle(self, side: str, direction: int) -> None:
+        if self._kit_cycle_task_running:
+            return
+        team_id = (self.HID if side == "home" else self.AID) or ""
+        if not team_id:
+            return
+        kittype_code = self._kitsimple_current_kittype_code()
+        # Third always redirects to the Home live slot (KitMixRuntime.
+        # live_kittype_for) — many teams' own kit rotation never references
+        # their Third slot at all, so a custom kit staged there would never
+        # be picked up in-game no matter what's on disk.
+        live_kittype = self.kit_mixer.live_kittype_for(kittype_code)
+
+        kit_sets = self.kit_mixer.list_kit_sets(team_id, kittype_code)
+        # A leading None represents the team's own default/original kit —
+        # what "Restore Original Kit" would revert to — so cycling always has
+        # a way back to vanilla even when no custom packs are configured.
+        options: list[dict | None] = [None] + kit_sets
+
+        key = (team_id, kittype_code)
+        new_index = (self._kit_cycle_index.get(key, -1) + direction) % len(options)
+        self._kit_cycle_index[key] = new_index
+        entry = options[new_index]
+
+        self._kit_cycle_task_running = True
+
+        def worker() -> None:
+            try:
+                if entry is None:
+                    self.kit_mixer.restore_kit_type(team_id, live_kittype)
+                    tourn_id = None
+                    result = {"team_id": team_id, "kittype": kittype_code, "target_kittype": live_kittype, "tourn_id": None, "applied": {}, "gk": None}
+                    live_kitui = self.kit_mixer.live_kitui_path(team_id, live_kittype)
+                    kitui_path = live_kitui if live_kitui.exists() else None
+                else:
+                    tourn_id = entry["tourn_id"]
+                    result = self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, tourn_id)
+                    kitui_path = entry["kitui_path"]
+
+                # cache_key must vary per (team, kittype, tourn) — the C++ side
+                # only reloads a preview texture when the image_path STRING
+                # changes (DrawOverlay11 caches by path), so reusing one fixed
+                # key across cycles would keep showing the first-ever image.
+                png_path = None
+                if kitui_path is not None:
+                    cache_key = f"{team_id}_{kittype_code}_{tourn_id or 'default'}"
+                    try:
+                        png_path = self.kit_mixer.render_preview(str(kitui_path), "kitui", cache_key=cache_key)
+                    except Exception:
+                        png_path = None
+                if png_path is None:
+                    png_path = kit_ui_placeholder_path()
+
+                self._worker_queue.put(("kit_cycled", side, team_id, tourn_id, result, png_path))
+            except Exception as exc:
+                self._worker_queue.put(("kit_cycle_error", side, team_id, str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._schedule_worker_poll()
+
+    def _show_kit_hotkey_notification(self, side: str, team_id: str, tourn_id, result: dict, png_path) -> None:
+        # image_path/visible are shared with the stadium-loading panel
+        # (DrawOverlay11 in cgfs16_overlay.cpp) — skip rather than fight over
+        # it if a stadium load is already using it.
+        if self._stadium_task_running:
+            self.log(f"Kit hotkey: applied but skipped overlay notification (stadium loading in progress) team={team_id} tourn={tourn_id}")
+            return
+        inj = self._d3d_injector
+        if inj is None or not inj.is_injected():
+            return
+        team_name = self._resolve_team_name(team_id) or team_id
+        side_label = self.tr("team.a") if side == "home" else self.tr("team.b")
+        title = f"{side_label}: {team_name}"
+        detail = self.tr("kitsimple.hotkey_detail_default") if tourn_id is None else self.tr("kitsimple.hotkey_detail", tourn=tourn_id)
+        gk_result = result.get("gk")
+        if gk_result:
+            detail = f"{detail}  (GK: {gk_result['tourn_id']})"
+        if self._kit_hotkey_hide_job is not None:
+            try:
+                self.after_cancel(self._kit_hotkey_hide_job)
+            except Exception:
+                pass
+            self._kit_hotkey_hide_job = None
+        inj.show(title, detail, 100.0, str(png_path) if png_path else "", panel_title=self.tr("kitsimple.hotkey_panel_title"))
+        self._kit_hotkey_shown_at = time.monotonic()
+        self._kit_hotkey_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
+
+    def _hide_kit_hotkey_notification(self) -> None:
+        self._kit_hotkey_hide_job = None
+        if self._stadium_task_running:
+            return
+        inj = self._d3d_injector
+        if inj is not None:
+            inj.hide()
 
     def _best_effort_neutralize_game_keys(self) -> None:
         """Release common UI keys so FIFA is less likely to consume held inputs while menu is open."""

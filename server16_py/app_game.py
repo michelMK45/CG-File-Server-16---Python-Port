@@ -152,6 +152,7 @@ class GameMixin:
         self.skillgamechange = False
 
     def _clear_live_context(self) -> None:
+        self._kit_cycle_index = {}
         self.HID = ""
         self.AID = ""
         self.STADID = ""

@@ -73,6 +73,10 @@ class _OverlayShared(ctypes.Structure):
             ("list_header",         ctypes.c_wchar * _MAX_STR),
         # Toast notification stack — each slot is independently shown/hidden
         ("toasts",              _ToastEntry * _MAX_TOASTS),
+        # Overrides DrawOverlay11's hardcoded "Loading Stadium" header line —
+        # empty (the default) keeps that exact text, so existing stadium-
+        # loading callers of show() need no changes.
+        ("panel_title",          ctypes.c_wchar * _MAX_STR),
     ]
 
 
@@ -194,12 +198,13 @@ class D3DOverlayInjector:
             return ok
 
     def show(self, stadium_name: str, detail: str = "", progress: float = 0.0,
-             image_path: str = "") -> None:
+             image_path: str = "", panel_title: str = "") -> None:
         if not self._ready or self._shared is None:
             return
         self._shared.stadium_name  = stadium_name[:_MAX_STR - 1]
         self._shared.detail_text   = detail[:_MAX_STR - 1]
         self._shared.image_path    = image_path[:_MAX_IMG - 1]
+        self._shared.panel_title   = panel_title[:_MAX_STR - 1]
         self._shared.progress_x100 = int(max(0.0, min(100.0, progress)) * 100)
         # Write visible LAST so the DLL sees consistent data
         self._shared.visible = 1

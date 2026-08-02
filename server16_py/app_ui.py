@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
-from .file_tools import resolve_stadium_preview_path, stadium_preview_fallback_path
+from .file_tools import kit_ui_placeholder_path, resolve_stadium_preview_path, stadium_preview_fallback_path
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .update_checker import UpdateCheckResult
@@ -28,6 +28,7 @@ except Exception:
 # kit-numbers pickers (list and import are both .rx3); "dds" by the kit-UI thumbnail
 # picker (list and import are both .dds).
 KITMIX_KEEP_LABEL = "-- keep current --"
+KITSIMPLE_GK_NONE_LABEL = "-- none --"
 KITMIX_IMPORTED_LABEL_PREFIX = "[image] "
 KITMIX_IMPORTED_RX3_LABEL_PREFIX = "[file] "
 KITMIX_IMPORTED_DDS_LABEL_PREFIX = "[file] "
@@ -1188,7 +1189,33 @@ class UIMixin:
         outer = tk.Frame(self.kits_tab, bg=self.bg)
         outer.pack(fill="both", expand=True, padx=10, pady=10)
 
-        card = self._card(outer, "card.kitmix.title", "card.kitmix.subtitle")
+        sub_notebook = ttk.Notebook(outer, style="Server16.TNotebook")
+        sub_notebook.pack(fill="both", expand=True)
+        self._kits_sub_notebook = sub_notebook
+
+        self.kits_simple_subtab = tk.Frame(sub_notebook, bg=self.bg)
+        self.kits_advanced_subtab = tk.Frame(sub_notebook, bg=self.bg)
+        sub_notebook.add(self.kits_simple_subtab, text=self.tr("tab.kits.simple"))
+        sub_notebook.add(self.kits_advanced_subtab, text=self.tr("tab.kits.advanced"))
+        sub_notebook.bind("<<NotebookTabChanged>>", self._on_kits_subtab_changed)
+
+        self._build_kits_advanced_tab(self.kits_advanced_subtab)
+        self._build_kits_simple_tab(self.kits_simple_subtab)
+
+    def _on_kits_subtab_changed(self, event=None) -> None:
+        if self._kits_sub_notebook is None:
+            return
+        try:
+            current = self._kits_sub_notebook.nametowidget(self._kits_sub_notebook.select())
+        except Exception:
+            return
+        if current is self.kits_simple_subtab:
+            self._kitsimple_on_tab_shown()
+        elif current is self.kits_advanced_subtab:
+            self._kitmix_on_tab_shown()
+
+    def _build_kits_advanced_tab(self, parent: tk.Misc) -> None:
+        card = self._card(parent, "card.kitmix.title", "card.kitmix.subtitle")
         card.pack(fill="both", expand=True)
 
         self.kitmix_team_id = tk.StringVar(value="")
@@ -1686,6 +1713,16 @@ class UIMixin:
             return
         self._kits_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
+    def _on_kitsimple_mousewheel(self, event) -> None:
+        if self.tabview is None or self._kitsimple_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.kits_tab:
+            return
+        if not self._event_widget_belongs_to(event, self._kitsimple_canvas, self._kitsimple_canvas_body):
+            return
+        self._kitsimple_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
     def _restore_team_kit(self, team_id: str) -> None:
         """Reverts every kit asset (jersey/shorts, both number slots, kit UI
         thumbnail, name color) this runtime has ever backed up for team_id,
@@ -1803,6 +1840,309 @@ class UIMixin:
         ttk.Button(btn_row, text=self.tr("dialog.kitmix.select_all"), command=select_all).pack(side="left")
         ttk.Button(btn_row, text=self.tr("button.restore_kit_original"), command=do_restore).pack(side="right")
 
+    def _build_kits_simple_tab(self, parent: tk.Misc) -> None:
+        """Simple Mode: pick one already-bundled "kit set" (a kit_<team>_<kittype>_
+        <tourn_id>.rx3 plus whatever companion numbers/kitui files share that same
+        tourn_id, see KitMixRuntime.list_kit_sets) and apply it all in one click,
+        instead of the advanced tab's 6 independent per-asset pickers. Shares the
+        team_id/kittype selection state with the advanced tab (self.kitmix_team_id,
+        self.kitmix_kittype) so switching tabs keeps the same team/kit type."""
+        outer = tk.Frame(parent, bg=self.bg)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+
+        card = self._card(outer, "card.kitmix_simple.title", "card.kitmix_simple.subtitle")
+        card.pack(fill="both", expand=True)
+
+        self._kitsimple_kit_sets: list[dict] = []
+        self._kitsimple_preview_images: dict = {}
+        self._kitsimple_preview_generation = 0
+
+        # Fixed footer — packed before the scroll area so "Apply Kit" stays
+        # visible even when the window is short (mirrors the advanced tab's
+        # pattern, see _build_kits_advanced_tab).
+        footer = tk.Frame(card, bg=self.card)
+        footer.pack(side="bottom", fill="x", padx=12, pady=(6, 12))
+        self._kitsimple_footer_frame = footer
+        self.kitsimple_status_label = tk.Label(footer, text=self.display_value("idle"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9))
+        self.kitsimple_status_label.pack(anchor="w", pady=(0, 4))
+        ttk.Button(footer, text=self.tr("button.apply_kit_set"), command=self._kitsimple_apply).pack(fill="x")
+
+        # Scrollable body: team selector, kit list + preview, GK link row.
+        scroll_host = tk.Frame(card, bg=self.card)
+        scroll_host.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        canvas = tk.Canvas(scroll_host, bg=self.card, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        scroll_body = tk.Frame(canvas, bg=self.card)
+        canvas_win = canvas.create_window((0, 0), window=scroll_body, anchor="nw")
+
+        def _on_body_configure(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(canvas_win, width=e.width)
+
+        scroll_body.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        self._kitsimple_canvas = canvas
+        self._kitsimple_canvas_body = scroll_body
+        # add="+" — see the comment on the dashboard's bind_all for why this must
+        # not replace other tabs' scoped mousewheel handlers.
+        canvas.bind_all("<MouseWheel>", self._on_kitsimple_mousewheel, add="+")
+
+        top = tk.Frame(scroll_body, bg=self.card)
+        top.pack(fill="x", pady=(0, 6))
+        self._dark_label(top, self.tr("dialog.kitmix.team_id"), bg=self.card, muted=True).pack(side="left")
+        ttk.Entry(top, textvariable=self.kitmix_team_id, width=10).pack(side="left", padx=(6, 12))
+        self._dark_label(top, self.tr("dialog.kitmix.kit_type"), bg=self.card, muted=True).pack(side="left")
+        kittype_combo = ttk.Combobox(
+            top, state="readonly", textvariable=self.kitmix_kittype,
+            values=tuple(self.kitmix_kittype_labels.values()), width=10,
+            style="Server16.TCombobox",
+        )
+        kittype_combo.pack(side="left", padx=(6, 12))
+        kittype_combo.bind("<<ComboboxSelected>>", lambda _e: self._kitsimple_refresh_lists())
+        ttk.Button(top, text=self.tr("dialog.kitmix.refresh"), command=self._kitsimple_refresh_lists).pack(side="left")
+        self.kitsimple_team_name_label = self._dark_label(top, "", bg=self.card, muted=True)
+        self.kitsimple_team_name_label.pack(side="left", padx=(12, 0))
+
+        search_row = tk.Frame(scroll_body, bg=self.card)
+        search_row.pack(fill="x", pady=(0, 6))
+        ttk.Button(search_row, text=self.tr("button.use_home_team"), command=self._kitsimple_use_home_team).pack(side="left", padx=(0, 6))
+        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitsimple_use_away_team).pack(side="left")
+
+        body = tk.Frame(scroll_body, bg=self.card)
+        body.pack(fill="both", expand=True, pady=(0, 6))
+
+        list_frame = tk.Frame(body, bg=self.card)
+        list_frame.pack(side="left", fill="both", expand=True, padx=(0, 8))
+        self._kitsimple_listbox = self._dark_listbox(list_frame, exportselection=False, height=12, font=("Consolas", 10))
+        self._kitsimple_listbox.pack(fill="both", expand=True)
+        self._kitsimple_listbox.bind("<<ListboxSelect>>", self._kitsimple_on_select)
+
+        preview_frame = tk.Frame(body, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        preview_frame.pack(side="left", fill="y")
+        preview_label = tk.Label(
+            preview_frame, text=self.tr("dialog.kitmix.no_changes"), bg=self.panel, fg=self.muted,
+            anchor="center", justify="center", wraplength=170, font=("Bahnschrift", 9),
+        )
+        preview_label.pack(padx=8, pady=8, ipadx=4, ipady=4)
+        preview_label.image_size = (170, 170)
+        self._kitsimple_preview_label = preview_label
+
+        gk_row = tk.Frame(scroll_body, bg=self.card)
+        gk_row.pack(fill="x", pady=(0, 8))
+        self.kitsimple_gk_row = gk_row
+        self._dark_label(gk_row, self.tr("kitsimple.gk_link_label"), bg=self.card, muted=True).pack(side="left")
+        self.kitsimple_gk_var = tk.StringVar(value=KITSIMPLE_GK_NONE_LABEL)
+        self._kitsimple_gk_options: dict[str, str] = {}
+        gk_combo = ttk.Combobox(
+            gk_row, state="readonly", textvariable=self.kitsimple_gk_var,
+            values=(KITSIMPLE_GK_NONE_LABEL,), width=24, style="Server16.TCombobox",
+        )
+        gk_combo.pack(side="left", padx=(6, 0))
+        self.kitsimple_gk_combo = gk_combo
+
+        self._kitsimple_refresh_lists()
+
+    def _kitsimple_current_kittype_code(self) -> str:
+        kittype_label = self.kitmix_kittype.get()
+        kittype = next((k for k, v in self.kitmix_kittype_labels.items() if v == kittype_label), "home")
+        return KIT_TYPES.get(kittype, "0")
+
+    def _kitsimple_refresh_lists(self) -> None:
+        team_id = self.kitmix_team_id.get().strip()
+        name = self._resolve_team_name(team_id) if team_id else None
+        if self.kitsimple_team_name_label is not None:
+            label_text = name or ""
+            if team_id:
+                folder_name = self.kit_mixer.kits_folder_name(team_id)
+                if folder_name != team_id:
+                    label_text = f"{label_text} ({folder_name})" if label_text else folder_name
+            self.kitsimple_team_name_label.configure(text=label_text)
+
+        kittype_code = self._kitsimple_current_kittype_code()
+        self._kitsimple_kit_sets = self.kit_mixer.list_kit_sets(team_id, kittype_code) if team_id else []
+
+        listbox = self._kitsimple_listbox
+        listbox.configure(state="normal")
+        listbox.delete(0, "end")
+        if not self._kitsimple_kit_sets:
+            listbox.insert("end", self.tr("kitsimple.no_sets"))
+            listbox.configure(state="disabled")
+        else:
+            for entry in self._kitsimple_kit_sets:
+                status = self.tr("kitsimple.complete") if entry["complete"] else self.tr("kitsimple.partial")
+                listbox.insert("end", f"{entry['tourn_id']}  —  {status}")
+            listbox.selection_clear(0, "end")
+            listbox.selection_set(0)
+        self._kitsimple_refresh_gk_options()
+        self._kitsimple_on_select()
+
+    def _kitsimple_refresh_gk_options(self) -> None:
+        """Populates the "link goalkeeper kit" combobox from this team's own
+        keeper kit sets (list_kit_sets(team_id, "2")) — only shown for
+        Home/Away, since third-kit linking is out of scope and a keeper kit
+        can't sensibly link to another keeper kit."""
+        kittype_code = self._kitsimple_current_kittype_code()
+        if kittype_code not in ("0", "1"):
+            self.kitsimple_gk_row.pack_forget()
+            return
+        if not self.kitsimple_gk_row.winfo_ismapped():
+            self.kitsimple_gk_row.pack(fill="x", pady=(0, 8))
+
+        team_id = self.kitmix_team_id.get().strip()
+        gk_sets = self.kit_mixer.list_kit_sets(team_id, "2") if team_id else []
+        values = [KITSIMPLE_GK_NONE_LABEL] + [entry["tourn_id"] for entry in gk_sets]
+        self.kitsimple_gk_combo.configure(values=tuple(values))
+        if self.kitsimple_gk_var.get() not in values:
+            self.kitsimple_gk_var.set(KITSIMPLE_GK_NONE_LABEL)
+
+    def _kitsimple_sync_gk_selection(self) -> None:
+        """Reflects whatever GK link is already saved (settings.ini [kitgk])
+        for the currently-selected outfield kit set — the link is per exact
+        (team_id, tourn_id), so this must re-run every time the listbox
+        selection changes, not just on tab refresh."""
+        kittype_code = self._kitsimple_current_kittype_code()
+        if kittype_code not in ("0", "1"):
+            return
+        listbox = self._kitsimple_listbox
+        selection = listbox.curselection()
+        if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
+            self.kitsimple_gk_var.set(KITSIMPLE_GK_NONE_LABEL)
+            return
+        team_id = self.kitmix_team_id.get().strip()
+        tourn_id = self._kitsimple_kit_sets[selection[0]]["tourn_id"]
+        linked = self.kit_mixer.get_linked_gk_tourn(team_id, tourn_id) if team_id else None
+        available = self.kitsimple_gk_combo.cget("values")
+        self.kitsimple_gk_var.set(linked if linked and linked in available else KITSIMPLE_GK_NONE_LABEL)
+
+    def _kitsimple_selected_gk_tourn(self) -> str | None:
+        value = self.kitsimple_gk_var.get()
+        return value if value and value != KITSIMPLE_GK_NONE_LABEL else None
+
+    def _kitsimple_on_tab_shown(self) -> None:
+        if not self.kitmix_team_id.get().strip():
+            default_team = self.HID or self.AID or ""
+            if default_team:
+                self.kitmix_team_id.set(default_team)
+        self._kitsimple_refresh_lists()
+
+    def _kitsimple_use_home_team(self) -> None:
+        self._kitsimple_use_match_team(self.HID)
+
+    def _kitsimple_use_away_team(self) -> None:
+        self._kitsimple_use_match_team(self.AID)
+
+    def _kitsimple_use_match_team(self, team_id: str) -> None:
+        team_id = (team_id or "").strip()
+        if not team_id:
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.no_match_team"))
+            return
+        self.kitmix_team_id.set(team_id)
+        self._kitsimple_refresh_lists()
+
+    def _kitsimple_on_select(self, _event=None) -> None:
+        listbox = self._kitsimple_listbox
+        selection = listbox.curselection()
+        self._kitsimple_sync_gk_selection()
+        generation = self._kitsimple_preview_generation + 1
+        self._kitsimple_preview_generation = generation
+        if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
+            self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.no_changes"))
+            return
+
+        entry = self._kitsimple_kit_sets[selection[0]]
+        if entry["kitui_path"] is None:
+            fallback = kit_ui_placeholder_path()
+            if fallback is not None:
+                self._kitsimple_show_preview_image_path(fallback)
+            else:
+                self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.no_changes"))
+            return
+
+        source_path = entry["kitui_path"]
+        team_id = self.kitmix_team_id.get().strip()
+        kittype_code = self._kitsimple_current_kittype_code()
+        cache_key = f"{team_id}_{kittype_code}_{entry['tourn_id']}"
+
+        self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.loading"))
+
+        def worker() -> None:
+            try:
+                png_path = self.kit_mixer.render_preview(str(source_path), "kitui", cache_key=cache_key)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - surfaced as a preview placeholder
+                png_path, error = None, exc
+            self.after(0, lambda: self._kitsimple_apply_preview_result(generation, png_path, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _kitsimple_apply_preview_result(self, generation: int, png_path, error) -> None:
+        # A newer selection may have superseded this one while the worker ran.
+        if self._kitsimple_preview_generation != generation:
+            return
+        if error is not None or png_path is None:
+            self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.preview_error"))
+            return
+        self._kitsimple_show_preview_image_path(png_path)
+
+    def _kitsimple_show_preview_placeholder(self, text: str) -> None:
+        label = self._kitsimple_preview_label
+        if not label:
+            return
+        self._kitsimple_preview_images.pop("current", None)
+        label.configure(image="", text=text, compound="center")
+
+    def _kitsimple_show_preview_image_path(self, path) -> None:
+        label = self._kitsimple_preview_label
+        if not label:
+            return
+        try:
+            image = Image.open(path).convert("RGBA")
+            image.thumbnail(getattr(label, "image_size", (170, 170)))
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.preview_error"))
+            return
+        self._kitsimple_preview_images["current"] = photo
+        label.configure(image=photo, text="", compound="center")
+
+    def _kitsimple_apply(self) -> None:
+        if self.fifaEXE == "default":
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
+            return
+        team_id = self.kitmix_team_id.get().strip()
+        if not team_id:
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
+            return
+        selection = self._kitsimple_listbox.curselection()
+        if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
+            messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitsimple.missing_selection"))
+            return
+        entry = self._kitsimple_kit_sets[selection[0]]
+        kittype_code = self._kitsimple_current_kittype_code()
+
+        if kittype_code in ("0", "1"):
+            self.kit_mixer.set_linked_gk_tourn(team_id, entry["tourn_id"], self._kitsimple_selected_gk_tourn())
+
+        window = self._window()
+        window.configure(cursor="watch")
+        window.update_idletasks()
+        try:
+            self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, entry["tourn_id"])
+            if self.kitsimple_status_label is not None:
+                self.kitsimple_status_label.configure(text=self.tr("kitmix.applied_prefix", team=team_id))
+            messagebox.showinfo(self.tr("message.kitmix"), self.tr("message.kitsimple.apply_success", team=team_id))
+        except Exception as exc:
+            self.log("Failed to apply kit set", exc, exc_info=sys.exc_info())
+            messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitsimple.apply_failed", error=exc))
+        finally:
+            window.configure(cursor="")
+
     def _build_stadium_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.stadium.title", "card.stadium.subtitle")
         card.grid(row=row, column=0, sticky="nsew", pady=(0, 12))
@@ -1882,6 +2222,15 @@ class UIMixin:
         )
         overlay_switch.pack(anchor="w", padx=12, pady=(0, 4))
 
+        kit_hotkeys_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.kit_hotkeys"),
+            variable=self.kit_hotkeys_var,
+            command=self._toggle_kit_hotkeys,
+        )
+        kit_hotkeys_switch.pack(anchor="w", padx=12, pady=(0, 4))
+
         keep_open_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
@@ -1955,6 +2304,10 @@ class UIMixin:
             )
             return
         set_kit_number_scheme(general_lua, custom, template)
+
+    def _toggle_kit_hotkeys(self) -> None:
+        self.settings.kit_hotkeys_enabled = self.kit_hotkeys_var.get()
+        self.settings.save()
 
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
@@ -2481,7 +2834,7 @@ class UIMixin:
             # possibly stale snapshot from whenever the tab was last built/refreshed.
             self.refresh_setup_tab()
         elif current is self.kits_tab:
-            self._kitmix_on_tab_shown()
+            self._on_kits_subtab_changed()
 
     def _lua_assets_missing_files(self) -> list[str] | None:
         """Compare data/fifarna/lua file-by-file against the bundled install_data source.

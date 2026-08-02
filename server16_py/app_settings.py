@@ -69,7 +69,15 @@ class SettingsMixin:
                 self._set_process_status(self.status_text("stadium_error"), self.error)
                 self._hide_stadium_loading_modal(delay_ms=5000)
                 self.log(message)
-        if self._stadium_task_running or not self._worker_queue.empty():
+            elif kind == "kit_cycled":
+                _, side, team_id, tourn_id, result, png_path = event
+                self._kit_cycle_task_running = False
+                self._show_kit_hotkey_notification(side, team_id, tourn_id, result, png_path)
+            elif kind == "kit_cycle_error":
+                _, side, team_id, message = event
+                self._kit_cycle_task_running = False
+                self.log(f"Kit hotkey: failed to cycle kit for team {team_id} ({side}): {message}")
+        if self._stadium_task_running or self._kit_cycle_task_running or not self._worker_queue.empty():
             self._schedule_worker_poll()
 
     def setuppaths(self, load_team_database: bool = True) -> None:

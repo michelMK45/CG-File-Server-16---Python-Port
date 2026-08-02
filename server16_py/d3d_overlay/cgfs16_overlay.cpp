@@ -81,6 +81,10 @@ struct OverlayShared {
     wchar_t list_header[MAX_STR];      // wizard step header text shown above list (empty = hidden)
     // Toast notification stack — each slot is independently shown/hidden
     ToastEntry toasts[MAX_TOASTS];
+    // Overrides the DrawOverlay11 panel's hardcoded "Loading Stadium" header
+    // line — empty (the default) keeps that exact text, so every existing
+    // stadium-loading caller needs no changes.
+    wchar_t panel_title[MAX_STR];
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -204,7 +208,7 @@ struct TextTex {
     wchar_t                    content[MAX_STR * 2] = {};
 };
 
-static TextTex g_ttTitle;    // "Loading Stadium" label
+static TextTex g_ttTitle;    // panel header — "Loading Stadium" by default, see panel_title
 static TextTex g_ttName;     // stadium name
 static TextTex g_ttDetail;   // detail / progress message
 
@@ -212,8 +216,6 @@ static TextTex g_ttDetail;   // detail / progress message
 // Menu overlay: per-tab text textures and tab metadata
 // ---------------------------------------------------------------------------
 #define NUM_MENU_TABS 5
-#undef NUM_MENU_TABS
-#define NUM_MENU_TABS 4
 static TextTex g_ttTab[NUM_MENU_TABS];
 static LONG    g_menuLastActiveTab = -1;
 
@@ -259,7 +261,7 @@ static TextTex g_ttKeyHintDesc[NUM_KEY_HINT_ITEMS];
 static bool    g_keyHintTexReady = false;
 
 static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
-    L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos"
+    L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos", L"Kits"
 };
 
 // ---------------------------------------------------------------------------
@@ -671,7 +673,7 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         wcsncpy_s(imgPathMenu, g_data->image_path,  MAX_IMG - 1);
         wcsncpy_s(listHeader,  g_data->list_header, MAX_STR - 1);
     }
-    const bool showSplit  = (activeTab == 1);  // Stadiums tab: list + preview side-by-side
+    const bool showSplit  = (activeTab == 1 || activeTab == 4);  // Stadiums, Kits: list + preview side-by-side
     const bool showHeader = (listHeader[0] != L'\0');  // wizard step indicator above list
 
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -1338,12 +1340,13 @@ static void DrawToast11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceConte
 }
 
 static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
-    wchar_t stadium[MAX_STR]={}, detail[MAX_STR]={}, imgPath[MAX_IMG]={};
+    wchar_t stadium[MAX_STR]={}, detail[MAX_STR]={}, imgPath[MAX_IMG]={}, panelTitle[MAX_STR]={};
     float pct=0.f;
     if (g_data) {
         wcsncpy_s(stadium, g_data->stadium_name, MAX_STR-1);
         wcsncpy_s(detail,  g_data->detail_text,  MAX_STR-1);
         wcsncpy_s(imgPath, g_data->image_path,   MAX_IMG-1);
+        wcsncpy_s(panelTitle, g_data->panel_title, MAX_STR-1);
         pct = (float)InterlockedCompareExchange(&g_data->progress_x100,0,0)/100.f;
     }
 
@@ -1376,7 +1379,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
     // Panel constants: PW=460, M=20.  Text column starts at px+136 (after image area).
     // maxPixW for text = PW - 136 - 12 = 312 px
     const int kTextMaxW = 312;
-    UpdateTextTex(dev, g_ttTitle,  L"Loading Stadium", 17, false, RGB(0x33,0x99,0xFF), kTextMaxW);
+    UpdateTextTex(dev, g_ttTitle,  panelTitle[0] ? panelTitle : L"Loading Stadium", 17, false, RGB(0x33,0x99,0xFF), kTextMaxW);
     UpdateTextTex(dev, g_ttName,   stadium,             16, true,  RGB(0xFF,0xFF,0xFF), kTextMaxW);
     UpdateTextTex(dev, g_ttDetail, detail,              13, false, RGB(0x99,0xBB,0xDD), kTextMaxW);
 
@@ -1475,7 +1478,7 @@ static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceCon
             DrawTexQuad(ctx, IX+(IW-dw)/2.f, IY+(IH-dh)/2.f, dw, dh, vpW, vpH, g_previewSRV);
         }
 
-        // Title "Loading Stadium"
+        // Title ("Loading Stadium" unless overridden by panel_title)
         if (g_ttTitle.srv)
             DrawTexQuad(ctx, TX, py+14.f, (float)g_ttTitle.width, (float)g_ttTitle.height, vpW, vpH, g_ttTitle.srv);
         // Stadium name

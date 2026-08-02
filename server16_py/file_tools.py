@@ -69,8 +69,8 @@ def stadium_preview_dir(stadium_gbd: str | Path) -> Path:
     return Path(stadium_gbd) / "render" / "thumbnail" / "stadium"
 
 
-def stadium_preview_fallback_path() -> Path | None:
-    """Bundled generic image shown when a stadium has no preview of its own.
+def _bundled_resource_path(filename: str) -> Path | None:
+    """Resolves a file under the bundled `resources/` folder.
 
     Checked against every base dir a `resources/` folder could live under, in the
     same order the app icon is resolved (§9 conventions): the PyInstaller MEIPASS
@@ -85,10 +85,22 @@ def stadium_preview_fallback_path() -> Path | None:
     else:
         candidate_bases.append(Path(__file__).resolve().parent.parent)
     for base in candidate_bases:
-        candidate = base / "resources" / "stadium-placeholder.png"
+        candidate = base / "resources" / filename
         if candidate.is_file():
             return candidate
     return None
+
+
+def stadium_preview_fallback_path() -> Path | None:
+    """Bundled generic image shown when a stadium has no preview of its own."""
+    return _bundled_resource_path("stadium-placeholder.png")
+
+
+def kit_ui_placeholder_path() -> Path | None:
+    """Bundled generic image shown when a kit set has no kit UI thumbnail
+    (kitui) of its own — used by the Simple Mode preview and the hotkey
+    cycling overlay notification, instead of extracting a jersey texture."""
+    return _bundled_resource_path("kit-ui-placeholder.png")
 
 
 def resolve_stadium_preview_path(stadium_gbd: str | Path, stadium_name: str) -> Path | None:

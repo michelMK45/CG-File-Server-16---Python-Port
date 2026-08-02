@@ -143,11 +143,16 @@ def kitnumbers_filename(team_id: str, kittype: str, slot: str, tourn_id: str = "
     return f"specifickitnumbers_{team_id}_{NUMBERS_SHORT_CODE[slot]}_{tourn_id}_{kittype}.rx3"
 
 
-def kitui_filename(team_id: str, kittype: str) -> str:
+def kitui_filename(team_id: str, kittype: str, tourn_id: str = "0") -> str:
     # Confirmed against a fully-populated install: the kit-type digit is the
     # "j" prefix (j0=home, j1=away, j2=keeper, j3=third), not a suffix — e.g.
-    # team 1's away kit UI thumbnail is j1_1_0.dds, not j0_1_1.dds.
-    return f"j{kittype}_{team_id}_0.dds"
+    # team 1's away kit UI thumbnail is j1_1_0.dds, not j0_1_1.dds. tourn_id
+    # defaults to "0" so every existing call site (all of which route through
+    # live_kitui_path, which never passes tourn_id) keeps resolving to the
+    # same tournament-agnostic live slot as before — only kit-set staging
+    # lookups (list_kit_sets) pass a real tourn_id, to find era-specific
+    # thumbnails sitting alongside it under FSW/Kits/<team>/ui/imgAssets/kits/.
+    return f"j{kittype}_{team_id}_{tourn_id}.dds"
 
 
 # Backup filenames are always <original stem>.original.<ext> (see
@@ -158,6 +163,11 @@ _KIT_BACKUP_RE = re.compile(r"^kit_(\d+)_(\d+)_\d+\.original\.rx3$")
 _KITNUMBERS_BACKUP_RE = re.compile(r"^specifickitnumbers_(\d+)_\d+_\d+_(\d+)\.original\.rx3$")
 _KITUI_BACKUP_RE = re.compile(r"^j(\d+)_(\d+)_0\.original\.dds$")
 _TEAM_LUA_BACKUP_RE = re.compile(r"^team_(\d+)\.original\.lua$")
+
+# Matches kit_<team_id>_<kittype>_<tourn_id>.rx3 staging files (see kit_filename)
+# to discover which "kit sets" (bundled shirt+shorts+numbers+thumbnail per era)
+# are available for a team+kittype — used by list_kit_sets/apply_kit_set.
+_KIT_SET_RE = re.compile(r"^kit_(\d+)_(\d+)_(\w+)\.rx3$")
 
 
 class KitMixRuntime:
@@ -241,6 +251,25 @@ class KitMixRuntime:
 
     def live_kitui_path(self, team_id: str, kittype: str) -> Path:
         return self.live_kitui_dir() / kitui_filename(team_id, kittype)
+
+    def packs_dir(self, team_id: str) -> Path:
+        """Root for kit "packs" — each immediate subfolder here is one
+        selectable set, named however the user wants (e.g. "2003"),
+        containing its own sceneassets/kit, sceneassets/kitnumbers, and
+        ui/imgAssets/kits subfolders so a whole kit (jersey + numbers +
+        thumbnail) can be organized/dragged as one unit. Files inside keep
+        whatever naming they already have — the folder itself is what scopes
+        them to this one pack, see list_kit_sets."""
+        return self.app.exedir / "FSW" / "Kits" / self.kits_folder_name(team_id) / "packs"
+
+    def pack_kit_dir(self, team_id: str, pack_name: str) -> Path:
+        return self.packs_dir(team_id) / pack_name / "sceneassets" / "kit"
+
+    def pack_kitnumbers_dir(self, team_id: str, pack_name: str) -> Path:
+        return self.packs_dir(team_id) / pack_name / "sceneassets" / "kitnumbers"
+
+    def pack_kitui_dir(self, team_id: str, pack_name: str) -> Path:
+        return self.packs_dir(team_id) / pack_name / "ui" / "imgAssets" / "kits"
 
     def backup_path(self, live_path: Path) -> Path:
         return live_path.with_name(f"{live_path.stem}.original{live_path.suffix}")
@@ -453,6 +482,219 @@ class KitMixRuntime:
         self.app.log(f"Kit UI thumbnail restored to original for team {team_id} ({kittype}): {live_path}")
         return {"team_id": team_id, "kittype": kittype, "output": str(live_path)}
 
+    @staticmethod
+    def _kit_set_entry(tourn_id: str, kit_path: Path, jersey_numbers_path, shorts_numbers_path, kitui_path) -> dict:
+        return {
+            "tourn_id": tourn_id,
+            "kit_path": kit_path,
+            "jersey_numbers_path": jersey_numbers_path,
+            "shorts_numbers_path": shorts_numbers_path,
+            "kitui_path": kitui_path,
+            "complete": jersey_numbers_path is not None and shorts_numbers_path is not None and kitui_path is not None,
+        }
+
+    @staticmethod
+    def _kit_set_sort_key(entry: dict) -> tuple[int, object]:
+        tourn_id = entry["tourn_id"]
+        if tourn_id == "0":
+            return (0, "")
+        try:
+            return (1, int(tourn_id))
+        except ValueError:
+            return (2, tourn_id)
+
+    def list_kit_sets(self, team_id: str, kittype: str) -> list[dict]:
+        """Every "kit set" available for this team+kittype, discovered two
+        ways — both produce the same entry shape, so callers (apply_kit_set,
+        the Simple Mode UI) don't care which one a given set came from:
+
+        1. The flat/root files already sitting directly in kits_dir/
+           kitnumbers_dir/kitui_dir — i.e. whatever's already assigned today
+           via the advanced tab or shipped by default, always at the
+           standard "_0" live slot. No renaming is ever implied or required
+           here; this is just "what's already there," exposed as a single
+           entry labeled "0".
+        2. Packs (packs_dir/<pack_name>/...): the way to offer more than one
+           choice — each subfolder under packs_dir(team_id) is one full set,
+           named however the user wants (the folder name becomes the label
+           shown in the list), containing its own sceneassets/kit,
+           sceneassets/kitnumbers, and ui/imgAssets/kits with files that keep
+           whatever naming they already have, since the folder itself is
+           what scopes them to this one pack — no renaming needed there
+           either.
+
+        pack_id (the numeric id embedded in a staged filename) is looked up
+        deliberately instead of assuming it equals team_id: kits_dir(team_id)
+        already resolves the right folder via [kitsid] (see kits_folder_name),
+        but a kit pack's own files are very often named after whatever
+        reference id the pack's author used, not the live team_id it ends up
+        assigned to in this install — e.g. a folder mapped from team_id 456
+        may contain kit_1362_0_0.rx3. list_available_kits/list_available_kitui
+        (the advanced tab's pickers) never validate this either, they just
+        list whatever is in the folder — this only needs to match kittype."""
+        entries: list[dict] = []
+
+        for path in self.list_available_kits(team_id):
+            m = _KIT_SET_RE.match(path.name)
+            if not m or m.group(2) != kittype or m.group(3) != "0":
+                continue
+            pack_id = m.group(1)
+            jersey_numbers = self.kitnumbers_dir(team_id) / kitnumbers_filename(pack_id, kittype, "jersey", "0")
+            shorts_numbers = self.kitnumbers_dir(team_id) / kitnumbers_filename(pack_id, kittype, "shorts", "0")
+            kitui = self.kitui_dir(team_id) / kitui_filename(pack_id, kittype, "0")
+            entries.append(self._kit_set_entry(
+                "0", path,
+                jersey_numbers if jersey_numbers.exists() else None,
+                shorts_numbers if shorts_numbers.exists() else None,
+                kitui if kitui.exists() else None,
+            ))
+
+        packs_root = self.packs_dir(team_id)
+        if packs_root.exists():
+            for pack_folder in sorted(p for p in packs_root.iterdir() if p.is_dir()):
+                pack_name = pack_folder.name
+                kit_dir = self.pack_kit_dir(team_id, pack_name)
+                if not kit_dir.exists():
+                    continue
+                pack_id, kit_path = None, None
+                for candidate in sorted(kit_dir.glob("kit_*.rx3")):
+                    m = _KIT_SET_RE.match(candidate.name)
+                    if m and m.group(2) == kittype:
+                        pack_id, kit_path = m.group(1), candidate
+                        break
+                if kit_path is None:
+                    continue
+
+                numbers_dir = self.pack_kitnumbers_dir(team_id, pack_name)
+                jersey_numbers_path = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_1_*_{kittype}.rx3"))), None) if numbers_dir.exists() else None
+                shorts_numbers_path = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_2_*_{kittype}.rx3"))), None) if numbers_dir.exists() else None
+                pack_kitui_dir = self.pack_kitui_dir(team_id, pack_name)
+                kitui_path = next(iter(sorted(pack_kitui_dir.glob(f"j{kittype}_{pack_id}_*.dds"))), None) if pack_kitui_dir.exists() else None
+
+                entries.append(self._kit_set_entry(pack_name, kit_path, jersey_numbers_path, shorts_numbers_path, kitui_path))
+
+        entries.sort(key=self._kit_set_sort_key)
+        return entries
+
+    @staticmethod
+    def live_kittype_for(kittype: str, target_kittype: str | None = None) -> str:
+        """Resolves which live kit-type slot a given kittype actually gets
+        written to. Third ("3") is always redirected to Home ("0") — FIFA's
+        own kit-rotation data for a given team decides which slots the
+        engine ever reads at all, and many teams never reference their Third
+        slot, so a custom kit staged there would silently never be picked up
+        in-game no matter what's on disk. target_kittype, if given, wins over
+        this rule outright."""
+        if target_kittype:
+            return target_kittype
+        return "0" if kittype == "3" else kittype
+
+    def apply_kit_set(self, team_id: str, kittype: str, tourn_id: str, target_kittype: str | None = None) -> dict:
+        """Applies an entire kit set (kit rx3 + whichever companion files exist
+        for this team/kittype/tourn_id) in one action — a plain file copy for
+        each part, no FifaLibrary/kit_worker mixing involved, since every file
+        already comes fully baked from the same staged set. Reuses the same
+        _backup_if_needed/backup_path mechanism as apply_mix/apply_numbers/
+        apply_kitui, so restore_kit_type and the Restore Manager work
+        identically regardless of whether a kit was applied via this method
+        or the advanced tab.
+
+        Looks the set up via list_kit_sets rather than reconstructing staging
+        filenames from team_id, since the staged kit_*.rx3/numbers/kitui files
+        may be named after the kit pack's own reference id, not team_id (see
+        list_kit_sets) — only the live/destination paths use team_id, since
+        that's what the engine actually needs to find them.
+
+        target_kittype optionally overrides which live kit-type SLOT this set
+        gets written to, independent of which kittype it was staged/discovered
+        under — see live_kittype_for. Defaults (target_kittype=None) to
+        live_kittype_for(kittype), which always redirects Third to Home."""
+        app = self.app
+        if not team_id:
+            raise ValueError("A team ID is required to apply a kit set")
+
+        entry = next((e for e in self.list_kit_sets(team_id, kittype) if e["tourn_id"] == tourn_id), None)
+        if entry is None:
+            raise FileNotFoundError(
+                f"No kit set found for team {team_id} ({kittype}, tourn {tourn_id}) under {self.kits_dir(team_id)}"
+            )
+        live_kittype = self.live_kittype_for(kittype, target_kittype)
+
+        applied: dict[str, str] = {}
+
+        live_kit = self.live_kit_path(team_id, live_kittype)
+        self._backup_if_needed(live_kit)
+        live_kit.parent.mkdir(parents=True, exist_ok=True)
+        live_kit.write_bytes(entry["kit_path"].read_bytes())
+        applied["kit"] = str(live_kit)
+
+        for slot, key in (("jersey", "jersey_numbers_path"), ("shorts", "shorts_numbers_path")):
+            source_numbers = entry[key]
+            if source_numbers is None:
+                continue
+            live_numbers = self.live_kitnumbers_path(team_id, live_kittype, slot)
+            self._backup_if_needed(live_numbers)
+            live_numbers.parent.mkdir(parents=True, exist_ok=True)
+            live_numbers.write_bytes(source_numbers.read_bytes())
+            applied[key.removesuffix("_path")] = str(live_numbers)
+
+        if entry["kitui_path"] is not None:
+            live_kitui = self.live_kitui_path(team_id, live_kittype)
+            self._backup_if_needed(live_kitui)
+            live_kitui.parent.mkdir(parents=True, exist_ok=True)
+            live_kitui.write_bytes(entry["kitui_path"].read_bytes())
+            applied["kitui"] = str(live_kitui)
+
+        app.log(f"Kit set applied for team {team_id} ({kittype}->{live_kittype}, tourn {tourn_id}): {sorted(applied)}")
+        return {"team_id": team_id, "kittype": kittype, "target_kittype": live_kittype, "tourn_id": tourn_id, "applied": applied}
+
+    @staticmethod
+    def gk_link_key(team_id: str, tourn_id: str) -> str:
+        return f"{team_id}_{tourn_id}"
+
+    def get_linked_gk_tourn(self, team_id: str, tourn_id: str) -> str | None:
+        """The keeper-kit tourn_id linked to this team's (kittype, tourn_id)
+        outfield kit set, if the user configured one — settings.ini [kitgk],
+        keyed by "<team_id>_<tourn_id>" since the link is per specific era,
+        not per team globally (see apply_kit_set_linked)."""
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return None
+        value = settings_ini.read(self.gk_link_key(team_id, tourn_id), "kitgk")
+        return value or None
+
+    def set_linked_gk_tourn(self, team_id: str, tourn_id: str, gk_tourn_id: str | None) -> None:
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return
+        key = self.gk_link_key(team_id, tourn_id)
+        if gk_tourn_id:
+            settings_ini.write(key, gk_tourn_id, "kitgk")
+        else:
+            settings_ini.delete_key(key, "kitgk")
+        settings_ini.save()
+
+    def apply_kit_set_linked(self, team_id: str, kittype: str, tourn_id: str, target_kittype: str | None = None) -> dict:
+        """Strict superset of apply_kit_set: applies the outfield kit set as
+        usual, then — only when it actually lands on the home/away live slot
+        ("0"/"1", after target_kittype's override, if any — see apply_kit_set),
+        per the explicit design constraint that this stays config/overlay-only
+        and never adds a picker to FIFA's own kit-selection screen — also
+        applies the linked goalkeeper kit set if one is configured for this
+        exact tourn_id. A failed/missing GK application never rolls back or
+        blocks the outfield kit that already succeeded; result["gk"] is None
+        when no link is configured or the linked GK set couldn't be applied."""
+        result = self.apply_kit_set(team_id, kittype, tourn_id, target_kittype=target_kittype)
+        result["gk"] = None
+        if result["target_kittype"] in ("0", "1"):
+            gk_tourn = self.get_linked_gk_tourn(team_id, tourn_id)
+            if gk_tourn:
+                try:
+                    result["gk"] = self.apply_kit_set(team_id, "2", gk_tourn)
+                except Exception as exc:
+                    self.app.log(f"Linked GK kit apply failed for team {team_id} tourn {gk_tourn}: {exc}")
+        return result
+
     def live_team_lua_dir(self) -> Path:
         return self.app.exedir / "data" / "fifarna" / "lua" / "assignments" / "teams"
 
@@ -590,12 +832,17 @@ class KitMixRuntime:
     def preview_dir(self) -> Path:
         return self.app.base_dir / "runtime" / "kitmix_previews"
 
-    def render_preview(self, source_path: str, role: str, max_size: int = 220) -> Path:
+    def render_preview(self, source_path: str, role: str, max_size: int = 220, cache_key: str | None = None) -> Path:
         """Render a small PNG preview of one kit asset ("jersey"/"shorts"/"crest"/
-        "jersey_numbers"/"shorts_numbers") extracted from source_path, via the
-        32-bit kit_preview_worker.py bridge. Blocking — call from a background
-        thread when used from the UI."""
-        output_path = self.preview_dir() / f"{role}.png"
+        "jersey_numbers"/"shorts_numbers"/"kitui") extracted from source_path, via
+        the 32-bit kit_preview_worker.py bridge. Blocking — call from a background
+        thread when used from the UI.
+
+        cache_key overrides the output filename (defaults to role, matching the
+        advanced tab's one-preview-at-a-time behavior unchanged) — Simple Mode
+        passes a per-(team, kittype, tourn_id) key so concurrent rows in its kit
+        set list don't clobber each other's cached PNG."""
+        output_path = self.preview_dir() / f"{cache_key or role}.png"
         config = {
             "source": source_path,
             "role": role,

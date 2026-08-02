@@ -56,6 +56,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
+        self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
@@ -112,6 +113,16 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_mouse_left_down = False
         self._overlay_mouse_wheel_steps = 0
         self._overlay_mouse_click_pending = False
+        self._kit_home_prev_down = False
+        self._kit_home_next_down = False
+        self._kit_away_prev_down = False
+        self._kit_away_next_down = False
+        self._kit_type_cycle_down = False
+        self._kit_hotkey_ready_at = 0.0
+        self._kit_cycle_index: dict[tuple[str, str], int] = {}
+        self._kit_cycle_task_running = False
+        self._kit_hotkey_hide_job = None
+        self._kit_hotkey_shown_at = 0.0
         self._overlay_mouse_screen_x = None
         self._overlay_mouse_screen_y = None
         self._overlay_dblclick_last_time = 0.0
@@ -137,12 +148,16 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_lstick_repeat_at = 0.0
         self._overlay_gp_lstick_prev_in_zone = False
         self._active_gamepad_index = 0
-        self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos"]
+        self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos", "kits"]
         self._overlay_tab_index = 0
         self._overlay_wizard_phase: str | None = None
         self._overlay_wizard_stadium: str | None = None
         self._overlay_wizard_police: str | None = None
         self._overlay_wizard_pitch: str | None = None
+        self._overlay_selected_kittype: str | None = None
+        self._overlay_kit_sets_cache: list[dict | None] = []
+        self._overlay_kit_preview_cache: dict[str, str] = {}
+        self._overlay_kit_preview_pending: set[str] = set()
         self._overlay_list_header: str = ""
         self._d3d_menu_visible = False
         self._overlay_items: list[str] = []
@@ -202,6 +217,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._assets_canvas_body = None
         self._kits_canvas = None
         self._kits_canvas_body = None
+        self._kitsimple_canvas = None
+        self._kitsimple_canvas_body = None
+        self._kits_sub_notebook = None
+        self.kits_simple_subtab = None
+        self.kits_advanced_subtab = None
         self._setup_status_vars: dict = {}
         self._setup_install_vars: dict = {}
         self._assets_extract_vars: dict = {}

@@ -30,6 +30,7 @@ class SettingsStore:
         # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
         "SHOW_OVERLAY": True,
+        "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "LANGUAGE": "en",
         "CUSTOM_KIT_NUMBERS": False,
@@ -109,6 +110,15 @@ class SettingsStore:
     @show_overlay.setter
     def show_overlay(self, value: bool) -> None:
         self.data["SHOW_OVERLAY"] = bool(value)
+        self.save()
+
+    @property
+    def kit_hotkeys_enabled(self) -> bool:
+        return bool(self.data.get("KIT_HOTKEYS_ENABLED", True))
+
+    @kit_hotkeys_enabled.setter
+    def kit_hotkeys_enabled(self, value: bool) -> None:
+        self.data["KIT_HOTKEYS_ENABLED"] = bool(value)
         self.save()
 
     @property
