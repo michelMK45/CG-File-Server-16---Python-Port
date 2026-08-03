@@ -239,3 +239,22 @@ class SessionIniFile:
 
     def reload(self) -> None:
         self._reload_if_needed(force=True)
+
+
+def export_sections(source: SessionIniFile, sections: list[str], dest_path: str | Path) -> int:
+    """Writes the given sections (and their key=value pairs) from `source` into a standalone
+    .ini file at dest_path, in the same format SessionIniFile writes/reads. Returns the number
+    of keys written."""
+    dest_path = Path(dest_path)
+    lines: list[str] = []
+    count = 0
+    for section in sections:
+        lines.append(f"[{section}]")
+        for key, value in source.items(section):
+            lines.append(f"{key}={value}")
+            count += 1
+        lines.append("")
+    payload = ("\n".join(lines).rstrip() + "\n") if lines else ""
+    dest_path.parent.mkdir(parents=True, exist_ok=True)
+    dest_path.write_text(payload, encoding="utf-8", errors="replace")
+    return count

@@ -4,7 +4,7 @@ import tkinter as tk
 import unicodedata
 import webbrowser
 from pathlib import Path
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -779,6 +779,139 @@ class ExcludeDialog(BaseDialog):
         super().__init__(master, "dialog.assignment.title.exclude")
         ttk.Button(self, text=self.tr("button.comp_id"), command=lambda: self.close_ok("COMP ID")).pack(fill="x", padx=12, pady=8)
         ttk.Button(self, text=self.tr("button.comp_round_id"), command=lambda: self.close_ok("COMP ROUND ID")).pack(fill="x", padx=12, pady=(0, 12))
+
+
+class SectionPickerDialog(BaseDialog):
+    """Checkbox list of settings.ini sections ('blocks'), shared by the export and import
+    settings flows. `confirm_key` closes the dialog with the list of checked section names."""
+
+    def __init__(
+        self,
+        master: tk.Misc,
+        title_key: str,
+        subtitle_key: str,
+        sections: list[str],
+        section_counts: dict[str, int],
+        confirm_key: str,
+    ) -> None:
+        super().__init__(master, title_key)
+        self.geometry("460x560")
+        self.minsize(400, 420)
+        self.section_vars: dict[str, tk.BooleanVar] = {}
+        self._suspend_sync = False
+
+        self._dark_label(
+            self,
+            self.tr(subtitle_key),
+            bg=self.bg,
+            muted=True,
+            font=("Bahnschrift", 10),
+            wraplength=420,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(16, 8))
+
+        self.all_var = tk.BooleanVar(value=True)
+        self._themed_checkbutton(
+            self,
+            text=self.tr("dialog.settings_io.all"),
+            variable=self.all_var,
+            bg=self.bg,
+            command=self._toggle_all,
+        ).pack(anchor="w", padx=16, pady=(0, 6))
+
+        tk.Frame(self, bg="#22314b", height=1).pack(fill="x", padx=16, pady=(0, 8))
+
+        list_card = tk.Frame(self, bg=self.card, highlightthickness=1, highlightbackground="#243654")
+        list_card.pack(fill="both", expand=True, padx=16, pady=(0, 12))
+
+        canvas = tk.Canvas(list_card, bg=self.card, highlightthickness=0, bd=0)
+        scroll = ttk.Scrollbar(list_card, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        body = tk.Frame(canvas, bg=self.card)
+        body.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        window = canvas.create_window((0, 0), window=body, anchor="nw")
+        canvas.configure(yscrollcommand=scroll.set)
+        canvas.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        scroll.pack(side="right", fill="y", padx=(0, 8), pady=8)
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(window, width=e.width))
+
+        for section in sections:
+            var = tk.BooleanVar(value=True)
+            self.section_vars[section] = var
+            var.trace_add("write", self._sync_all_checkbox)
+            row = tk.Frame(body, bg=self.card)
+            row.pack(fill="x", padx=8, pady=3)
+            self._themed_checkbutton(row, text=f"[{section}]", variable=var, bg=self.card).pack(side="left")
+            count = section_counts.get(section, 0)
+            self._dark_label(
+                row,
+                self.tr("dialog.editor.entries_count", count=count),
+                bg=self.card,
+                muted=True,
+                font=("Bahnschrift", 9),
+            ).pack(side="right")
+
+        # A plain widget-level bind("<MouseWheel>") only fires when the cursor is
+        # directly over that widget — since the checkbox rows fill nearly all of
+        # `body`'s visible area, binding just canvas/body left almost nowhere for
+        # the event to land on. Bind every descendant instead so the wheel works
+        # no matter which row/checkbox/label is under the cursor.
+        self._bind_mousewheel_recursive(canvas, canvas)
+        self._bind_mousewheel_recursive(body, canvas)
+
+        action_bar = tk.Frame(self, bg=self.bg)
+        action_bar.pack(fill="x", padx=16, pady=(0, 16))
+        ttk.Button(action_bar, text=self.tr(confirm_key), command=self._confirm).pack(fill="x")
+
+    def _themed_checkbutton(self, parent: tk.Misc, text: str, variable: tk.BooleanVar, bg: str, command=None) -> tk.Checkbutton:
+        return tk.Checkbutton(
+            parent,
+            text=text,
+            variable=variable,
+            command=command,
+            bg=bg,
+            activebackground=bg,
+            fg=self.fg,
+            selectcolor=self.panel,
+            activeforeground=self.fg,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            highlightthickness=0,
+            font=("Bahnschrift", 10),
+        )
+
+    def _bind_mousewheel_recursive(self, widget: tk.Misc, canvas: tk.Canvas) -> None:
+        def on_mousewheel(event):
+            if event.delta == 0:
+                return "break"
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        widget.bind("<MouseWheel>", on_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_mousewheel_recursive(child, canvas)
+
+    def _toggle_all(self) -> None:
+        value = self.all_var.get()
+        self._suspend_sync = True
+        try:
+            for var in self.section_vars.values():
+                var.set(value)
+        finally:
+            self._suspend_sync = False
+
+    def _sync_all_checkbox(self, *_args) -> None:
+        if self._suspend_sync or not self.section_vars:
+            return
+        self.all_var.set(all(var.get() for var in self.section_vars.values()))
+
+    def _confirm(self) -> None:
+        selected = [section for section, var in self.section_vars.items() if var.get()]
+        if not selected:
+            messagebox.showwarning(self.tr("message.settings_io"), self.tr("message.settings_io.select_one"))
+            return
+        self.close_ok(selected)
 
 
 class AboutDialog(BaseDialog):

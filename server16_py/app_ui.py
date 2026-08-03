@@ -1173,7 +1173,7 @@ class UIMixin:
     def _build_assets_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.assets.title", "card.assets.subtitle")
         card.grid(row=row, column=0, sticky="ew")
-        card.configure(height=164)
+        card.configure(height=206)
         card.grid_propagate(False)
         body = tk.Frame(card, bg=self.card)
         body.pack(fill="x", padx=12, pady=(6, 12))
@@ -1183,7 +1183,13 @@ class UIMixin:
         self._build_stat(body, 0, 1, "stat.scoreboard", "scoreboard", "default")
         self._build_stat(body, 1, 0, "stat.movie", "movie", "default")
         self._build_stat(body, 1, 1, "stat.status", "status", self.display_value("idle"))
-        ttk.Button(card, text=self.tr("button.edit_asset_settings"), command=self.open_assets_settings_editor).pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(card, text=self.tr("button.edit_asset_settings"), command=self.open_assets_settings_editor).pack(fill="x", padx=12, pady=(0, 6))
+        io_row = tk.Frame(card, bg=self.card)
+        io_row.pack(fill="x", padx=12, pady=(0, 12))
+        io_row.grid_columnconfigure(0, weight=1)
+        io_row.grid_columnconfigure(1, weight=1)
+        ttk.Button(io_row, text=self.tr("button.export_settings"), command=self.open_export_settings_dialog).grid(row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(io_row, text=self.tr("button.import_settings"), command=self.open_import_settings_dialog).grid(row=0, column=1, sticky="ew", padx=(4, 0))
 
     def _build_kits_tab(self) -> None:
         outer = tk.Frame(self.kits_tab, bg=self.bg)
@@ -3151,7 +3157,7 @@ class UIMixin:
                             skipped.add("Nav")
                         if not do_stadium and p.name == "Stadium" and p.parent.name == "FSW" and "crowdchair" in names:
                             skipped.add("crowdchair")
-                        if not do_revmod_lua and p.name == "fifarna" and "lua" in names:
+                        if not do_revmod_lua and p == src / "data" / "fifarna" and "lua" in names:
                             skipped.add("lua")
                         return skipped
 

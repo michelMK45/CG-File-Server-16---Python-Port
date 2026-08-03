@@ -8,8 +8,9 @@ from tkinter import filedialog, messagebox
 
 import psutil
 
+from .dialogs import SectionPickerDialog
 from .fifa_db import FifaDatabase
-from .ini_file import SessionIniFile
+from .ini_file import SessionIniFile, export_sections
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 
 
@@ -175,6 +176,117 @@ class SettingsMixin:
 
     def open_audio_settings_editor(self) -> None:
         self._open_settings_editor("audio", "dialog.editor.section.chants_settings", audio_specs())
+
+    def open_export_settings_dialog(self) -> None:
+        self.prepare_floating_window()
+        self.settings_ini.reload()
+        sections = self.settings_ini.sections()
+        if not sections:
+            messagebox.showinfo(self.tr("message.settings_io"), self.tr("message.settings_io.no_sections"))
+            return
+        section_counts = {section: len(self.settings_ini.items(section)) for section in sections}
+        dialog = SectionPickerDialog(
+            self,
+            "dialog.settings_io.export_title",
+            "dialog.settings_io.export_subtitle",
+            sections,
+            section_counts,
+            "button.export",
+        )
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        selected_sections = dialog.result
+        dest = filedialog.asksaveasfilename(
+            title=self.tr("filedialog.export_settings"),
+            defaultextension=".ini",
+            filetypes=[("INI files", "*.ini"), ("All files", "*.*")],
+        )
+        if not dest:
+            return
+        try:
+            count = export_sections(self.settings_ini, selected_sections, Path(dest))
+        except Exception as exc:
+            self.log("Failed to export settings sections", exc)
+            messagebox.showerror(self.tr("message.settings_io"), self.tr("message.settings_io.export_failed", error=exc))
+            return
+        self.log(f"Exported settings sections {selected_sections} ({count} keys) to {dest}")
+        messagebox.showinfo(
+            self.tr("message.settings_io"),
+            self.tr("message.settings_io.export_done", count=count, sections=len(selected_sections), path=dest),
+        )
+
+    def open_import_settings_dialog(self) -> None:
+        self.prepare_floating_window()
+        source = filedialog.askopenfilename(
+            title=self.tr("filedialog.import_settings"),
+            filetypes=[("INI files", "*.ini"), ("All files", "*.*")],
+        )
+        if not source:
+            return
+        try:
+            imported = SessionIniFile(Path(source))
+        except Exception as exc:
+            self.log("Failed to read settings file for import", exc)
+            messagebox.showerror(self.tr("message.settings_io"), self.tr("message.settings_io.invalid_file", error=exc))
+            return
+        sections = imported.sections()
+        if not sections:
+            messagebox.showwarning(self.tr("message.settings_io"), self.tr("message.settings_io.no_sections_found"))
+            return
+        section_counts = {section: len(imported.items(section)) for section in sections}
+        dialog = SectionPickerDialog(
+            self,
+            "dialog.settings_io.import_title",
+            "dialog.settings_io.import_subtitle",
+            sections,
+            section_counts,
+            "button.import",
+        )
+        self.wait_window(dialog)
+        if not dialog.result:
+            return
+        selected_sections = dialog.result
+
+        self.settings_ini.reload()
+        conflicts: list[tuple[str, str, str, str]] = []
+        additions = 0
+        for section in selected_sections:
+            existing = self.settings_ini.as_dict(section)
+            for key, value in imported.items(section):
+                if key in existing and existing[key] != value:
+                    conflicts.append((section, key, existing[key], value))
+                elif key not in existing:
+                    additions += 1
+
+        if conflicts:
+            preview_lines = [f"[{section}] {key}: {old} -> {new}" for section, key, old, new in conflicts[:15]]
+            if len(conflicts) > 15:
+                preview_lines.append(f"... (+{len(conflicts) - 15})")
+            proceed = messagebox.askyesno(
+                self.tr("message.settings_io"),
+                self.tr("message.settings_io.conflicts_confirm", count=len(conflicts), preview="\n".join(preview_lines)),
+            )
+            if not proceed:
+                self.log("Settings import cancelled by user due to key conflicts")
+                return
+
+        for section in selected_sections:
+            for key, value in imported.items(section):
+                self.settings_ini.write(key, value, section)
+        self.settings_ini.save()
+        self._load_module_states()
+        try:
+            self.refresh_modules()
+            self.apply_all_runtime()
+        except Exception as exc:
+            self.log("Failed to apply runtime after settings import", exc)
+
+        self.log(f"Imported settings sections {selected_sections} from {source} ({additions} new, {len(conflicts)} overwritten)")
+        messagebox.showinfo(
+            self.tr("message.settings_io"),
+            self.tr("message.settings_io.import_done", added=additions, overwritten=len(conflicts), sections=len(selected_sections)),
+        )
 
     def select_fifa_exe(self) -> None:
         filename = filedialog.askopenfilename(filetypes=[("Executable", "*.exe")], title=self.tr("filedialog.select_fifa_exe"))
