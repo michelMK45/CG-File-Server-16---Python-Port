@@ -414,6 +414,7 @@
   "message.kitmix.no_match_team": "No hay ningún partido cargado para ese equipo.",
   "message.kitmix.apply_success": "Mezcla de kit aplicada para el equipo {team}.",
   "message.kitmix.apply_failed": "No se pudo aplicar la mezcla de kit:\n{error}",
+  "message.kitmix.kitui_image_failed": "No se pudo convertir la imagen para la miniatura de kit UI:\n{error}",
   "card.kitmix_simple.title": "Mezclador de Kits",
   "card.kitmix_simple.subtitle": "Elige un kit ya preparado y aplícalo todo con un clic.",
   "kitsimple.complete": "Completo",

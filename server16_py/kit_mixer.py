@@ -482,6 +482,55 @@ class KitMixRuntime:
         self.app.log(f"Kit UI thumbnail restored to original for team {team_id} ({kittype}): {live_path}")
         return {"team_id": team_id, "kittype": kittype, "output": str(live_path)}
 
+    def kitui_import_dir(self) -> Path:
+        return self.app.base_dir / "runtime" / "kitmix_imports"
+
+    def _resolve_kitui_template(self, team_id: str, kittype: str) -> Path:
+        """Kit UI thumbnails are plain .dds files with a fixed pixel format/size
+        (see apply_kitui) — a loose PNG/JPG can't be dropped in directly, so
+        convert_image_to_kitui bakes it into a copy of an existing .dds via
+        DdsFile.ReplaceBitmap. Prefer the live thumbnail already at this
+        team+kittype slot (guaranteed to be a real DDS shipped by the game),
+        falling back to any other .dds already available for this team."""
+        live = self.live_kitui_path(team_id, kittype)
+        if live.exists():
+            return live
+        candidates = [p for p in self.list_available_kitui(team_id) if p.name.startswith(f"j{kittype}_")]
+        if candidates:
+            return candidates[0]
+        available = self.list_available_kitui(team_id)
+        if available:
+            return available[0]
+        raise FileNotFoundError(
+            f"No existing kit UI thumbnail found to use as a template for team {team_id} "
+            f"(kit type {kittype}). Place at least one .dds under {self.kitui_dir(team_id)}, "
+            "or import a .dds file directly instead of an image."
+        )
+
+    def convert_image_to_kitui(self, team_id: str, kittype: str, image_path: str) -> Path:
+        """Bakes a loose PNG/BMP/JPG image into a new .dds matching the pixel
+        dimensions of an existing kit UI thumbnail, via the 32-bit
+        dds_image_worker.py bridge (DdsFile.ReplaceBitmap). Returns the
+        generated .dds path — apply_kitui treats it exactly like a directly
+        imported .dds file (a plain byte copy), so callers just plug this
+        path into the same {"mode": "dds", "path": ...} cfg."""
+        if not team_id:
+            raise ValueError("A team ID is required to import a kit UI thumbnail image")
+        template_path = self._resolve_kitui_template(team_id, kittype)
+
+        output_dir = self.kitui_import_dir()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / f"j{kittype}_{team_id}_import.dds"
+
+        config = {
+            "template": str(template_path),
+            "image": str(image_path),
+            "output": str(output_path),
+        }
+        self._run_worker(config, worker_name="dds_image_worker.py")
+        self.app.log(f"Kit UI thumbnail image converted for team {team_id} ({kittype}): {image_path} -> {output_path}")
+        return output_path
+
     @staticmethod
     def _kit_set_entry(tourn_id: str, kit_path: Path, jersey_numbers_path, shorts_numbers_path, kitui_path) -> dict:
         return {

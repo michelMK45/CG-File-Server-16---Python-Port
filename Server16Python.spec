@@ -19,6 +19,7 @@ a = Analysis(
         ('server16_py\\db_worker.py', 'server16_py'),
         ('server16_py\\kit_worker.py', 'server16_py'),
         ('server16_py\\kit_preview_worker.py', 'server16_py'),
+        ('server16_py\\dds_image_worker.py', 'server16_py'),
         ('server16_py\\locales', 'server16_py\\locales'),
         ('bin\\python32', 'bin\\python32'),
         ('bin\\Templates', 'bin\\Templates'),

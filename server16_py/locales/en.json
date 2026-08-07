@@ -515,6 +515,7 @@
   "message.kitmix.no_match_team": "No match is currently loaded for that team.",
   "message.kitmix.apply_success": "Kit mix applied for team {team}.",
   "message.kitmix.apply_failed": "Failed to apply kit mix:\n{error}",
+  "message.kitmix.kitui_image_failed": "Failed to convert image for kit UI thumbnail:\n{error}",
   "card.kitmix_simple.title": "Kit Mixer",
   "card.kitmix_simple.subtitle": "Pick a ready-made kit set and apply the whole thing in one click.",
   "kitsimple.complete": "Complete",

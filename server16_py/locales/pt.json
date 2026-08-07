@@ -454,6 +454,7 @@
   "message.kitmix.no_match_team": "Nenhuma partida carregada para esse time.",
   "message.kitmix.apply_success": "Mistura de kit aplicada para o time {team}.",
   "message.kitmix.apply_failed": "Falha ao aplicar a mistura de kit:\n{error}",
+  "message.kitmix.kitui_image_failed": "Falha ao converter a imagem para a miniatura de kit UI:\n{error}",
   "card.kitmix_simple.title": "Misturador de Kits",
   "card.kitmix_simple.subtitle": "Escolha um conjunto de kit pronto e aplique tudo com um clique.",
   "kitsimple.complete": "Completo",

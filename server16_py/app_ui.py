@@ -1351,7 +1351,7 @@ class UIMixin:
         self._kitmix_kitui_list = self._kitmix_build_source_picker(
             body, 2, 1, self.tr("dialog.kitmix.kitui"), self._kitmix_kitui_source,
             import_kind="dds", list_fn=lambda team_id: self.kit_mixer.list_available_kitui(team_id),
-            role_key="kitui",
+            role_key="kitui", kitui_image_import=True,
         )
         self._kitmix_build_namecolor_picker(body, 2, 0)
 
@@ -1446,7 +1446,7 @@ class UIMixin:
 
     def _kitmix_build_source_picker(
         self, parent: tk.Misc, column: int, row: int, title: str, source: dict,
-        import_kind: str = "image", list_fn=None, role_key: str = "",
+        import_kind: str = "image", list_fn=None, role_key: str = "", kitui_image_import: bool = False,
     ) -> tk.Listbox:
         from pathlib import Path
 
@@ -1487,12 +1487,9 @@ class UIMixin:
 
         listbox.bind("<<ListboxSelect>>", on_select)
 
-        def import_file() -> None:
-            path = filedialog.askopenfilename(title=self.tr(button_key), filetypes=filetypes)
-            if not path:
-                return
-            listbox._imported_path = path
-            label = f"{imported_prefix}{Path(path).name}"
+        def apply_imported_source(actual_path: str, display_name: str) -> None:
+            listbox._imported_path = actual_path
+            label = f"{imported_prefix}{display_name}"
             listbox.delete(0, "end")
             listbox.insert("end", KITMIX_KEEP_LABEL)
             listbox.insert("end", label)
@@ -1501,11 +1498,62 @@ class UIMixin:
             listbox.selection_clear(0, "end")
             listbox.selection_set(1)
             source["mode"] = imported_mode
-            source["path"] = path
+            source["path"] = actual_path
             if role_key:
                 self._kitmix_on_source_changed(role_key, source)
 
-        ttk.Button(card, text=self.tr(button_key), command=import_file).pack(fill="x", padx=12, pady=(0, 12))
+        def import_file() -> None:
+            path = filedialog.askopenfilename(title=self.tr(button_key), filetypes=filetypes)
+            if not path:
+                return
+            apply_imported_source(path, Path(path).name)
+
+        if not kitui_image_import:
+            ttk.Button(card, text=self.tr(button_key), command=import_file).pack(fill="x", padx=12, pady=(0, 12))
+            return listbox
+
+        # Kit UI thumbnails are plain .dds files (see KITMIX_PICKER_KINDS["dds"]),
+        # so a loose PNG/JPG can't just be dropped in like jersey/shorts/crest's
+        # "image" kind does — it has to be baked into a same-format .dds first
+        # via the 32-bit FifaLibrary bridge (KitMixRuntime.convert_image_to_kitui).
+        def import_image_file() -> None:
+            path = filedialog.askopenfilename(
+                title=self.tr("dialog.kitmix.import_image"),
+                filetypes=[("Images", "*.png *.bmp *.jpg *.jpeg"), ("All files", "*.*")],
+            )
+            if not path:
+                return
+            team_id, kittype_code = self._kitmix_current_team_kittype()
+            if not team_id:
+                messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
+                return
+
+            if role_key:
+                self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.loading"))
+
+            def worker() -> None:
+                try:
+                    dds_path = self.kit_mixer.convert_image_to_kitui(team_id, kittype_code, path)
+                    error = None
+                except Exception as exc:  # noqa: BLE001 - surfaced via messagebox below
+                    dds_path, error = None, exc
+                self.after(0, lambda: on_converted(dds_path, error))
+
+            def on_converted(dds_path, error) -> None:
+                if error is not None or dds_path is None:
+                    if role_key:
+                        self._kitmix_show_preview_placeholder(role_key, self.tr("dialog.kitmix.preview_error"))
+                    self.log("Failed to convert image for kit UI thumbnail", error)
+                    messagebox.showerror(self.tr("message.kitmix"), self.tr("message.kitmix.kitui_image_failed", error=error))
+                    return
+                apply_imported_source(str(dds_path), Path(path).name)
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        btn_row = tk.Frame(card, bg=self.card)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(btn_row, text=self.tr(button_key), command=import_file).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ttk.Button(btn_row, text=self.tr("dialog.kitmix.import_image"), command=import_image_file).pack(side="left", fill="x", expand=True)
         return listbox
 
     def _kitmix_populate_list(self, listbox: tk.Listbox, source: dict, role_key: str = "") -> None:
@@ -1672,17 +1720,21 @@ class UIMixin:
         self._kitmix_preview_images[role_key] = photo
         label.configure(image=photo, text="", compound="center")
 
+    def _kitmix_current_team_kittype(self) -> tuple[str, str]:
+        team_id = self.kitmix_team_id.get().strip()
+        kittype_label = self.kitmix_kittype.get()
+        kittype = next((k for k, v in self.kitmix_kittype_labels.items() if v == kittype_label), "home")
+        kittype_code = KIT_TYPES.get(kittype, "0")
+        return team_id, kittype_code
+
     def _kitmix_submit(self) -> None:
         if self.fifaEXE == "default":
             messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.warning.select_fifa_first"))
             return
-        team_id = self.kitmix_team_id.get().strip()
+        team_id, kittype_code = self._kitmix_current_team_kittype()
         if not team_id:
             messagebox.showwarning(self.tr("message.kitmix"), self.tr("message.kitmix.missing_team"))
             return
-        kittype_label = self.kitmix_kittype.get()
-        kittype = next((k for k, v in self.kitmix_kittype_labels.items() if v == kittype_label), "home")
-        kittype_code = KIT_TYPES.get(kittype, "0")
         jersey = dict(self._kitmix_jersey_source)
         shorts = dict(self._kitmix_shorts_source)
         crest = dict(self._kitmix_crest_source)
