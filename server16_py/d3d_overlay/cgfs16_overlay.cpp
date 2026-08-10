@@ -85,6 +85,16 @@ struct OverlayShared {
     // line — empty (the default) keeps that exact text, so every existing
     // stadium-loading caller needs no changes.
     wchar_t panel_title[MAX_STR];
+    // Absolute directory containing the bundled gamepad button icon PNGs
+    // (a.png/b.png/dpad.png/lb.png/rb.png/rs.png) — written once by Python
+    // after injection, read by C++ to render the gamepad hint bar with real
+    // button glyphs instead of text badges.
+    wchar_t gamepad_icon_dir[MAX_IMG];
+    // Absolute directory containing the bundled keyboard key icon PNGs
+    // (up.png/down.png/left.png/right.png/enter.png/esc.png/mouse.png) —
+    // written once by Python after injection, read by C++ to render the
+    // keyboard hint bar with real key glyphs instead of text badges.
+    wchar_t keyboard_icon_dir[MAX_IMG];
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -225,38 +235,61 @@ static TextTex g_ttEmpty;
 static TextTex g_ttDash;  // scratch slot for dashboard lines (separate from g_ttItems)
 
 // ---------------------------------------------------------------------------
-// Hint bar: button badge textures (static, created once)
+// Gamepad hint bar: real button-icon PNGs (bundled under resources/buttons/
+// gamepad, path handed over once by Python via gamepad_icon_dir) instead of
+// text badges. Icon textures are loaded once and reused every frame.
 // ---------------------------------------------------------------------------
+enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_ICON_COUNT };
+static const wchar_t * const kGpIconFiles[GP_ICON_COUNT] = {
+    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png",
+};
+static ID3D11Texture2D          *g_gpIconTex[GP_ICON_COUNT] = {};
+static ID3D11ShaderResourceView *g_gpIconSRV[GP_ICON_COUNT] = {};
+static wchar_t                   g_gpIconDirLoaded[MAX_IMG] = {};
+
 #define NUM_HINT_ITEMS 5
 
-struct HintDef {
-    const wchar_t *badgeLabel;
+struct GpHintDef {
+    int            icons[2];      // GpIcon index(es) to draw for this hint; [1] = -1 if only one
     const wchar_t *description;
-    DWORD          badgeColor;   // ARGB
 };
 
-static const HintDef kHints[NUM_HINT_ITEMS] = {
-    { L"Up/Dn", L"Navigate", 0xFF606060 },
-    { L"R-Stick",    L"Scroll",   0xFF3A5070 },
-    { L"LB/RB", L"Tab",      0xFF707070 },
-    { L"A",     L"Select",   0xFF22AA44 },
-    { L"B",     L"Close",    0xFFCC2222 },
+static const GpHintDef kHints[NUM_HINT_ITEMS] = {
+    { { GP_DPAD, -1    }, L"Navigate" },
+    { { GP_RS,   -1    }, L"Scroll"   },
+    { { GP_LB,   GP_RB }, L"Tab"      },
+    { { GP_A,    -1    }, L"Select"   },
+    { { GP_B,    -1    }, L"Close"    },
 };
 
-static TextTex g_ttHintBadge[NUM_HINT_ITEMS];
 static TextTex g_ttHintDesc[NUM_HINT_ITEMS];
 static bool    g_hintTexReady = false;
 
-#define NUM_KEY_HINT_ITEMS 5
-static const HintDef kKeyHints[NUM_KEY_HINT_ITEMS] = {
-    { L"UP/DOWN", L"Navigate", 0xFF606060 },
-    { L"Wheel",          L"Scroll",   0xFF606060 },
-    { L"RIGHT/LEFT", L"Tab",      0xFF606060 },
-    { L"Enter",          L"Select",   0xFF606060 },
-    { L"Esc",            L"Close",    0xFF606060 },
+// Keyboard hint bar: real key-icon PNGs (bundled under resources/buttons/
+// keyboard, path handed over once by Python via keyboard_icon_dir) instead of
+// text badges — same approach as the gamepad hint bar above.
+enum KeyIcon { KEY_UP = 0, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_ESC, KEY_MOUSE, KEY_ICON_COUNT };
+static const wchar_t * const kKeyIconFiles[KEY_ICON_COUNT] = {
+    L"up.png", L"down.png", L"left.png", L"right.png", L"enter.png", L"esc.png", L"mouse.png",
+};
+static ID3D11Texture2D          *g_keyIconTex[KEY_ICON_COUNT] = {};
+static ID3D11ShaderResourceView *g_keyIconSRV[KEY_ICON_COUNT] = {};
+static wchar_t                   g_keyIconDirLoaded[MAX_IMG] = {};
+
+struct KeyHintDef {
+    int            icons[2];      // KeyIcon index(es) to draw for this hint; [1] = -1 if only one
+    const wchar_t *description;
 };
 
-static TextTex g_ttKeyHintBadge[NUM_KEY_HINT_ITEMS];
+#define NUM_KEY_HINT_ITEMS 5
+static const KeyHintDef kKeyHints[NUM_KEY_HINT_ITEMS] = {
+    { { KEY_UP,    KEY_DOWN  }, L"Navigate" },
+    { { KEY_MOUSE, -1        }, L"Scroll"   },
+    { { KEY_LEFT,  KEY_RIGHT }, L"Tab"      },
+    { { KEY_ENTER, -1        }, L"Select"   },
+    { { KEY_ESC,   -1        }, L"Close"    },
+};
+
 static TextTex g_ttKeyHintDesc[NUM_KEY_HINT_ITEMS];
 static bool    g_keyHintTexReady = false;
 
@@ -736,17 +769,48 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
 
     if (!g_hintTexReady) {
         for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            UpdateTextTex(dev, g_ttHintBadge[i], kHints[i].badgeLabel,
-                          12, true, RGB(0xFF, 0xFF, 0xFF), 80);
             UpdateTextTex(dev, g_ttHintDesc[i], kHints[i].description,
                           12, false, RGB(0xCC, 0xDD, 0xEE), 160);
         }
         g_hintTexReady = true;
     }
+
+    // ── Load gamepad button icon textures once, from the dir Python handed over ──
+    if (g_data) {
+        wchar_t iconDir[MAX_IMG] = {};
+        wcsncpy_s(iconDir, g_data->gamepad_icon_dir, MAX_IMG - 1);
+        if (iconDir[0] != L'\0' && wcscmp(iconDir, g_gpIconDirLoaded) != 0) {
+            wcscpy_s(g_gpIconDirLoaded, iconDir);
+            size_t dirLen = wcslen(iconDir);
+            bool hasSlash = dirLen > 0 && (iconDir[dirLen - 1] == L'\\' || iconDir[dirLen - 1] == L'/');
+            for (int i = 0; i < GP_ICON_COUNT; i++) {
+                wchar_t path[MAX_IMG] = {};
+                _snwprintf_s(path, MAX_IMG, _TRUNCATE, hasSlash ? L"%s%s" : L"%s\\%s",
+                             iconDir, kGpIconFiles[i]);
+                if (!LoadWICTexture(dev, path, &g_gpIconTex[i], &g_gpIconSRV[i]))
+                    Log("[GpIcon] failed to load '%ls'", path);
+            }
+        }
+    }
+    // ── Load keyboard key icon textures once, from the dir Python handed over ──
+    if (g_data) {
+        wchar_t iconDir[MAX_IMG] = {};
+        wcsncpy_s(iconDir, g_data->keyboard_icon_dir, MAX_IMG - 1);
+        if (iconDir[0] != L'\0' && wcscmp(iconDir, g_keyIconDirLoaded) != 0) {
+            wcscpy_s(g_keyIconDirLoaded, iconDir);
+            size_t dirLen = wcslen(iconDir);
+            bool hasSlash = dirLen > 0 && (iconDir[dirLen - 1] == L'\\' || iconDir[dirLen - 1] == L'/');
+            for (int i = 0; i < KEY_ICON_COUNT; i++) {
+                wchar_t path[MAX_IMG] = {};
+                _snwprintf_s(path, MAX_IMG, _TRUNCATE, hasSlash ? L"%s%s" : L"%s\\%s",
+                             iconDir, kKeyIconFiles[i]);
+                if (!LoadWICTexture(dev, path, &g_keyIconTex[i], &g_keyIconSRV[i]))
+                    Log("[KeyIcon] failed to load '%ls'", path);
+            }
+        }
+    }
     if (!g_keyHintTexReady) {
         for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            UpdateTextTex(dev, g_ttKeyHintBadge[i], kKeyHints[i].badgeLabel,
-                          12, true, RGB(0xFF, 0xFF, 0xFF), 80);
             UpdateTextTex(dev, g_ttKeyHintDesc[i], kKeyHints[i].description,
                           12, false, RGB(0xCC, 0xDD, 0xEE), 160);
         }
@@ -923,58 +987,56 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
         R(adjScrollX + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
     }
 
-    // --- Keyboard hint bar ---
+    // --- Keyboard hint bar --- (icons drawn at native 32x32, no plate behind them)
     R(HINT_X, KEY_HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);
     R(HINT_X, KEY_HINT_Y, HINT_W, HINT_H, 0xCC070F1A);
     {
-        const float BADGE_H    = 20.f;
-        const float BADGE_VPAD = 9.f;
-        const float BADGE_HPAD = 6.f;
+        const float CELL_HPAD  = 6.f;
         const float GAP_BD     = 5.f;
         const float GAP_INTER  = 22.f;
+        const float ICON_SIZE  = 32.f;
+        const float ICON_GAP   = 3.f;
         float totalW = 0.f;
         for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            float tw = (float)(g_ttKeyHintBadge[i].width > 0 ? g_ttKeyHintBadge[i].width : 20);
+            float tw = kKeyHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
             float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
-            float bw = tw + BADGE_HPAD * 2.f;
+            float bw = tw + CELL_HPAD * 2.f;
             totalW += bw + GAP_BD + dw + (i < NUM_KEY_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
         }
         float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
         for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            float tw = (float)(g_ttKeyHintBadge[i].width > 0 ? g_ttKeyHintBadge[i].width : 20);
+            float tw = kKeyHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
             float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
-            float bw = tw + BADGE_HPAD * 2.f;
+            float bw = tw + CELL_HPAD * 2.f;
             keyHintBadgeX[i] = bx;
             keyHintBadgeW[i] = bw;
-            R(bx, KEY_HINT_Y + BADGE_VPAD, bw, BADGE_H, kKeyHints[i].badgeColor);
             bx += bw + GAP_BD + dw + GAP_INTER;
         }
     }
 
-    // --- Gamepad hint bar ---
+    // --- Gamepad hint bar --- (icons drawn at native 32x32, no plate behind them)
     R(HINT_X, HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);   // separator line
     R(HINT_X, HINT_Y, HINT_W, HINT_H, 0xCC0E1A26);        // dark background
     {
-        const float BADGE_H    = 20.f;
-        const float BADGE_VPAD = 9.f;
-        const float BADGE_HPAD = 6.f;
+        const float CELL_HPAD  = 6.f;
         const float GAP_BD     = 5.f;
         const float GAP_INTER  = 22.f;
+        const float ICON_SIZE  = 32.f;
+        const float ICON_GAP   = 3.f;
         float totalW = 0.f;
         for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            float tw = (float)(g_ttHintBadge[i].width > 0 ? g_ttHintBadge[i].width : 20);
+            float tw = kHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
             float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
-            float bw = tw + BADGE_HPAD * 2.f;
+            float bw = tw + CELL_HPAD * 2.f;
             totalW += bw + GAP_BD + dw + (i < NUM_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
         }
         float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
         for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            float tw = (float)(g_ttHintBadge[i].width > 0 ? g_ttHintBadge[i].width : 20);
+            float tw = kHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
             float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
-            float bw = tw + BADGE_HPAD * 2.f;
+            float bw = tw + CELL_HPAD * 2.f;
             hintBadgeX[i] = bx;
             hintBadgeW[i] = bw;
-            R(bx, HINT_Y + BADGE_VPAD, bw, BADGE_H, kHints[i].badgeColor);
             bx += bw + GAP_BD + dw + GAP_INTER;
         }
     }
@@ -1110,19 +1172,22 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             }
         }
 
-        // --- Keyboard hint bar textures ---
+        // --- Keyboard hint bar textures --- (native 32x32 icons, no plate)
         {
-            const float BADGE_H    = 20.f;
-            const float BADGE_VPAD = 9.f;
-            const float BADGE_HPAD = 6.f;
             const float GAP_BD     = 5.f;
+            const float ICON_SIZE  = 32.f;
+            const float ICON_GAP   = 3.f;
             for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-                if (g_ttKeyHintBadge[i].srv) {
-                    float tlx = keyHintBadgeX[i] + floorf((keyHintBadgeW[i] - (float)g_ttKeyHintBadge[i].width) / 2.f);
-                    float tly = KEY_HINT_Y + BADGE_VPAD + floorf((BADGE_H - (float)g_ttKeyHintBadge[i].height) / 2.f);
-                    DrawTexQuad(ctx, tlx, tly,
-                                (float)g_ttKeyHintBadge[i].width, (float)g_ttKeyHintBadge[i].height,
-                                vpW, vpH, g_ttKeyHintBadge[i].srv);
+                bool twoIcons = kKeyHints[i].icons[1] >= 0;
+                float tw = twoIcons ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
+                float tly = KEY_HINT_Y + floorf((HINT_H - ICON_SIZE) / 2.f);
+                float ix = keyHintBadgeX[i] + floorf((keyHintBadgeW[i] - tw) / 2.f);
+                for (int k = 0; k < (twoIcons ? 2 : 1); k++) {
+                    int iconIdx = kKeyHints[i].icons[k];
+                    if (iconIdx >= 0 && g_keyIconSRV[iconIdx]) {
+                        DrawTexQuad(ctx, ix, tly, ICON_SIZE, ICON_SIZE, vpW, vpH, g_keyIconSRV[iconIdx]);
+                    }
+                    ix += ICON_SIZE + ICON_GAP;
                 }
                 if (g_ttKeyHintDesc[i].srv) {
                     float dlx = keyHintBadgeX[i] + keyHintBadgeW[i] + GAP_BD;
@@ -1134,19 +1199,22 @@ static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11Devic
             }
         }
 
-        // --- Gamepad hint bar textures ---
+        // --- Gamepad hint bar textures --- (native 32x32 icons, no plate)
         {
-            const float BADGE_H    = 20.f;
-            const float BADGE_VPAD = 9.f;
-            const float BADGE_HPAD = 6.f;
             const float GAP_BD     = 5.f;
+            const float ICON_SIZE  = 32.f;
+            const float ICON_GAP   = 3.f;
             for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-                if (g_ttHintBadge[i].srv) {
-                    float tlx = hintBadgeX[i] + floorf((hintBadgeW[i] - (float)g_ttHintBadge[i].width) / 2.f);
-                    float tly = HINT_Y + BADGE_VPAD + floorf((BADGE_H - (float)g_ttHintBadge[i].height) / 2.f);
-                    DrawTexQuad(ctx, tlx, tly,
-                                (float)g_ttHintBadge[i].width, (float)g_ttHintBadge[i].height,
-                                vpW, vpH, g_ttHintBadge[i].srv);
+                bool twoIcons = kHints[i].icons[1] >= 0;
+                float tw = twoIcons ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
+                float tly = HINT_Y + floorf((HINT_H - ICON_SIZE) / 2.f);
+                float ix = hintBadgeX[i] + floorf((hintBadgeW[i] - tw) / 2.f);
+                for (int k = 0; k < (twoIcons ? 2 : 1); k++) {
+                    int iconIdx = kHints[i].icons[k];
+                    if (iconIdx >= 0 && g_gpIconSRV[iconIdx]) {
+                        DrawTexQuad(ctx, ix, tly, ICON_SIZE, ICON_SIZE, vpW, vpH, g_gpIconSRV[iconIdx]);
+                    }
+                    ix += ICON_SIZE + ICON_GAP;
                 }
                 if (g_ttHintDesc[i].srv) {
                     float dlx = hintBadgeX[i] + hintBadgeW[i] + GAP_BD;

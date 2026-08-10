@@ -96,6 +96,21 @@ def stadium_preview_fallback_path() -> Path | None:
     return _bundled_resource_path("stadium-placeholder.png")
 
 
+def gamepad_button_icon_dir() -> Path | None:
+    """Bundled resources/buttons/gamepad folder (a/b/dpad/lb/rb/rs/start icons)
+    used by the D3D overlay's gamepad hint bar, or None if not found."""
+    marker = _bundled_resource_path("buttons/gamepad/a.png")
+    return marker.parent if marker is not None else None
+
+
+def keyboard_button_icon_dir() -> Path | None:
+    """Bundled resources/buttons/keyboard folder (up/down/left/right/enter/esc/
+    mouse/space icons) used by the D3D overlay's keyboard hint bar, or None if
+    not found."""
+    marker = _bundled_resource_path("buttons/keyboard/up.png")
+    return marker.parent if marker is not None else None
+
+
 def kit_ui_placeholder_path() -> Path | None:
     """Bundled generic image shown when a kit set has no kit UI thumbnail
     (kitui) of its own — used by the Simple Mode preview and the hotkey

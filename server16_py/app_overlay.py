@@ -135,8 +135,12 @@ class OverlayMixin:
         if not start_down:
             self._overlay_gp_start_hold_latched = False
 
-        # Toggle: allowed if FIFA in foreground OR menu already open
-        can_toggle = (self._fifa_hwnd != 0 or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at
+        # Toggle: opening requires FIFA/the overlay to actually be focused
+        # (self._fifa_hwnd != 0 only means the process/window was found, not
+        # that it's the active window — F12 or a gamepad Start-hold from an
+        # unrelated window must not pop the overlay open). Closing an
+        # already-open menu stays unrestricted so it's never stuck open.
+        can_toggle = (menu_input_fg or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at
 
         f12_toggle = f12_down and not self._overlay_f12_down
         key_escape_edge = key_escape_down and not self._overlay_escape_down
@@ -310,7 +314,7 @@ class OverlayMixin:
         self._overlay_gp_prev_buttons = gamepad_buttons
 
         self._sync_d3d_menu_mouse_input(menu_input_fg)
-        if self._d3d_menu_visible:
+        if self._d3d_menu_visible and menu_input_fg:
             self._best_effort_neutralize_game_keys()
 
         # Auto-close if FIFA exits
@@ -1294,7 +1298,16 @@ class OverlayMixin:
                             self._overlay_mouse_wheel_steps += int(delta / 120)
                     except Exception:
                         pass
-                if msg in block_mouse_messages and over_fifa:
+                # Button clicks are only ours to swallow while FIFA/the overlay
+                # is actually focused. Gating on cursor position (over_fifa)
+                # alone also ate a click meant to *give* FIFA focus back (e.g.
+                # clicking its window after alt-tabbing away), since that click
+                # lands inside the FIFA window rect before focus has changed —
+                # leaving the taskbar icon as the only click that worked.
+                # Wheel scroll keeps the looser position-only gate (harmless to
+                # scroll the menu while just hovering, unfocused, over FIFA).
+                blockable = msg == WM_MOUSEWHEEL or self._is_overlay_input_foreground()
+                if msg in block_mouse_messages and over_fifa and blockable:
                     if msg == WM_LBUTTONDOWN:
                         self._overlay_mouse_click_pending = True
                     return 1
@@ -1358,11 +1371,20 @@ class OverlayMixin:
                         info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                         vk = int(info.vkCode)
                         if vk in blocked_keys:
-                            if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
-                                self._overlay_blocked_key_down.add(vk)
+                            # Only steal the keystroke from FIFA/the overlay itself —
+                            # otherwise (user alt-tabbed to another window while the
+                            # overlay is still open) let it through untouched instead
+                            # of eating it system-wide.
+                            if self._is_overlay_input_foreground():
+                                if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
+                                    self._overlay_blocked_key_down.add(vk)
+                                elif msg in (WM_KEYUP, WM_SYSKEYUP):
+                                    self._overlay_blocked_key_down.discard(vk)
+                                return 1
                             elif msg in (WM_KEYUP, WM_SYSKEYUP):
+                                # Keep the "held" set from getting stuck if focus
+                                # changed mid-press.
                                 self._overlay_blocked_key_down.discard(vk)
-                            return 1
                     except Exception:
                         pass
             return int(self.user32.CallNextHookEx(self._keyboard_hook, n_code, w_param, l_param))

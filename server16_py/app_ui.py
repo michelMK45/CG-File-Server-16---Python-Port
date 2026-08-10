@@ -12,7 +12,13 @@ from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
-from .file_tools import kit_ui_placeholder_path, resolve_stadium_preview_path, stadium_preview_fallback_path
+from .file_tools import (
+    gamepad_button_icon_dir,
+    keyboard_button_icon_dir,
+    kit_ui_placeholder_path,
+    resolve_stadium_preview_path,
+    stadium_preview_fallback_path,
+)
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .update_checker import UpdateCheckResult
@@ -600,6 +606,12 @@ class UIMixin:
                     self.log("D3D overlay: injection failed")
                 return False
             self.log(f"D3D overlay: DLL injected into FIFA pid {pid}")
+            icon_dir = gamepad_button_icon_dir()
+            if icon_dir is not None:
+                inj.set_gamepad_icon_dir(str(icon_dir))
+            key_icon_dir = keyboard_button_icon_dir()
+            if key_icon_dir is not None:
+                inj.set_keyboard_icon_dir(str(key_icon_dir))
         return True
 
     def _show_toast_notification(self, title: str, body: str = "", style: int = 0) -> int:

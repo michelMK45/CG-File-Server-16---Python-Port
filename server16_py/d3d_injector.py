@@ -77,6 +77,15 @@ class _OverlayShared(ctypes.Structure):
         # empty (the default) keeps that exact text, so existing stadium-
         # loading callers of show() need no changes.
         ("panel_title",          ctypes.c_wchar * _MAX_STR),
+        # Absolute directory holding the bundled gamepad button icon PNGs
+        # (a.png/b.png/dpad.png/lb.png/rb.png/rs.png) — written once after
+        # injection so the gamepad hint bar can render real button glyphs.
+        ("gamepad_icon_dir",     ctypes.c_wchar * _MAX_IMG),
+        # Absolute directory holding the bundled keyboard key icon PNGs
+        # (up.png/down.png/left.png/right.png/enter.png/esc.png/mouse.png) —
+        # written once after injection so the keyboard hint bar can render
+        # real key glyphs instead of text badges.
+        ("keyboard_icon_dir",    ctypes.c_wchar * _MAX_IMG),
     ]
 
 
@@ -296,6 +305,18 @@ class D3DOverlayInjector:
             self._shared.toasts[slot].visible = 0
             self._shared.toasts[slot].style   = 0
 
+    def set_gamepad_icon_dir(self, path: str) -> None:
+        """Write the bundled gamepad button-icon directory (call once after inject)."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.gamepad_icon_dir = (path or "")[:_MAX_IMG - 1]
+
+    def set_keyboard_icon_dir(self, path: str) -> None:
+        """Write the bundled keyboard key-icon directory (call once after inject)."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.keyboard_icon_dir = (path or "")[:_MAX_IMG - 1]
+
     def set_list_header(self, text: str) -> None:
         """Set the wizard step header text shown above the menu item list (empty = hidden)."""
         if not self._ready or self._shared is None:
@@ -411,6 +432,8 @@ class D3DOverlayInjector:
             self._shared.toasts[i].visible = 0
             self._shared.toasts[i].title   = ""
             self._shared.toasts[i].body    = ""
+        self._shared.gamepad_icon_dir = ""
+        self._shared.keyboard_icon_dir = ""
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))
