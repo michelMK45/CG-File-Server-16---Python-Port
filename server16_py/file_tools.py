@@ -111,6 +111,16 @@ def keyboard_button_icon_dir() -> Path | None:
     return marker.parent if marker is not None else None
 
 
+def rmlui_content_dir() -> Path | None:
+    """Bundled resources/rmlui/ folder (toast.rml, stadium_panel.rml) that the
+    D3D overlay's RmlUi renderer (cgfs16_rmlui.cpp) loads as loose files at
+    runtime instead of from embedded C++ string literals — lets those
+    documents be edited and re-tested (relaunch FIFA) without recompiling the
+    DLL. Returns None if not found."""
+    marker = _bundled_resource_path("rmlui/toast.rml")
+    return marker.parent if marker is not None else None
+
+
 def kit_ui_placeholder_path() -> Path | None:
     """Bundled generic image shown when a kit set has no kit UI thumbnail
     (kitui) of its own — used by the Simple Mode preview and the hotkey

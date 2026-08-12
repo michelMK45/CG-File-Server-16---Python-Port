@@ -1,0 +1,35 @@
+<rml>
+<head>
+<style>
+body {
+    display: block;
+    position: absolute;
+    top: 20px;
+    width: 360px;
+    font-family: "Segoe UI";
+}
+.toast {
+    display: none;
+    width: 360px;
+    height: 80px;
+    margin-bottom: 8px;
+    background-color: #101828EE;
+    border: 1px #3399FF;
+    border-left: 4px #3399FF;
+    padding: 10px 12px;
+}
+.toast.shown { display: block; }
+.toast.warning { border-color: #FFAA00; border-left-color: #FFAA00; }
+.toast .title { display: block; font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 4px; }
+.toast .body { display: block; font-size: 13px; color: #99BBDD; }
+</style>
+</head>
+<body id="toast-root">
+<div id="toast0" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast1" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast2" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast3" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast4" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast5" class="toast"><div class="title"></div><div class="body"></div></div>
+</body>
+</rml>

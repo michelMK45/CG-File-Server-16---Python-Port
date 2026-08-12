@@ -108,12 +108,24 @@ if errorlevel 1 (
 )
 echo.
 
+if not "%SKIP_RMLUI_THIRDPARTY_BUILD%"=="1" call "scripts\setup_rmlui_thirdparty.bat"
+if errorlevel 1 (
+  call :fail "RmlUi/FreeType thirdparty build failed (set SKIP_RMLUI_THIRDPARTY_BUILD=1 to skip)."
+  exit /b 1
+)
+echo.
+
 echo [1/3] Compiling cgfs16_overlay.dll ...
 cl /nologo /O2 /W3 /LD /EHsc /std:c++17 ^
   "server16_py\d3d_overlay\cgfs16_overlay.cpp" ^
+  "server16_py\d3d_overlay\cgfs16_rmlui.cpp" ^
+  "server16_py\d3d_overlay\cgfs16_rmlui_menu.cpp" ^
+  /I "server16_py\d3d_overlay\thirdparty\RmlUi\Include" ^
   /Fe:"%OVERLAY_DLL%" ^
   /Fd:"bin\cgfs16_overlay.pdb" ^
-  /link d3d11.lib dxgi.lib d3dcompiler.lib user32.lib gdi32.lib ole32.lib
+  /link d3d11.lib dxgi.lib d3dcompiler.lib user32.lib gdi32.lib ole32.lib ^
+  /LIBPATH:"server16_py\d3d_overlay\thirdparty\build\RmlUi" rmlui.lib ^
+  /LIBPATH:"server16_py\d3d_overlay\thirdparty\install\freetype\lib" freetype.lib
 if errorlevel 1 (
   call :fail "cgfs16_overlay.dll compilation failed."
   exit /b 1

@@ -17,6 +17,7 @@ from .file_tools import (
     keyboard_button_icon_dir,
     kit_ui_placeholder_path,
     resolve_stadium_preview_path,
+    rmlui_content_dir,
     stadium_preview_fallback_path,
 )
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
@@ -612,6 +613,9 @@ class UIMixin:
             key_icon_dir = keyboard_button_icon_dir()
             if key_icon_dir is not None:
                 inj.set_keyboard_icon_dir(str(key_icon_dir))
+            rml_dir = rmlui_content_dir()
+            if rml_dir is not None:
+                inj.set_rmlui_content_dir(str(rml_dir))
         return True
 
     def _show_toast_notification(self, title: str, body: str = "", style: int = 0) -> int:

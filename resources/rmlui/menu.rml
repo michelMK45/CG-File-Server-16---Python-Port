@@ -1,0 +1,287 @@
+<rml>
+<head>
+<style>
+body {
+    display: block;
+    position: absolute;
+    top: 0px;
+    left: 0px;
+    width: 100%;
+    height: 100%;
+    font-family: "Segoe UI";
+}
+#scrim {
+    display: block;
+    position: absolute;
+    background-color: #04080DCC;
+}
+#panel {
+    display: block;
+    position: absolute;
+    background-color: #101828F4;
+    border: 2px #3399FF;
+}
+#tabstrip {
+    display: flex;
+    flex-direction: row;
+    position: absolute;
+}
+.tab {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    flex: 1 1 auto;
+    background-color: #0C1620FF;
+    font-size: 14px;
+    color: #FFFFFFFF;
+    border-bottom: 4px #0C1620FF;
+}
+.tab.active {
+    background-color: #1C3E60FF;
+    border-bottom: 4px #3399FF;
+}
+#content-bg {
+    display: block;
+    position: absolute;
+    background-color: #080E18F2;
+    border-top: 2px #3399FF;
+}
+#dashboard {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    position: absolute;
+    background-color: #0C1622E4;
+    border-top: 2px #3399FF;
+    padding: 0px 10px;
+}
+#home-crest, #away-crest {
+    display: none;
+    width: 72px;
+    height: 72px;
+}
+#home-crest { margin-right: 14px; }
+#away-crest { margin-left: 14px; }
+#dash-text-col {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    row-gap: 3px;
+}
+.dashline {
+    display: none;
+    font-size: 14px;
+    color: #C6DAEDFF;
+    white-space: nowrap;
+}
+#wizard-header {
+    display: none;
+    position: absolute;
+    background-color: #111E30FF;
+    border-bottom: 2px #2A537D;
+}
+#wizard-header-text {
+    display: block;
+    padding: 4px 8px;
+    font-size: 13px;
+    color: #FFCC55FF;
+}
+#list-area {
+    display: flex;
+    flex-direction: column;
+    position: absolute;
+    overflow: hidden;
+}
+.row {
+    display: none;
+    height: 28px;
+    font-size: 14px;
+    color: #CCDDEEFF;
+    white-space: nowrap;
+    overflow: hidden;
+    padding-left: 12px;
+    vertical-align: middle;
+    background-color: #00000000;
+}
+.row.selected {
+    background-color: #1C3E60FF;
+    border-left: 3px #3399FF;
+}
+.row:hover { background-color: #14304CFF; }
+#empty-state {
+    display: none;
+    position: absolute;
+    align-items: center;
+    justify-content: center;
+    font-size: 14px;
+    color: #6688AAFF;
+}
+#scrollbar-track {
+    display: block;
+    position: absolute;
+    background-color: #0E1A26CC;
+    border: 1px #2A537D;
+}
+#scrollbar-thumb {
+    display: none;
+    position: absolute;
+    background-color: #1C3E60FF;
+    border-left: 2px #3399FF;
+}
+#split-preview {
+    display: none;
+    position: absolute;
+    background-color: #0C1520CC;
+    border-top: 1px #2A537D;
+    border-left: 1px #2A537D;
+    text-align: center;
+    vertical-align: middle;
+}
+#split-preview img { max-width: 100%; max-height: 100%; }
+.hint-row {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    column-gap: 22px;
+    position: absolute;
+}
+.hint-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 5px;
+}
+.hint-item .icons {
+    display: flex;
+    flex-direction: row;
+    column-gap: 3px;
+}
+.hint-item img {
+    display: block;
+    width: 32px;
+    height: 32px;
+}
+.hint-item .label {
+    display: block;
+    font-size: 12px;
+    color: #CCDDEEFF;
+    white-space: nowrap;
+}
+</style>
+</head>
+<body>
+<div id="scrim"></div>
+<div id="panel">
+<div id="tabstrip">
+<div id="tab0" class="tab"><div class="tab-label">Scoreboards</div></div>
+<div id="tab1" class="tab"><div class="tab-label">Stadiums</div></div>
+<div id="tab2" class="tab"><div class="tab-label">Movies</div></div>
+<div id="tab3" class="tab"><div class="tab-label">TV Logos</div></div>
+<div id="tab4" class="tab"><div class="tab-label">Kits</div></div>
+</div>
+<div id="content-bg"></div>
+<div id="wizard-header"><div id="wizard-header-text"></div></div>
+<div id="list-area">
+<div id="row0" class="row"></div>
+<div id="row1" class="row"></div>
+<div id="row2" class="row"></div>
+<div id="row3" class="row"></div>
+<div id="row4" class="row"></div>
+<div id="row5" class="row"></div>
+<div id="row6" class="row"></div>
+<div id="row7" class="row"></div>
+<div id="row8" class="row"></div>
+<div id="row9" class="row"></div>
+<div id="row10" class="row"></div>
+<div id="row11" class="row"></div>
+<div id="row12" class="row"></div>
+<div id="row13" class="row"></div>
+<div id="row14" class="row"></div>
+<div id="row15" class="row"></div>
+<div id="row16" class="row"></div>
+<div id="row17" class="row"></div>
+<div id="row18" class="row"></div>
+<div id="row19" class="row"></div>
+<div id="row20" class="row"></div>
+<div id="row21" class="row"></div>
+<div id="row22" class="row"></div>
+<div id="row23" class="row"></div>
+<div id="row24" class="row"></div>
+<div id="row25" class="row"></div>
+<div id="row26" class="row"></div>
+<div id="row27" class="row"></div>
+<div id="row28" class="row"></div>
+<div id="row29" class="row"></div>
+<div id="row30" class="row"></div>
+<div id="row31" class="row"></div>
+<div id="row32" class="row"></div>
+<div id="row33" class="row"></div>
+<div id="row34" class="row"></div>
+<div id="row35" class="row"></div>
+<div id="row36" class="row"></div>
+<div id="row37" class="row"></div>
+<div id="row38" class="row"></div>
+<div id="row39" class="row"></div>
+<div id="row40" class="row"></div>
+<div id="row41" class="row"></div>
+<div id="row42" class="row"></div>
+<div id="row43" class="row"></div>
+<div id="row44" class="row"></div>
+<div id="row45" class="row"></div>
+<div id="row46" class="row"></div>
+<div id="row47" class="row"></div>
+<div id="row48" class="row"></div>
+<div id="row49" class="row"></div>
+<div id="row50" class="row"></div>
+<div id="row51" class="row"></div>
+<div id="row52" class="row"></div>
+<div id="row53" class="row"></div>
+<div id="row54" class="row"></div>
+<div id="row55" class="row"></div>
+<div id="row56" class="row"></div>
+<div id="row57" class="row"></div>
+<div id="row58" class="row"></div>
+<div id="row59" class="row"></div>
+<div id="row60" class="row"></div>
+<div id="row61" class="row"></div>
+<div id="row62" class="row"></div>
+<div id="row63" class="row"></div>
+</div>
+<div id="empty-state">No items available</div>
+<div id="scrollbar-track"><div id="scrollbar-thumb"></div></div>
+<div id="split-preview"><img id="preview-img"/></div>
+<div id="dashboard">
+<img id="home-crest"/>
+<div id="dash-text-col">
+<div id="dash0" class="dashline"></div>
+<div id="dash1" class="dashline"></div>
+<div id="dash2" class="dashline"></div>
+<div id="dash3" class="dashline"></div>
+<div id="dash4" class="dashline"></div>
+<div id="dash5" class="dashline"></div>
+<div id="dash6" class="dashline"></div>
+<div id="dash7" class="dashline"></div>
+<div id="dash8" class="dashline"></div>
+<div id="dash9" class="dashline"></div>
+</div>
+<img id="away-crest"/>
+</div>
+<div id="hint-key-row" class="hint-row">
+<div id="hintkey0" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintkey1" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintkey2" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintkey3" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintkey4" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+</div>
+<div id="hint-gp-row" class="hint-row">
+<div id="hintgp0" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintgp1" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintgp2" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintgp3" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintgp4" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+</div>
+</div>
+</body>
+</rml>

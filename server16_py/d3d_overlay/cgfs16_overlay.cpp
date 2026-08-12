@@ -29,6 +29,8 @@
 #include <vector>
 #include <tlhelp32.h>
 
+#include "cgfs16_rmlui.h"
+
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -95,10 +97,157 @@ struct OverlayShared {
     // written once by Python after injection, read by C++ to render the
     // keyboard hint bar with real key glyphs instead of text badges.
     wchar_t keyboard_icon_dir[MAX_IMG];
+    // Absolute directory containing the loose .rml/.rcss documents for the
+    // RmlUi-rendered screens (resources/rmlui/ — toast.rml, stadium_panel.rml)
+    // — written once by Python after injection, read by cgfs16_rmlui.cpp so
+    // those documents can be edited on disk without recompiling this DLL.
+    wchar_t rmlui_content_dir[MAX_IMG];
+    // DLL -> Python: how many item rows fit in the RmlUi menu's list area at
+    // the current viewport size, computed once per frame by
+    // cgfs16_rmlui_menu.cpp's RmlMenu_Sync from its own RCSS-derived layout
+    // (replaces the old hand-rolled DrawMenuOverlay11/Python
+    // _compute_d3d_menu_layout duplication — see CLAUDE.md's Phase 2
+    // migration notes).
+    volatile LONG menu_visible_rows;
+    // Live mouse feed into the RmlUi Context. Written every ~80ms from
+    // _sync_d3d_menu_input (same cadence as every other input source in this
+    // codebase today), in the same window-coordinate space (0,0 = top-left
+    // client area) as menu_visible_rows' viewport telemetry above. left_down
+    // is the RAW continuous button state, not an edge/click event — the DLL
+    // does its own down/up edge detection each Present call, since Present
+    // fires far more often than this field is updated.
+    volatile LONG rmlui_menu_mouse_x;
+    volatile LONG rmlui_menu_mouse_y;
+    volatile LONG rmlui_menu_mouse_left_down;
+    // DLL -> Python "last event wins" click/scroll signal, written by
+    // cgfs16_rmlui_menu.cpp's MenuEventListener (Click on tabs/rows/
+    // scrollbar-track, Drag on the scrollbar thumb) and polled once per
+    // ~80ms tick in Python (_handle_rmlui_menu_event). A single slot, not a
+    // queue: safe because every payload (a tab index, absolute item index,
+    // or absolute scroll target) is fully self-contained, so only the latest
+    // matters. Written in kind/index-then-seq order (seq last, via
+    // InterlockedIncrement) so a torn read either sees the old or the new
+    // event, never a mix — same "write the flag last" principle as `visible`
+    // for the stadium-loading panel (see CLAUDE.md), just DLL->Python here.
+    volatile LONG menu_event_seq;    // increments on every event; 0 = none yet
+    volatile LONG menu_event_kind;   // 0=none, 1=tab_click, 2=item_click, 3=scroll_to
+    volatile LONG menu_event_index;  // tab index / absolute item index / absolute scroll target
 };
 
 static HANDLE        g_hMap  = NULL;
 static OverlayShared *g_data = NULL;
+
+// ---------------------------------------------------------------------------
+// Narrow accessors into OverlayShared for cgfs16_rmlui.cpp (the toast +
+// stadium-loading-panel RmlUi renderer, Phase 1 of the migration) — kept as
+// plain scalar/pointer getters rather than sharing OverlayShared's full type
+// across the translation-unit boundary, so that file never has to duplicate
+// (and risk drifting out of sync with) this struct's layout.
+// ---------------------------------------------------------------------------
+bool RmlOverlay_ToastVisible(int slot) {
+    return g_data && slot >= 0 && slot < MAX_TOASTS &&
+           InterlockedCompareExchange(&g_data->toasts[slot].visible, 0, 0) != 0;
+}
+bool RmlOverlay_ToastWarning(int slot) {
+    return g_data && slot >= 0 && slot < MAX_TOASTS &&
+           InterlockedCompareExchange(&g_data->toasts[slot].style, 0, 0) != 0;
+}
+const wchar_t *RmlOverlay_ToastTitle(int slot) {
+    return (g_data && slot >= 0 && slot < MAX_TOASTS) ? g_data->toasts[slot].title : L"";
+}
+const wchar_t *RmlOverlay_ToastBody(int slot) {
+    return (g_data && slot >= 0 && slot < MAX_TOASTS) ? g_data->toasts[slot].body : L"";
+}
+bool RmlOverlay_StadiumPanelVisible() {
+    return g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0;
+}
+int RmlOverlay_ProgressX100() {
+    return g_data ? (int)InterlockedCompareExchange(&g_data->progress_x100, 0, 0) : 0;
+}
+const wchar_t *RmlOverlay_StadiumName() { return g_data ? g_data->stadium_name : L""; }
+const wchar_t *RmlOverlay_DetailText()  { return g_data ? g_data->detail_text  : L""; }
+const wchar_t *RmlOverlay_ImagePath()   { return g_data ? g_data->image_path   : L""; }
+const wchar_t *RmlOverlay_PanelTitle()  { return g_data ? g_data->panel_title  : L""; }
+const wchar_t *RmlOverlay_ContentDir()  { return g_data ? g_data->rmlui_content_dir : L""; }
+
+// ---------------------------------------------------------------------------
+// Narrow accessors for cgfs16_rmlui_menu.cpp (Phase 2 of the migration — the
+// real F12 menu). Same rationale as the accessors above: no shared struct
+// type across the translation-unit boundary. MAX_MENU_ITEMS/MAX_MENU_ITEM_LEN/
+// MAX_DASH_ITEMS/NUM_MENU_TABS must match the same constants here and in
+// d3d_injector.py.
+// ---------------------------------------------------------------------------
+// The F12 menu's visibility — the single source of truth for whether the
+// RmlUi menu document (cgfs16_rmlui_menu.cpp) should be showing and
+// processing input, now that it's the only menu renderer (Phase 2 cutover).
+bool RmlOverlay_MenuVisible() {
+    return g_data && InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0;
+}
+// DLL -> Python: written by RmlMenu_Sync once per frame from its own
+// RCSS-derived layout math; read by d3d_injector.py's get_menu_metrics().
+void RmlOverlay_SetMenuVisibleRows(int rows) {
+    if (g_data) InterlockedExchange(&g_data->menu_visible_rows, (LONG)rows);
+}
+// DLL -> Python: swapchain output viewport width/height/HWND, written by
+// RmlMenu_Sync whenever the menu is visible. Formerly written directly by
+// DrawMenuOverlay11 (now removed); reads (get_menu_metrics()) are unchanged
+// — mouse coordinate transforms and menu-window focus detection both depend
+// on this. reserved0/1/2 are pre-existing field names (see OverlayShared);
+// kept as-is rather than renamed, to avoid an unrelated wire-format churn.
+void RmlOverlay_SetMenuViewportTelemetry(int vpW, int vpH, void *outputWindow) {
+    if (!g_data) return;
+    InterlockedExchange(&g_data->reserved0, (LONG)vpW);
+    InterlockedExchange(&g_data->reserved1, (LONG)vpH);
+    InterlockedExchange(&g_data->reserved2, (LONG)(LONG_PTR)outputWindow);
+}
+LONG RmlOverlay_ActiveTab() {
+    return g_data ? InterlockedCompareExchange(&g_data->active_tab, 0, 0) : 0;
+}
+LONG RmlOverlay_MenuItemCount() {
+    return g_data ? InterlockedCompareExchange(&g_data->menu_item_count, 0, 0) : 0;
+}
+LONG RmlOverlay_MenuSelectedIndex() {
+    return g_data ? InterlockedCompareExchange(&g_data->menu_selected_index, 0, 0) : 0;
+}
+LONG RmlOverlay_MenuScrollOffset() {
+    return g_data ? InterlockedCompareExchange(&g_data->menu_scroll_offset, 0, 0) : 0;
+}
+LONG RmlOverlay_MenuTotalCount() {
+    return g_data ? InterlockedCompareExchange(&g_data->menu_total_count, 0, 0) : 0;
+}
+LONG RmlOverlay_MenuWindowBase() {
+    return g_data ? InterlockedCompareExchange(&g_data->menu_window_base, 0, 0) : 0;
+}
+const wchar_t *RmlOverlay_MenuItemText(int index) {
+    return (g_data && index >= 0 && index < MAX_MENU_ITEMS) ? g_data->menu_items[index] : L"";
+}
+LONG RmlOverlay_DashboardItemCount() {
+    return g_data ? InterlockedCompareExchange(&g_data->dashboard_item_count, 0, 0) : 0;
+}
+const wchar_t *RmlOverlay_DashboardItemText(int index) {
+    return (g_data && index >= 0 && index < MAX_DASH_ITEMS) ? g_data->dashboard_items[index] : L"";
+}
+const wchar_t *RmlOverlay_HomeCrestPath()   { return g_data ? g_data->home_crest_path   : L""; }
+const wchar_t *RmlOverlay_AwayCrestPath()   { return g_data ? g_data->away_crest_path   : L""; }
+const wchar_t *RmlOverlay_ListHeader()      { return g_data ? g_data->list_header       : L""; }
+const wchar_t *RmlOverlay_GamepadIconDir()  { return g_data ? g_data->gamepad_icon_dir  : L""; }
+const wchar_t *RmlOverlay_KeyboardIconDir() { return g_data ? g_data->keyboard_icon_dir : L""; }
+// Phase 2 Step 3: raw mouse feed (Python writes every ~80ms; the reader does
+// its own down/up edge detection each Present call — see the field comments
+// on OverlayShared above).
+LONG RmlOverlay_MenuMouseX() { return g_data ? InterlockedCompareExchange(&g_data->rmlui_menu_mouse_x, 0, 0) : 0; }
+LONG RmlOverlay_MenuMouseY() { return g_data ? InterlockedCompareExchange(&g_data->rmlui_menu_mouse_y, 0, 0) : 0; }
+bool RmlOverlay_MenuMouseLeftDown() {
+    return g_data && InterlockedCompareExchange(&g_data->rmlui_menu_mouse_left_down, 0, 0) != 0;
+}
+// Phase 2 Step 4: writer for the "last event wins" click/scroll signal (see
+// the OverlayShared field comments for the kind/index-then-seq write order).
+void RmlOverlay_PushMenuEvent(int kind, int index) {
+    if (!g_data) return;
+    InterlockedExchange(&g_data->menu_event_kind, (LONG)kind);
+    InterlockedExchange(&g_data->menu_event_index, (LONG)index);
+    InterlockedIncrement(&g_data->menu_event_seq);
+}
 static HMODULE       g_selfModule = NULL;
 static volatile LONG g_unloading = 0;
 
@@ -106,8 +255,9 @@ static volatile LONG g_unloading = 0;
 // Gamepad suppression while the overlay menu is open is handled by the Python host
 // which polls XInput directly and owns the input dispatch loop.
 
-// Forward declaration
-static void Log(const char *fmt, ...);
+// Forward declaration. Not static: cgfs16_rmlui.cpp (RmlUi renderer, its own
+// translation unit) calls this too, so both share the one log file.
+void Log(const char *fmt, ...);
 
 // TryInstallXInputHook removed — see comment above.
 
@@ -126,7 +276,7 @@ static void InitLog() {
     FILE *f = nullptr; fopen_s(&f, g_logPath, "w");
     if (f) { fprintf(f, "[DLL] log: %s\n", g_logPath); fclose(f); }
 }
-static void Log(const char *fmt, ...) {
+void Log(const char *fmt, ...) {
     if (!g_logPath[0]) return;
     EnterCriticalSection(&g_logCs);
     FILE *f = nullptr; fopen_s(&f, g_logPath, "a");
@@ -158,401 +308,25 @@ static bool        g_hookSwitched        = false;    // set after first real-sc 
 
 static CRITICAL_SECTION g_drawCs;
 static LONG g_frameCount = 0;
-static bool g_d3dInitDone = false;  // shared init flag for DrawOverlay11 + DrawMenuOverlay11
 
 // ---------------------------------------------------------------------------
-// D3D11 overlay resources
+// WIC -> D3D11 texture (generic, reused for preview and team crests).
+// Releases *outTex/*outSRV before loading. outW/outH are optional. Shared
+// across translation units: called from cgfs16_rmlui.cpp's RenderInterface
+// (Phase 1+ of the RmlUi migration) — that's the only remaining caller now
+// that the hand-rolled DrawMenuOverlay11/DrawToast11/DrawOverlay11 renderers
+// (former callers) have all been removed.
+//
+// premultiplyAlpha: RmlUi's RenderInterface (cgfs16_rmlui.cpp) uses
+// premultiplied-alpha blending — RmlUi's own generated content (glyph
+// atlases) already comes out premultiplied, but WIC-decoded PNGs do not, so
+// any semi-transparent pixel (most icon-style PNGs have anti-aliased edges)
+// would composite with a visible bright fringe if handed to that pipeline
+// unmultiplied. Pass true only from that RenderInterface's LoadTexture.
 // ---------------------------------------------------------------------------
-
-// Combined shader: colored quads (VSMain/PSMain) + textured quads (VSTexMain/PSTexMain)
-static const char kShaderSrc[] = R"(
-// --- Colored quads ---
-struct VS_IN  { float2 pos : POSITION; float4 col : COLOR; };
-struct VS_OUT { float4 pos : SV_POSITION; float4 col : COLOR; };
-VS_OUT VSMain(VS_IN v) {
-    VS_OUT o; o.pos = float4(v.pos, 0, 1); o.col = v.col; return o;
-}
-float4 PSMain(VS_OUT v) : SV_TARGET { return v.col; }
-
-// --- Textured quads ---
-Texture2D g_tex : register(t0);
-SamplerState g_samp : register(s0);
-struct VS_IN_T  { float2 pos : POSITION; float2 uv : TEXCOORD; };
-struct VS_OUT_T { float4 pos : SV_POSITION; float2 uv : TEXCOORD; };
-VS_OUT_T VSTexMain(VS_IN_T v) {
-    VS_OUT_T o; o.pos = float4(v.pos, 0, 1); o.uv = v.uv; return o;
-}
-float4 PSTexMain(VS_OUT_T v) : SV_TARGET { return g_tex.Sample(g_samp, v.uv); }
-)";
-
-// Colored quad resources
-static ID3D11VertexShader    *g_vs  = nullptr;
-static ID3D11PixelShader     *g_ps  = nullptr;
-static ID3D11InputLayout     *g_il  = nullptr;
-static ID3D11Buffer          *g_vb  = nullptr;
-static ID3D11BlendState      *g_bs  = nullptr;
-static ID3D11RasterizerState *g_rs  = nullptr;
-static ID3D11DepthStencilState *g_dss = nullptr;
-
-// Textured quad resources
-static ID3D11VertexShader    *g_vsT  = nullptr;
-static ID3D11PixelShader     *g_psT  = nullptr;
-static ID3D11InputLayout     *g_ilT  = nullptr;
-static ID3D11Buffer          *g_vbT  = nullptr;
-static ID3D11SamplerState    *g_samp = nullptr;
-
-// Colored quad vertex
-struct Vtx11 { float x, y; float r, g, b, a; };
-
-// Textured quad vertex
-struct VtxT { float x, y, u, v; };
-
-// ---------------------------------------------------------------------------
-// Text textures (GDI -> D3D11)
-// ---------------------------------------------------------------------------
-struct TextTex {
-    ID3D11Texture2D           *tex     = nullptr;
-    ID3D11ShaderResourceView  *srv     = nullptr;
-    int                        width   = 0;
-    int                        height  = 0;
-    wchar_t                    content[MAX_STR * 2] = {};
-};
-
-static TextTex g_ttTitle;    // panel header — "Loading Stadium" by default, see panel_title
-static TextTex g_ttName;     // stadium name
-static TextTex g_ttDetail;   // detail / progress message
-
-// ---------------------------------------------------------------------------
-// Menu overlay: per-tab text textures and tab metadata
-// ---------------------------------------------------------------------------
-#define NUM_MENU_TABS 5
-static TextTex g_ttTab[NUM_MENU_TABS];
-static LONG    g_menuLastActiveTab = -1;
-
-// Content list textures
-static TextTex g_ttItems[MAX_MENU_ITEMS];
-static TextTex g_ttEmpty;
-static TextTex g_ttDash;  // scratch slot for dashboard lines (separate from g_ttItems)
-
-// ---------------------------------------------------------------------------
-// Gamepad hint bar: real button-icon PNGs (bundled under resources/buttons/
-// gamepad, path handed over once by Python via gamepad_icon_dir) instead of
-// text badges. Icon textures are loaded once and reused every frame.
-// ---------------------------------------------------------------------------
-enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_ICON_COUNT };
-static const wchar_t * const kGpIconFiles[GP_ICON_COUNT] = {
-    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png",
-};
-static ID3D11Texture2D          *g_gpIconTex[GP_ICON_COUNT] = {};
-static ID3D11ShaderResourceView *g_gpIconSRV[GP_ICON_COUNT] = {};
-static wchar_t                   g_gpIconDirLoaded[MAX_IMG] = {};
-
-#define NUM_HINT_ITEMS 5
-
-struct GpHintDef {
-    int            icons[2];      // GpIcon index(es) to draw for this hint; [1] = -1 if only one
-    const wchar_t *description;
-};
-
-static const GpHintDef kHints[NUM_HINT_ITEMS] = {
-    { { GP_DPAD, -1    }, L"Navigate" },
-    { { GP_RS,   -1    }, L"Scroll"   },
-    { { GP_LB,   GP_RB }, L"Tab"      },
-    { { GP_A,    -1    }, L"Select"   },
-    { { GP_B,    -1    }, L"Close"    },
-};
-
-static TextTex g_ttHintDesc[NUM_HINT_ITEMS];
-static bool    g_hintTexReady = false;
-
-// Keyboard hint bar: real key-icon PNGs (bundled under resources/buttons/
-// keyboard, path handed over once by Python via keyboard_icon_dir) instead of
-// text badges — same approach as the gamepad hint bar above.
-enum KeyIcon { KEY_UP = 0, KEY_DOWN, KEY_LEFT, KEY_RIGHT, KEY_ENTER, KEY_ESC, KEY_MOUSE, KEY_ICON_COUNT };
-static const wchar_t * const kKeyIconFiles[KEY_ICON_COUNT] = {
-    L"up.png", L"down.png", L"left.png", L"right.png", L"enter.png", L"esc.png", L"mouse.png",
-};
-static ID3D11Texture2D          *g_keyIconTex[KEY_ICON_COUNT] = {};
-static ID3D11ShaderResourceView *g_keyIconSRV[KEY_ICON_COUNT] = {};
-static wchar_t                   g_keyIconDirLoaded[MAX_IMG] = {};
-
-struct KeyHintDef {
-    int            icons[2];      // KeyIcon index(es) to draw for this hint; [1] = -1 if only one
-    const wchar_t *description;
-};
-
-#define NUM_KEY_HINT_ITEMS 5
-static const KeyHintDef kKeyHints[NUM_KEY_HINT_ITEMS] = {
-    { { KEY_UP,    KEY_DOWN  }, L"Navigate" },
-    { { KEY_MOUSE, -1        }, L"Scroll"   },
-    { { KEY_LEFT,  KEY_RIGHT }, L"Tab"      },
-    { { KEY_ENTER, -1        }, L"Select"   },
-    { { KEY_ESC,   -1        }, L"Close"    },
-};
-
-static TextTex g_ttKeyHintDesc[NUM_KEY_HINT_ITEMS];
-static bool    g_keyHintTexReady = false;
-
-static const wchar_t * const kTabLabels[NUM_MENU_TABS] = {
-    L"Scoreboards", L"Stadiums", L"Movies", L"TV Logos", L"Kits"
-};
-
-// ---------------------------------------------------------------------------
-// Stadium preview image (WIC -> D3D11)
-// ---------------------------------------------------------------------------
-static ID3D11Texture2D          *g_previewTex          = nullptr;
-static ID3D11ShaderResourceView *g_previewSRV          = nullptr;
-static wchar_t                   g_previewLoadedPath[MAX_IMG] = {};
-static int                       g_previewNatW          = 0;
-static int                       g_previewNatH          = 0;
-
-// Team crest textures for dashboard panel (WIC -> D3D11)
-static ID3D11Texture2D          *g_homeCrestTex        = nullptr;
-static ID3D11ShaderResourceView *g_homeCrestSRV        = nullptr;
-static wchar_t                   g_homeLoadedPath[MAX_IMG] = {};
-
-static ID3D11Texture2D          *g_awayCrestTex        = nullptr;
-static ID3D11ShaderResourceView *g_awayCrestSRV        = nullptr;
-static wchar_t                   g_awayLoadedPath[MAX_IMG] = {};
-
-// Menu overlay preview image (stadiums tab + wizard phases — loaded from image_path)
-static ID3D11Texture2D          *g_menuPrevTex         = nullptr;
-static ID3D11ShaderResourceView *g_menuPrevSRV         = nullptr;
-static wchar_t                   g_menuPrevPath[MAX_IMG] = {};
-static int                       g_menuPrevNatW         = 0;
-static int                       g_menuPrevNatH         = 0;
-// Wizard-phase list header text texture (rendered above list items)
-static TextTex g_ttListHeader;
-
-// Toast notification text textures (one pair per slot)
-static TextTex g_ttToastTitle[MAX_TOASTS];
-static TextTex g_ttToastBody[MAX_TOASTS];
-
-static bool InitD3D11Overlay(ID3D11Device *dev) {
-    ID3DBlob *vsBlob = nullptr, *psBlob = nullptr, *err = nullptr;
-
-    // ── Colored quads ──────────────────────────────────────────────────────
-    HRESULT hr = D3DCompile(kShaderSrc, sizeof(kShaderSrc)-1,
-        nullptr, nullptr, nullptr, "VSMain", "vs_4_0", 0, 0, &vsBlob, &err);
-    if (FAILED(hr)) {
-        Log("[D3D11] VS compile hr=0x%08X: %s", (unsigned)hr,
-            err ? (char*)err->GetBufferPointer() : "?");
-        if (err) err->Release(); return false;
-    }
-    hr = D3DCompile(kShaderSrc, sizeof(kShaderSrc)-1,
-        nullptr, nullptr, nullptr, "PSMain", "ps_4_0", 0, 0, &psBlob, &err);
-    if (FAILED(hr)) {
-        Log("[D3D11] PS compile hr=0x%08X: %s", (unsigned)hr,
-            err ? (char*)err->GetBufferPointer() : "?");
-        vsBlob->Release(); if (err) err->Release(); return false;
-    }
-
-    dev->CreateVertexShader(vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), nullptr, &g_vs);
-    dev->CreatePixelShader( psBlob->GetBufferPointer(), psBlob->GetBufferSize(), nullptr, &g_ps);
-
-    D3D11_INPUT_ELEMENT_DESC ied[] = {
-        {"POSITION",0,DXGI_FORMAT_R32G32_FLOAT,        0, 0,D3D11_INPUT_PER_VERTEX_DATA,0},
-        {"COLOR",   0,DXGI_FORMAT_R32G32B32A32_FLOAT,  0, 8,D3D11_INPUT_PER_VERTEX_DATA,0},
-    };
-    dev->CreateInputLayout(ied, 2,
-        vsBlob->GetBufferPointer(), vsBlob->GetBufferSize(), &g_il);
-    vsBlob->Release(); psBlob->Release();
-
-    D3D11_BUFFER_DESC bd = {};
-    bd.ByteWidth      = sizeof(Vtx11) * 512;
-    bd.Usage          = D3D11_USAGE_DYNAMIC;
-    bd.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
-    bd.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-    dev->CreateBuffer(&bd, nullptr, &g_vb);
-
-    D3D11_BLEND_DESC bsd = {};
-    bsd.RenderTarget[0].BlendEnable            = TRUE;
-    bsd.RenderTarget[0].SrcBlend              = D3D11_BLEND_SRC_ALPHA;
-    bsd.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;
-    bsd.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;
-    bsd.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
-    bsd.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_ZERO;
-    bsd.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
-    bsd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
-    dev->CreateBlendState(&bsd, &g_bs);
-
-    D3D11_RASTERIZER_DESC rsd = {};
-    rsd.FillMode        = D3D11_FILL_SOLID;
-    rsd.CullMode        = D3D11_CULL_NONE;
-    rsd.DepthClipEnable = FALSE;
-    dev->CreateRasterizerState(&rsd, &g_rs);
-
-    D3D11_DEPTH_STENCIL_DESC dsd = {};
-    dsd.DepthEnable = FALSE;
-    dev->CreateDepthStencilState(&dsd, &g_dss);
-
-    // ── Textured quads ─────────────────────────────────────────────────────
-    ID3DBlob *vsTBlob = nullptr, *psTBlob = nullptr;
-    hr = D3DCompile(kShaderSrc, sizeof(kShaderSrc)-1,
-        nullptr, nullptr, nullptr, "VSTexMain", "vs_4_0", 0, 0, &vsTBlob, &err);
-    if (FAILED(hr)) {
-        Log("[D3D11] VSTexMain compile hr=0x%08X: %s", (unsigned)hr,
-            err ? (char*)err->GetBufferPointer() : "?");
-        if (err) err->Release();
-        // Non-fatal: text/image just won't render
-    } else {
-        hr = D3DCompile(kShaderSrc, sizeof(kShaderSrc)-1,
-            nullptr, nullptr, nullptr, "PSTexMain", "ps_4_0", 0, 0, &psTBlob, &err);
-        if (SUCCEEDED(hr)) {
-            dev->CreateVertexShader(vsTBlob->GetBufferPointer(), vsTBlob->GetBufferSize(), nullptr, &g_vsT);
-            dev->CreatePixelShader( psTBlob->GetBufferPointer(), psTBlob->GetBufferSize(), nullptr, &g_psT);
-
-            D3D11_INPUT_ELEMENT_DESC iedT[] = {
-                {"POSITION",0,DXGI_FORMAT_R32G32_FLOAT, 0, 0,D3D11_INPUT_PER_VERTEX_DATA,0},
-                {"TEXCOORD",0,DXGI_FORMAT_R32G32_FLOAT, 0, 8,D3D11_INPUT_PER_VERTEX_DATA,0},
-            };
-            dev->CreateInputLayout(iedT, 2,
-                vsTBlob->GetBufferPointer(), vsTBlob->GetBufferSize(), &g_ilT);
-
-            D3D11_BUFFER_DESC bdT = {};
-            bdT.ByteWidth      = sizeof(VtxT) * 4;
-            bdT.Usage          = D3D11_USAGE_DYNAMIC;
-            bdT.BindFlags      = D3D11_BIND_VERTEX_BUFFER;
-            bdT.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
-            dev->CreateBuffer(&bdT, nullptr, &g_vbT);
-
-            D3D11_SAMPLER_DESC sd = {};
-            sd.Filter   = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
-            sd.AddressU = D3D11_TEXTURE_ADDRESS_CLAMP;
-            sd.AddressV = D3D11_TEXTURE_ADDRESS_CLAMP;
-            sd.AddressW = D3D11_TEXTURE_ADDRESS_CLAMP;
-            dev->CreateSamplerState(&sd, &g_samp);
-
-            psTBlob->Release();
-        } else {
-            Log("[D3D11] PSTexMain compile hr=0x%08X", (unsigned)hr);
-            if (err) err->Release();
-        }
-        vsTBlob->Release();
-    }
-
-    Log("[D3D11] overlay resources initialized (text=%s image=%s)",
-        g_vsT ? "yes" : "no", g_vsT ? "yes" : "no");
-    return g_vs && g_ps && g_il && g_vb && g_bs && g_rs && g_dss;
-}
-
-// pixel -> clip-space
-static float PX(float x, float w) { return  x/w*2.f-1.f; }
-static float PY(float y, float h) { return -y/h*2.f+1.f; }
-
-static void PushQuad(Vtx11 *buf, int &n,
-    float x,float y,float w,float h,float vpW,float vpH,DWORD col)
-{
-    float r=((col>>16)&0xFF)/255.f, g2=((col>>8)&0xFF)/255.f,
-          b=((col)&0xFF)/255.f,     a=((col>>24)&0xFF)/255.f;
-    float x0=PX(x,vpW),y0=PY(y,vpH),x1=PX(x+w,vpW),y1=PY(y+h,vpH);
-    buf[n++]={x0,y0,r,g2,b,a}; buf[n++]={x1,y0,r,g2,b,a};
-    buf[n++]={x0,y1,r,g2,b,a}; buf[n++]={x1,y1,r,g2,b,a};
-}
-
-// ---------------------------------------------------------------------------
-// GDI text -> D3D11 texture
-// fgColor is a COLORREF (0x00BBGGRR, use RGB(r,g,b) macro)
-// maxPixW caps the texture width and enables ellipsis trimming
-// ---------------------------------------------------------------------------
-static void UpdateTextTex(ID3D11Device *dev, TextTex &tt,
-    const wchar_t *text, int fontPx, bool bold, COLORREF fgColor, int maxPixW)
-{
-    if (tt.width > 0 && wcscmp(tt.content, text) == 0) return; // unchanged
-
-    if (tt.tex) { tt.tex->Release(); tt.tex = nullptr; }
-    if (tt.srv) { tt.srv->Release(); tt.srv = nullptr; }
-    tt.width = tt.height = 0;
-    tt.content[0] = L'\0';
-
-    if (!text || !text[0]) return;
-
-    LOGFONTW lf = {};
-    lf.lfHeight  = -fontPx;
-    lf.lfWeight  = bold ? FW_SEMIBOLD : FW_NORMAL;
-    lf.lfQuality = ANTIALIASED_QUALITY;
-    wcscpy_s(lf.lfFaceName, L"Segoe UI");
-    HFONT hf = CreateFontIndirectW(&lf);
-    if (!hf) return;
-
-    // Measure text height
-    HDC hdcMeas = CreateCompatibleDC(nullptr);
-    SelectObject(hdcMeas, hf);
-    RECT rcCalc = {0, 0, maxPixW, 2000};
-    DrawTextW(hdcMeas, text, -1, &rcCalc,
-              DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_CALCRECT);
-    DeleteDC(hdcMeas);
-
-    int bmpW = maxPixW;
-    int bmpH = (rcCalc.bottom > 0) ? rcCalc.bottom : (fontPx + 4);
-
-    // Create DIBSection (top-down, 32-bpp BGRA)
-    BITMAPINFO bi = {};
-    bi.bmiHeader.biSize        = sizeof(BITMAPINFOHEADER);
-    bi.bmiHeader.biWidth       = bmpW;
-    bi.bmiHeader.biHeight      = -bmpH;
-    bi.bmiHeader.biPlanes      = 1;
-    bi.bmiHeader.biBitCount    = 32;
-    bi.bmiHeader.biCompression = BI_RGB;
-
-    void *bits = nullptr;
-    HDC hdc = CreateCompatibleDC(nullptr);
-    HBITMAP hbm = CreateDIBSection(hdc, &bi, DIB_RGB_COLORS, &bits, nullptr, 0);
-    if (!hbm) { DeleteDC(hdc); DeleteObject(hf); return; }
-    HBITMAP hbmOld = (HBITMAP)SelectObject(hdc, hbm);
-
-    memset(bits, 0, (size_t)bmpW * bmpH * 4);
-    SelectObject(hdc, hf);
-    SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, fgColor);
-    RECT rc = {0, 0, bmpW, bmpH};
-    DrawTextW(hdc, text, -1, &rc,
-              DT_LEFT | DT_SINGLELINE | DT_NOPREFIX | DT_END_ELLIPSIS);
-    GdiFlush();
-
-    // GDI leaves alpha=0 in BGRA DIBs. Derive alpha from max(R,G,B).
-    BYTE *px = (BYTE*)bits;
-    for (int i = 0; i < bmpW * bmpH; i++) {
-        BYTE b = px[0], g = px[1], r = px[2];
-        px[3] = (std::max)({b, g, r});
-        px += 4;
-    }
-
-    D3D11_TEXTURE2D_DESC td = {};
-    td.Width            = (UINT)bmpW;
-    td.Height           = (UINT)bmpH;
-    td.MipLevels        = 1;
-    td.ArraySize        = 1;
-    td.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
-    td.SampleDesc.Count = 1;
-    td.Usage            = D3D11_USAGE_IMMUTABLE;
-    td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
-
-    D3D11_SUBRESOURCE_DATA srd = {};
-    srd.pSysMem     = bits;
-    srd.SysMemPitch = (UINT)(bmpW * 4);
-
-    dev->CreateTexture2D(&td, &srd, &tt.tex);
-    if (tt.tex) {
-        dev->CreateShaderResourceView(tt.tex, nullptr, &tt.srv);
-        tt.width  = bmpW;
-        tt.height = bmpH;
-    }
-    wcscpy_s(tt.content, text);
-
-    SelectObject(hdc, hbmOld);
-    DeleteObject(hbm);
-    DeleteObject(hf);
-    DeleteDC(hdc);
-}
-
-// ---------------------------------------------------------------------------
-// WIC -> D3D11 texture (generic, reused for preview and team crests)
-// Releases *outTex/*outSRV before loading. outW/outH are optional.
-// ---------------------------------------------------------------------------
-static bool LoadWICTexture(ID3D11Device *dev, const wchar_t *path,
+bool LoadWICTexture(ID3D11Device *dev, const wchar_t *path,
     ID3D11Texture2D **outTex, ID3D11ShaderResourceView **outSRV,
-    int *outW = nullptr, int *outH = nullptr)
+    int *outW = nullptr, int *outH = nullptr, bool premultiplyAlpha = false)
 {
     if (*outTex) { (*outTex)->Release(); *outTex = nullptr; }
     if (*outSRV) { (*outSRV)->Release(); *outSRV = nullptr; }
@@ -593,6 +367,17 @@ static bool LoadWICTexture(ID3D11Device *dev, const wchar_t *path,
     conv->Release();
     wicF->Release();
 
+    if (premultiplyAlpha) {
+        BYTE *px = pixels.data();
+        for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
+            BYTE a = px[3];
+            px[0] = (BYTE)((int)px[0] * a / 255);
+            px[1] = (BYTE)((int)px[1] * a / 255);
+            px[2] = (BYTE)((int)px[2] * a / 255);
+            px += 4;
+        }
+    }
+
     D3D11_TEXTURE2D_DESC td = {};
     td.Width            = w;
     td.Height           = h;
@@ -616,973 +401,21 @@ static bool LoadWICTexture(ID3D11Device *dev, const wchar_t *path,
     return true;
 }
 
-// Draw a textured quad; requires g_vsT/g_psT/g_ilT/g_vbT/g_samp already bound.
-static void DrawTexQuad(ID3D11DeviceContext *ctx,
-    float x, float y, float w, float h, float vpW, float vpH,
-    ID3D11ShaderResourceView *srv)
-{
-    if (!srv || !g_vbT) return;
-    float x0=PX(x,vpW),y0=PY(y,vpH),x1=PX(x+w,vpW),y1=PY(y+h,vpH);
-    VtxT verts[4] = {{x0,y0,0,0},{x1,y0,1,0},{x0,y1,0,1},{x1,y1,1,1}};
-    D3D11_MAPPED_SUBRESOURCE ms={};
-    if (SUCCEEDED(ctx->Map(g_vbT,0,D3D11_MAP_WRITE_DISCARD,0,&ms))) {
-        memcpy(ms.pData,verts,sizeof(verts)); ctx->Unmap(g_vbT,0);
-    }
-    ctx->PSSetShaderResources(0,1,&srv);
-    UINT stride=sizeof(VtxT),offset=0;
-    ctx->IASetVertexBuffers(0,1,&g_vbT,&stride,&offset);
-    ctx->Draw(4,0);
-}
+// ---------------------------------------------------------------------------
+// DrawMenuOverlay11 (the last hand-rolled D3D11 screen — tab bar, dashboard,
+// item list, scrollbar, split-preview, hint bars) removed at Phase 2 cutover
+// — replaced entirely by RmlOverlay_RenderFrame / cgfs16_rmlui_menu.cpp's
+// RmlMenu_Sync (see CLAUDE.md's migration notes). Its one non-drawing side
+// effect (writing reserved0/1/2 viewport telemetry) moved to
+// RmlOverlay_SetMenuViewportTelemetry, called from RmlMenu_Sync.
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// Menu overlay: full-screen panel with tab bar
+// DrawToast11 / DrawOverlay11 (toast notifications, stadium-loading panel)
+// removed — replaced by RmlOverlay_RenderFrame in cgfs16_rmlui.cpp (Phase 1
+// of the RmlUi migration). See the plan at
+// C:\Users\Miguel\.claude\plans\lazy-tumbling-balloon.md.
 // ---------------------------------------------------------------------------
-static void DrawMenuOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
-    LONG activeTab = g_data ? InterlockedCompareExchange(&g_data->active_tab, 0, 0) : 0;
-    if (activeTab < 0 || activeTab >= NUM_MENU_TABS) activeTab = 0;
-
-    LONG itemCount = 0, selIdx = 0, scrollOffset = 0;
-    LONG totalCount = 0, windowBase = 0;
-    if (g_data) {
-        itemCount = InterlockedCompareExchange(&g_data->menu_item_count, 0, 0);
-        selIdx = InterlockedCompareExchange(&g_data->menu_selected_index, 0, 0);
-        scrollOffset = InterlockedCompareExchange(&g_data->menu_scroll_offset, 0, 0);
-        totalCount = InterlockedCompareExchange(&g_data->menu_total_count, 0, 0);
-        windowBase = InterlockedCompareExchange(&g_data->menu_window_base, 0, 0);
-        if (itemCount < 0 || itemCount > MAX_MENU_ITEMS) itemCount = 0;
-        if (selIdx < 0) selIdx = 0;
-        if (scrollOffset < 0) scrollOffset = 0;
-        if (totalCount < itemCount) totalCount = itemCount;  // backward compat
-        if (windowBase < 0) windowBase = 0;
-    }
-
-    // ── Init COM once (for WIC) on this thread ─────────────────────────────
-    static bool s_comInit = false;
-    if (!s_comInit) {
-        s_comInit = true;
-        HRESULT cohr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        Log("[DrawMenu] CoInitializeEx hr=0x%08X", (unsigned)cohr);
-    }
-
-    // ── Load / reload team crest textures when paths change ──────────────────
-    {
-        wchar_t homePath[MAX_IMG] = {}, awayPath[MAX_IMG] = {};
-        if (g_data) {
-            wcsncpy_s(homePath, g_data->home_crest_path, MAX_IMG - 1);
-            wcsncpy_s(awayPath, g_data->away_crest_path, MAX_IMG - 1);
-        }
-        if (wcscmp(homePath, g_homeLoadedPath) != 0) {
-            wcscpy_s(g_homeLoadedPath, homePath);
-            if (homePath[0]) {
-                ID3D11Device *dev2 = nullptr;
-                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
-                    LoadWICTexture(dev2, homePath, &g_homeCrestTex, &g_homeCrestSRV);
-                    dev2->Release();
-                }
-            } else {
-                if (g_homeCrestTex) { g_homeCrestTex->Release(); g_homeCrestTex = nullptr; }
-                if (g_homeCrestSRV) { g_homeCrestSRV->Release(); g_homeCrestSRV = nullptr; }
-            }
-        }
-        if (wcscmp(awayPath, g_awayLoadedPath) != 0) {
-            wcscpy_s(g_awayLoadedPath, awayPath);
-            if (awayPath[0]) {
-                ID3D11Device *dev2 = nullptr;
-                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
-                    LoadWICTexture(dev2, awayPath, &g_awayCrestTex, &g_awayCrestSRV);
-                    dev2->Release();
-                }
-            } else {
-                if (g_awayCrestTex) { g_awayCrestTex->Release(); g_awayCrestTex = nullptr; }
-                if (g_awayCrestSRV) { g_awayCrestSRV->Release(); g_awayCrestSRV = nullptr; }
-            }
-        }
-    }
-
-    // ── Read wizard header text and menu preview image path ────────────────────
-    wchar_t imgPathMenu[MAX_IMG] = {};
-    wchar_t listHeader[MAX_STR] = {};
-    if (g_data) {
-        wcsncpy_s(imgPathMenu, g_data->image_path,  MAX_IMG - 1);
-        wcsncpy_s(listHeader,  g_data->list_header, MAX_STR - 1);
-    }
-    const bool showSplit  = (activeTab == 1 || activeTab == 4);  // Stadiums, Kits: list + preview side-by-side
-    const bool showHeader = (listHeader[0] != L'\0');  // wizard step indicator above list
-
-    DXGI_SWAP_CHAIN_DESC scd = {};
-    sc->GetDesc(&scd);
-    float vpW = (float)(scd.BufferDesc.Width ? scd.BufferDesc.Width : 1280);
-    float vpH = (float)(scd.BufferDesc.Height ? scd.BufferDesc.Height : 720);
-    if (scd.OutputWindow) {
-        RECT rc = {};
-        if (GetClientRect(scd.OutputWindow, &rc)) {
-            LONG cw = rc.right - rc.left;
-            LONG ch = rc.bottom - rc.top;
-            if (cw > 0) vpW = (float)cw;
-            if (ch > 0) vpH = (float)ch;
-        }
-    }
-
-    if (g_data) {
-        InterlockedExchange(&g_data->reserved0, (LONG)vpW);
-        InterlockedExchange(&g_data->reserved1, (LONG)vpH);
-        InterlockedExchange(&g_data->reserved2, (LONG)(LONG_PTR)scd.OutputWindow);
-    }
-
-    // ── Load / reload menu preview texture when on stadiums tab ───────────────
-    if (showSplit) {
-        if (wcscmp(imgPathMenu, g_menuPrevPath) != 0) {
-            wcscpy_s(g_menuPrevPath, imgPathMenu);
-            if (imgPathMenu[0] != L'\0') {
-                ID3D11Device *dev2 = nullptr;
-                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev2))) {
-                    LoadWICTexture(dev2, imgPathMenu, &g_menuPrevTex, &g_menuPrevSRV, &g_menuPrevNatW, &g_menuPrevNatH);
-                    dev2->Release();
-                }
-            } else {
-                if (g_menuPrevTex) { g_menuPrevTex->Release(); g_menuPrevTex = nullptr; }
-                if (g_menuPrevSRV) { g_menuPrevSRV->Release(); g_menuPrevSRV = nullptr; }
-                g_menuPrevNatW = g_menuPrevNatH = 0;
-            }
-        }
-    } else if (g_menuPrevPath[0] != L'\0') {
-        // Not on stadiums tab — release the cached preview
-        g_menuPrevPath[0] = L'\0';
-        if (g_menuPrevTex) { g_menuPrevTex->Release(); g_menuPrevTex = nullptr; }
-        if (g_menuPrevSRV) { g_menuPrevSRV->Release(); g_menuPrevSRV = nullptr; }
-        g_menuPrevNatW = g_menuPrevNatH = 0;
-    }
-
-    ID3D11Texture2D *bb = nullptr;
-    if (FAILED(sc->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)&bb))) return;
-    ID3D11RenderTargetView *rtv = nullptr;
-    dev->CreateRenderTargetView(bb, nullptr, &rtv);
-    bb->Release();
-    if (!rtv) return;
-
-    // D3D resources are shared with DrawOverlay11. Use the same global flag.
-    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
-    if (!g_vs || !g_ps || !g_il || !g_vb) { rtv->Release(); return; }
-
-    for (int i = 0; i < NUM_MENU_TABS; i++)
-        UpdateTextTex(dev, g_ttTab[i], kTabLabels[i], 14, false, RGB(0xFF, 0xFF, 0xFF), 170);
-
-    if (!g_hintTexReady) {
-        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            UpdateTextTex(dev, g_ttHintDesc[i], kHints[i].description,
-                          12, false, RGB(0xCC, 0xDD, 0xEE), 160);
-        }
-        g_hintTexReady = true;
-    }
-
-    // ── Load gamepad button icon textures once, from the dir Python handed over ──
-    if (g_data) {
-        wchar_t iconDir[MAX_IMG] = {};
-        wcsncpy_s(iconDir, g_data->gamepad_icon_dir, MAX_IMG - 1);
-        if (iconDir[0] != L'\0' && wcscmp(iconDir, g_gpIconDirLoaded) != 0) {
-            wcscpy_s(g_gpIconDirLoaded, iconDir);
-            size_t dirLen = wcslen(iconDir);
-            bool hasSlash = dirLen > 0 && (iconDir[dirLen - 1] == L'\\' || iconDir[dirLen - 1] == L'/');
-            for (int i = 0; i < GP_ICON_COUNT; i++) {
-                wchar_t path[MAX_IMG] = {};
-                _snwprintf_s(path, MAX_IMG, _TRUNCATE, hasSlash ? L"%s%s" : L"%s\\%s",
-                             iconDir, kGpIconFiles[i]);
-                if (!LoadWICTexture(dev, path, &g_gpIconTex[i], &g_gpIconSRV[i]))
-                    Log("[GpIcon] failed to load '%ls'", path);
-            }
-        }
-    }
-    // ── Load keyboard key icon textures once, from the dir Python handed over ──
-    if (g_data) {
-        wchar_t iconDir[MAX_IMG] = {};
-        wcsncpy_s(iconDir, g_data->keyboard_icon_dir, MAX_IMG - 1);
-        if (iconDir[0] != L'\0' && wcscmp(iconDir, g_keyIconDirLoaded) != 0) {
-            wcscpy_s(g_keyIconDirLoaded, iconDir);
-            size_t dirLen = wcslen(iconDir);
-            bool hasSlash = dirLen > 0 && (iconDir[dirLen - 1] == L'\\' || iconDir[dirLen - 1] == L'/');
-            for (int i = 0; i < KEY_ICON_COUNT; i++) {
-                wchar_t path[MAX_IMG] = {};
-                _snwprintf_s(path, MAX_IMG, _TRUNCATE, hasSlash ? L"%s%s" : L"%s\\%s",
-                             iconDir, kKeyIconFiles[i]);
-                if (!LoadWICTexture(dev, path, &g_keyIconTex[i], &g_keyIconSRV[i]))
-                    Log("[KeyIcon] failed to load '%ls'", path);
-            }
-        }
-    }
-    if (!g_keyHintTexReady) {
-        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            UpdateTextTex(dev, g_ttKeyHintDesc[i], kKeyHints[i].description,
-                          12, false, RGB(0xCC, 0xDD, 0xEE), 160);
-        }
-        g_keyHintTexReady = true;
-    }
-
-    ID3D11RenderTargetView *oldRTV[8] = {};
-    ID3D11DepthStencilView *oldDSV = nullptr;
-    ctx->OMGetRenderTargets(8, oldRTV, &oldDSV);
-    D3D11_VIEWPORT oldVP = {};
-    UINT nVP = 1;
-    ctx->RSGetViewports(&nVP, &oldVP);
-    ID3D11BlendState *oldBS = nullptr;
-    float oldBF[4] = {};
-    UINT oldSM = 0;
-    ctx->OMGetBlendState(&oldBS, oldBF, &oldSM);
-    ID3D11RasterizerState *oldRS = nullptr;
-    ctx->RSGetState(&oldRS);
-    ID3D11DepthStencilState *oldDSS = nullptr;
-    UINT oldSRef = 0;
-    ctx->OMGetDepthStencilState(&oldDSS, &oldSRef);
-    ID3D11VertexShader *oldVS = nullptr;
-    ctx->VSGetShader(&oldVS, nullptr, nullptr);
-    ID3D11PixelShader *oldPS = nullptr;
-    ctx->PSGetShader(&oldPS, nullptr, nullptr);
-    ID3D11InputLayout *oldIL = nullptr;
-    ctx->IAGetInputLayout(&oldIL);
-    D3D11_PRIMITIVE_TOPOLOGY oldTopo;
-    ctx->IAGetPrimitiveTopology(&oldTopo);
-    ID3D11ShaderResourceView *oldSRV = nullptr;
-    ctx->PSGetShaderResources(0, 1, &oldSRV);
-    ID3D11SamplerState *oldSamp = nullptr;
-    ctx->PSGetSamplers(0, 1, &oldSamp);
-    ID3D11Buffer *oldVBuf = nullptr; UINT oldVBStride = 0, oldVBOffset = 0;
-    ctx->IAGetVertexBuffers(0, 1, &oldVBuf, &oldVBStride, &oldVBOffset);
-
-    ctx->OMSetRenderTargets(1, &rtv, nullptr);
-    D3D11_VIEWPORT vp = {0.f, 0.f, vpW, vpH, 0.f, 1.f};
-    ctx->RSSetViewports(1, &vp);
-    ctx->OMSetBlendState(g_bs, nullptr, 0xFFFFFFFF);
-    ctx->RSSetState(g_rs);
-    ctx->OMSetDepthStencilState(g_dss, 0);
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
-    const float MENU_RATIO_W = 0.88f;
-    const float MENU_RATIO_H = 0.90f;
-    const float MENU_MIN_W = 1240.f;
-    const float MENU_MIN_H = 760.f;
-    const float VIEW_MARGIN = 20.f;
-    const float availW = (std::max)(320.f, vpW - (2.f * VIEW_MARGIN));
-    const float availH = (std::max)(240.f, vpH - (2.f * VIEW_MARGIN));
-    const float MW = (std::min)(availW, (std::max)(MENU_MIN_W, floorf(vpW * MENU_RATIO_W)));
-    const float MH = (std::min)(availH, (std::max)(MENU_MIN_H, floorf(vpH * MENU_RATIO_H)));
-    const float mx = floorf((vpW - MW) / 2.f);
-    const float my = floorf((vpH - MH) / 2.f);
-    const float TAB_H = 56.f;
-    const float TAB_W = floorf(MW / NUM_MENU_TABS);
-    const float HINT_H    = 38.f;
-    const float HINT_ZONE = HINT_H * 2.f + 6.f;  // two hint rows + padding
-    const float DASH_H = (std::max)(220.f, (std::min)(320.f, floorf(MH * 0.28f)));
-    const float CONT_Y = my + TAB_H;
-    const float CONT_H = MH - TAB_H;
-    const float ITEM_H = 28.f;
-    const float LIST_X = mx + 4.f;
-    const float LIST_Y = CONT_Y + 4.f;
-    const float SCROLL_W = 12.f;
-    const float SCROLL_GAP = 6.f;
-    const float LIST_W = MW - 8.f - SCROLL_W - SCROLL_GAP;
-    const float LIST_YMAX = my + MH - DASH_H - HINT_ZONE - 14.f;
-    const float SCROLL_X = LIST_X + LIST_W + SCROLL_GAP;
-    const float SCROLL_Y = LIST_Y;
-    const float SCROLL_H = (std::max)(1.f, LIST_YMAX - LIST_Y);
-    const float DASH_X = mx + 10.f;
-    const float DASH_Y = my + MH - DASH_H - HINT_ZONE - 6.f;
-    const float DASH_W = MW - 20.f;
-    const float HINT_Y = my + MH - 2.f - HINT_H;
-    const float HINT_X = mx + 2.f;
-    const float HINT_W = MW - 4.f;
-
-    // ── Split layout: stadiums tab → list (60%) left, preview (40%) right ─────
-    const float HEADER_H    = 30.f;
-    const float SPLIT_FRAC  = 0.60f;
-    const float baseContentW = MW - 8.f;
-    const float listSideW   = showSplit ? floorf(baseContentW * SPLIT_FRAC) : baseContentW;
-    const float prevSideW   = showSplit ? (baseContentW - listSideW - 4.f) : 0.f;
-    const float prevSideX   = mx + 4.f + listSideW + 4.f;
-    const float prevSideY   = CONT_Y + 4.f;
-    const float prevSideH   = LIST_YMAX - prevSideY;
-    const float adjListW    = listSideW - SCROLL_W - SCROLL_GAP;
-    const float adjScrollX  = LIST_X + adjListW + SCROLL_GAP;
-    const float adjListY    = LIST_Y + (showHeader ? (HEADER_H + 4.f) : 0.f);
-    const float adjScrollH  = (std::max)(1.f, LIST_YMAX - adjListY);
-
-    const int visibleRows = (std::max)(1, (int)floorf((LIST_YMAX - adjListY) / ITEM_H));
-    const int maxScroll   = (std::max)(0, (int)itemCount - visibleRows);
-    if (scrollOffset > maxScroll) scrollOffset = maxScroll;
-
-    ctx->VSSetShader(g_vs, nullptr, 0);
-    ctx->PSSetShader(g_ps, nullptr, 0);
-    ctx->IASetInputLayout(g_il);
-    UINT stride = sizeof(Vtx11), offset = 0;
-    ctx->IASetVertexBuffers(0, 1, &g_vb, &stride, &offset);
-
-    const float KEY_HINT_Y = my + MH - 2.f - HINT_H * 2.f - 1.f;
-    float hintBadgeX[NUM_HINT_ITEMS] = {};
-    float hintBadgeW[NUM_HINT_ITEMS] = {};
-    float keyHintBadgeX[NUM_KEY_HINT_ITEMS] = {};
-    float keyHintBadgeW[NUM_KEY_HINT_ITEMS] = {};
-
-    Vtx11 verts[512];
-    int n = 0;
-    auto R = [&](float x, float y, float w, float h, DWORD col) {
-        PushQuad(verts, n, x, y, w, h, vpW, vpH, col);
-    };
-
-    R(0.f, 0.f, vpW, vpH, 0x99040B13);
-    R(mx, my, MW, MH, 0xF4101828);
-    R(mx, my, MW, 2.f, 0xFF3399FF);
-    R(mx, my + MH - 2.f, MW, 2.f, 0xFF3399FF);
-    R(mx, my, 2.f, MH, 0xFF3399FF);
-    R(mx + MW - 2.f, my, 2.f, MH, 0xFF3399FF);
-
-    for (int i = 0; i < NUM_MENU_TABS; i++) {
-        float tx = mx + 2.f + i * TAB_W;
-        bool active = (i == (int)activeTab);
-        R(tx, my + 2.f, TAB_W, TAB_H - 2.f, active ? 0xFF1C3E60 : 0xFF0C1620);
-        if (i > 0) R(tx, my + 2.f, 1.f, TAB_H - 2.f, 0xFF243654);
-        if (i == NUM_MENU_TABS - 1) R(mx + MW - 2.f, my + 2.f, 2.f, TAB_H - 2.f, 0xFF3399FF);
-        if (active) R(tx + 6.f, my + TAB_H - 4.f, TAB_W - 12.f, 4.f, 0xFF3399FF);
-    }
-
-    R(mx + 2.f, my + TAB_H, MW - 4.f, 2.f, 0xFF3399FF);
-    R(mx + 2.f, CONT_Y + 2.f, MW - 4.f, CONT_H - 4.f, 0xF2080E18);
-    R(mx + 8.f, DASH_Y - 6.f, MW - 16.f, 2.f, 0xFF2A537D);
-    R(DASH_X, DASH_Y, DASH_W, DASH_H, 0xE40C1622);
-    R(DASH_X, DASH_Y, DASH_W, 2.f, 0xFF3399FF);
-
-    // Wizard header band (colored strip above list items)
-    if (showHeader) {
-        R(LIST_X, LIST_Y, adjListW + SCROLL_W + SCROLL_GAP, HEADER_H, 0xFF111E30);
-        R(LIST_X, LIST_Y + HEADER_H - 2.f, adjListW + SCROLL_W + SCROLL_GAP, 2.f, 0xFF2A537D);
-    }
-    // Stadium preview panel background (right column)
-    if (showSplit) {
-        R(prevSideX, prevSideY, prevSideW, prevSideH, 0xCC0C1520);
-        R(prevSideX, prevSideY, prevSideW, 1.f, 0xFF2A537D);
-        R(prevSideX, prevSideY, 1.f, prevSideH, 0xFF2A537D);
-    }
-
-    for (LONG i = scrollOffset; i < itemCount; i++) {
-        float iy = adjListY + (float)(i - scrollOffset) * ITEM_H;
-        if (iy + ITEM_H > LIST_YMAX) break;
-        if (i == selIdx) {
-            R(LIST_X, iy, adjListW, ITEM_H - 2.f, 0xFF1C3E60);
-            R(LIST_X, iy, 3.f, ITEM_H - 2.f, 0xFF3399FF);
-        }
-    }
-
-    R(adjScrollX, adjListY, SCROLL_W, adjScrollH, 0xCC0E1A26);
-    R(adjScrollX, adjListY, SCROLL_W, 1.f, 0xFF2A537D);
-    R(adjScrollX, adjListY + adjScrollH - 1.f, SCROLL_W, 1.f, 0xFF2A537D);
-    R(adjScrollX, adjListY, 1.f, adjScrollH, 0xFF2A537D);
-    R(adjScrollX + SCROLL_W - 1.f, adjListY, 1.f, adjScrollH, 0xFF2A537D);
-
-    // Use totalCount and real scroll position for an accurate scrollbar.
-    const int maxScrollTotal = (std::max)(0, (int)totalCount - visibleRows);
-    if (maxScrollTotal > 0) {
-        LONG realScroll = scrollOffset + windowBase;
-        float thumbH = (std::max)(22.f, adjScrollH * ((float)visibleRows / (float)totalCount));
-        if (thumbH > adjScrollH) thumbH = adjScrollH;
-        float thumbRange = (std::max)(1.f, adjScrollH - thumbH);
-        float thumbY = adjListY + ((float)realScroll / (float)maxScrollTotal) * thumbRange;
-        R(adjScrollX + 1.f, thumbY, SCROLL_W - 2.f, thumbH, 0xFF1C3E60);
-        R(adjScrollX + 1.f, thumbY, 2.f, thumbH, 0xFF3399FF);
-    }
-
-    // --- Keyboard hint bar --- (icons drawn at native 32x32, no plate behind them)
-    R(HINT_X, KEY_HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);
-    R(HINT_X, KEY_HINT_Y, HINT_W, HINT_H, 0xCC070F1A);
-    {
-        const float CELL_HPAD  = 6.f;
-        const float GAP_BD     = 5.f;
-        const float GAP_INTER  = 22.f;
-        const float ICON_SIZE  = 32.f;
-        const float ICON_GAP   = 3.f;
-        float totalW = 0.f;
-        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            float tw = kKeyHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-            float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
-            float bw = tw + CELL_HPAD * 2.f;
-            totalW += bw + GAP_BD + dw + (i < NUM_KEY_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
-        }
-        float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
-        for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-            float tw = kKeyHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-            float dw = (float)(g_ttKeyHintDesc[i].width  > 0 ? g_ttKeyHintDesc[i].width  : 60);
-            float bw = tw + CELL_HPAD * 2.f;
-            keyHintBadgeX[i] = bx;
-            keyHintBadgeW[i] = bw;
-            bx += bw + GAP_BD + dw + GAP_INTER;
-        }
-    }
-
-    // --- Gamepad hint bar --- (icons drawn at native 32x32, no plate behind them)
-    R(HINT_X, HINT_Y - 1.f, HINT_W, 1.f, 0xFF2A537D);   // separator line
-    R(HINT_X, HINT_Y, HINT_W, HINT_H, 0xCC0E1A26);        // dark background
-    {
-        const float CELL_HPAD  = 6.f;
-        const float GAP_BD     = 5.f;
-        const float GAP_INTER  = 22.f;
-        const float ICON_SIZE  = 32.f;
-        const float ICON_GAP   = 3.f;
-        float totalW = 0.f;
-        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            float tw = kHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-            float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
-            float bw = tw + CELL_HPAD * 2.f;
-            totalW += bw + GAP_BD + dw + (i < NUM_HINT_ITEMS - 1 ? GAP_INTER : 0.f);
-        }
-        float bx = HINT_X + floorf((HINT_W - totalW) / 2.f);
-        for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-            float tw = kHints[i].icons[1] >= 0 ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-            float dw = (float)(g_ttHintDesc[i].width  > 0 ? g_ttHintDesc[i].width  : 60);
-            float bw = tw + CELL_HPAD * 2.f;
-            hintBadgeX[i] = bx;
-            hintBadgeW[i] = bw;
-            bx += bw + GAP_BD + dw + GAP_INTER;
-        }
-    }
-
-    D3D11_MAPPED_SUBRESOURCE ms = {};
-    if (SUCCEEDED(ctx->Map(g_vb, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) {
-        memcpy(ms.pData, verts, n * sizeof(Vtx11));
-        ctx->Unmap(g_vb, 0);
-    }
-    for (int i = 0; i < n; i += 4) ctx->Draw(4, i);
-
-    if (g_vsT && g_psT && g_ilT && g_vbT && g_samp) {
-        ctx->VSSetShader(g_vsT, nullptr, 0);
-        ctx->PSSetShader(g_psT, nullptr, 0);
-        ctx->IASetInputLayout(g_ilT);
-        ctx->PSSetSamplers(0, 1, &g_samp);
-
-        for (int i = 0; i < NUM_MENU_TABS; i++) {
-            if (!g_ttTab[i].srv) continue;
-            float tx = mx + 2.f + i * TAB_W;
-            float lx = tx + floorf((TAB_W - (float)g_ttTab[i].width) / 2.f);
-            float ly = my + 2.f + floorf((TAB_H - 2.f - (float)g_ttTab[i].height) / 2.f);
-            DrawTexQuad(ctx, lx, ly, (float)g_ttTab[i].width, (float)g_ttTab[i].height, vpW, vpH, g_ttTab[i].srv);
-        }
-
-        if (activeTab != g_menuLastActiveTab) {
-            for (int i = 0; i < MAX_MENU_ITEMS; i++) {
-                if (g_ttItems[i].tex) { g_ttItems[i].tex->Release(); g_ttItems[i].tex = nullptr; }
-                if (g_ttItems[i].srv) { g_ttItems[i].srv->Release(); g_ttItems[i].srv = nullptr; }
-                g_ttItems[i].width = g_ttItems[i].height = 0;
-                g_ttItems[i].content[0] = L'\0';
-            }
-        }
-        g_menuLastActiveTab = activeTab;
-
-        for (int i = (int)itemCount; i < MAX_MENU_ITEMS; i++) {
-            if (g_ttItems[i].tex) { g_ttItems[i].tex->Release(); g_ttItems[i].tex = nullptr; }
-            if (g_ttItems[i].srv) { g_ttItems[i].srv->Release(); g_ttItems[i].srv = nullptr; }
-            g_ttItems[i].width = g_ttItems[i].height = 0;
-            g_ttItems[i].content[0] = L'\0';
-        }
-
-        // Only create textures for the currently visible window — avoids a
-        // first-frame stutter when the list has hundreds of items.
-        LONG visEnd = (LONG)(scrollOffset + visibleRows + 1);
-        for (LONG i = scrollOffset; i < itemCount && i < visEnd; i++) {
-            if (!g_data) break;
-            wchar_t item[MAX_MENU_ITEM_LEN] = {};
-            wcsncpy_s(item, g_data->menu_items[i], MAX_MENU_ITEM_LEN - 1);
-            UpdateTextTex(dev, g_ttItems[i], item, 14, false, RGB(0xCC, 0xDD, 0xEE), (int)(adjListW - 20.f));
-        }
-
-        for (LONG i = scrollOffset; i < itemCount; i++) {
-            if (!g_ttItems[i].srv) continue;
-            float iy = adjListY + (float)(i - scrollOffset) * ITEM_H;
-            if (iy + ITEM_H > LIST_YMAX) break;
-            float ty = iy + floorf((ITEM_H - 2.f - (float)g_ttItems[i].height) / 2.f);
-            DrawTexQuad(ctx, LIST_X + 12.f, ty, (float)g_ttItems[i].width, (float)g_ttItems[i].height, vpW, vpH, g_ttItems[i].srv);
-        }
-
-        // Dedicated lower dashboard container (persistent across all tabs)
-        LONG dashCount = 0;
-        if (g_data) {
-            dashCount = InterlockedCompareExchange(&g_data->dashboard_item_count, 0, 0);
-            if (dashCount < 0) dashCount = 0;
-            if (dashCount > MAX_DASH_ITEMS) dashCount = MAX_DASH_ITEMS;
-        }
-        const float CREST_SIZE = 72.f;
-        const float CREST_PAD  = 10.f;
-        float dashTextX = DASH_X + (g_homeCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f);
-        float dashTextW = DASH_W
-                        - (g_homeCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f)
-                        - (g_awayCrestSRV ? CREST_SIZE + CREST_PAD * 2.f : 12.f);
-        if (dashTextW < 100.f) dashTextW = 100.f;
-        float y = DASH_Y + 10.f;
-        for (LONG i = 0; i < dashCount; i++) {
-            wchar_t line[MAX_MENU_ITEM_LEN] = {};
-            if (g_data)
-                wcsncpy_s(line, g_data->dashboard_items[i], MAX_MENU_ITEM_LEN - 1);
-            UpdateTextTex(dev, g_ttDash, line, 14, false,
-                          RGB(0xC6, 0xDA, 0xED), (int)dashTextW);
-            if (g_ttDash.srv) {
-                DrawTexQuad(ctx, dashTextX, y,
-                            (float)g_ttDash.width,
-                            (float)g_ttDash.height,
-                            vpW, vpH, g_ttDash.srv);
-                y += (float)g_ttDash.height + 3.f;
-            }
-        }
-        // --- Team crests ---
-        const float crestCy = DASH_Y + (DASH_H - CREST_SIZE) / 2.f;
-        if (g_homeCrestSRV)
-            DrawTexQuad(ctx, DASH_X + CREST_PAD, crestCy,
-                        CREST_SIZE, CREST_SIZE, vpW, vpH, g_homeCrestSRV);
-        if (g_awayCrestSRV)
-            DrawTexQuad(ctx, DASH_X + DASH_W - CREST_PAD - CREST_SIZE, crestCy,
-                        CREST_SIZE, CREST_SIZE, vpW, vpH, g_awayCrestSRV);
-
-        if (itemCount == 0) {
-            float emptyAreaW = showSplit ? listSideW : MW;
-            UpdateTextTex(dev, g_ttEmpty, L"No items available", 14, false, RGB(0x66, 0x88, 0xAA), 400);
-            if (g_ttEmpty.srv) {
-                float ex = mx + floorf((emptyAreaW - (float)g_ttEmpty.width) / 2.f);
-                float ey = CONT_Y + floorf((CONT_H - (float)g_ttEmpty.height) / 2.f);
-                DrawTexQuad(ctx, ex, ey, (float)g_ttEmpty.width, (float)g_ttEmpty.height, vpW, vpH, g_ttEmpty.srv);
-            }
-        }
-
-        // ── List header text (wizard step indicator above items) ─────────────────
-        if (showHeader) {
-            UpdateTextTex(dev, g_ttListHeader, listHeader, 13, false, RGB(0xFF, 0xCC, 0x55), (int)(adjListW - 16.f));
-            if (g_ttListHeader.srv) {
-                float ty = LIST_Y + floorf((HEADER_H - (float)g_ttListHeader.height) / 2.f);
-                DrawTexQuad(ctx, LIST_X + 8.f, ty,
-                            (float)g_ttListHeader.width, (float)g_ttListHeader.height,
-                            vpW, vpH, g_ttListHeader.srv);
-            }
-        }
-
-        // ── Menu preview image (stadiums tab: right panel) ────────────────────────
-        if (showSplit && g_menuPrevSRV && g_menuPrevNatW > 0 && g_menuPrevNatH > 0) {
-            float boxW = prevSideW - 16.f;
-            float boxH = prevSideH - 16.f;
-            if (boxW > 0.f && boxH > 0.f) {
-                float imgR = (float)g_menuPrevNatW / (float)g_menuPrevNatH;
-                float boxR = boxW / boxH;
-                float dw, dh;
-                if (imgR >= boxR) { dw = boxW; dh = boxW / imgR; }
-                else              { dh = boxH; dw = boxH * imgR; }
-                float ix = prevSideX + floorf((prevSideW - dw) / 2.f);
-                float iy = prevSideY + floorf((prevSideH - dh) / 2.f);
-                DrawTexQuad(ctx, ix, iy, dw, dh, vpW, vpH, g_menuPrevSRV);
-            }
-        }
-
-        // --- Keyboard hint bar textures --- (native 32x32 icons, no plate)
-        {
-            const float GAP_BD     = 5.f;
-            const float ICON_SIZE  = 32.f;
-            const float ICON_GAP   = 3.f;
-            for (int i = 0; i < NUM_KEY_HINT_ITEMS; i++) {
-                bool twoIcons = kKeyHints[i].icons[1] >= 0;
-                float tw = twoIcons ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-                float tly = KEY_HINT_Y + floorf((HINT_H - ICON_SIZE) / 2.f);
-                float ix = keyHintBadgeX[i] + floorf((keyHintBadgeW[i] - tw) / 2.f);
-                for (int k = 0; k < (twoIcons ? 2 : 1); k++) {
-                    int iconIdx = kKeyHints[i].icons[k];
-                    if (iconIdx >= 0 && g_keyIconSRV[iconIdx]) {
-                        DrawTexQuad(ctx, ix, tly, ICON_SIZE, ICON_SIZE, vpW, vpH, g_keyIconSRV[iconIdx]);
-                    }
-                    ix += ICON_SIZE + ICON_GAP;
-                }
-                if (g_ttKeyHintDesc[i].srv) {
-                    float dlx = keyHintBadgeX[i] + keyHintBadgeW[i] + GAP_BD;
-                    float dly = KEY_HINT_Y + floorf((HINT_H - (float)g_ttKeyHintDesc[i].height) / 2.f);
-                    DrawTexQuad(ctx, dlx, dly,
-                                (float)g_ttKeyHintDesc[i].width, (float)g_ttKeyHintDesc[i].height,
-                                vpW, vpH, g_ttKeyHintDesc[i].srv);
-                }
-            }
-        }
-
-        // --- Gamepad hint bar textures --- (native 32x32 icons, no plate)
-        {
-            const float GAP_BD     = 5.f;
-            const float ICON_SIZE  = 32.f;
-            const float ICON_GAP   = 3.f;
-            for (int i = 0; i < NUM_HINT_ITEMS; i++) {
-                bool twoIcons = kHints[i].icons[1] >= 0;
-                float tw = twoIcons ? (ICON_SIZE * 2.f + ICON_GAP) : ICON_SIZE;
-                float tly = HINT_Y + floorf((HINT_H - ICON_SIZE) / 2.f);
-                float ix = hintBadgeX[i] + floorf((hintBadgeW[i] - tw) / 2.f);
-                for (int k = 0; k < (twoIcons ? 2 : 1); k++) {
-                    int iconIdx = kHints[i].icons[k];
-                    if (iconIdx >= 0 && g_gpIconSRV[iconIdx]) {
-                        DrawTexQuad(ctx, ix, tly, ICON_SIZE, ICON_SIZE, vpW, vpH, g_gpIconSRV[iconIdx]);
-                    }
-                    ix += ICON_SIZE + ICON_GAP;
-                }
-                if (g_ttHintDesc[i].srv) {
-                    float dlx = hintBadgeX[i] + hintBadgeW[i] + GAP_BD;
-                    float dly = HINT_Y + floorf((HINT_H - (float)g_ttHintDesc[i].height) / 2.f);
-                    DrawTexQuad(ctx, dlx, dly,
-                                (float)g_ttHintDesc[i].width, (float)g_ttHintDesc[i].height,
-                                vpW, vpH, g_ttHintDesc[i].srv);
-                }
-            }
-        }
-    }
-
-    ctx->OMSetRenderTargets(8, oldRTV, oldDSV);
-    ctx->RSSetViewports(1, &oldVP);
-    ctx->OMSetBlendState(oldBS, oldBF, oldSM);
-    ctx->RSSetState(oldRS);
-    ctx->OMSetDepthStencilState(oldDSS, oldSRef);
-    ctx->VSSetShader(oldVS, nullptr, 0);
-    ctx->PSSetShader(oldPS, nullptr, 0);
-    ctx->IASetInputLayout(oldIL);
-    ctx->IASetVertexBuffers(0, 1, &oldVBuf, &oldVBStride, &oldVBOffset);
-    ctx->IASetPrimitiveTopology(oldTopo);
-    ctx->PSSetShaderResources(0, 1, &oldSRV);
-    ctx->PSSetSamplers(0, 1, &oldSamp);
-    for (auto *r : oldRTV) if (r) r->Release();
-    if (oldDSV) oldDSV->Release();
-    if (oldBS) oldBS->Release();
-    if (oldRS) oldRS->Release();
-    if (oldDSS) oldDSS->Release();
-    if (oldVS) oldVS->Release();
-    if (oldPS) oldPS->Release();
-    if (oldIL) oldIL->Release();
-    if (oldVBuf) oldVBuf->Release();
-    if (oldSRV) oldSRV->Release();
-    if (oldSamp) oldSamp->Release();
-    rtv->Release();
-}
-
-// ---------------------------------------------------------------------------
-// Toast notification — stacked compact panels, bottom-right, no image/progress
-// Slots with lower index = higher in the stack (oldest at top, newest at bottom)
-// ---------------------------------------------------------------------------
-static void DrawToast11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
-    // Collect visible slots in ascending index order
-    int  slots[MAX_TOASTS]; int slotCount = 0;
-    wchar_t titles[MAX_TOASTS][MAX_STR]={}, bodies[MAX_TOASTS][MAX_STR]={};
-    LONG   styles[MAX_TOASTS]={};
-    if (g_data) {
-        for (int i = 0; i < MAX_TOASTS; i++) {
-            if (InterlockedCompareExchange(&g_data->toasts[i].visible, 0, 0) == 0) continue;
-            slots[slotCount] = i;
-            wcsncpy_s(titles[slotCount], g_data->toasts[i].title, MAX_STR-1);
-            wcsncpy_s(bodies[slotCount], g_data->toasts[i].body,  MAX_STR-1);
-            styles[slotCount] = InterlockedCompareExchange(&g_data->toasts[i].style, 0, 0);
-            slotCount++;
-        }
-    }
-    if (slotCount == 0) return;
-
-    DXGI_SWAP_CHAIN_DESC scd={}; sc->GetDesc(&scd);
-    float vpW=(float)(scd.BufferDesc.Width?scd.BufferDesc.Width:1280);
-    float vpH=(float)(scd.BufferDesc.Height?scd.BufferDesc.Height:720);
-
-    ID3D11Texture2D *bb=nullptr;
-    if (FAILED(sc->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)&bb))) return;
-    ID3D11RenderTargetView *rtv=nullptr;
-    dev->CreateRenderTargetView(bb,nullptr,&rtv);
-    bb->Release();
-    if (!rtv) return;
-
-    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
-    if (!g_vs||!g_ps||!g_il||!g_vb) { rtv->Release(); return; }
-
-    // Update text textures for each visible slot
-    const int kTextMaxW = 320;
-    for (int v = 0; v < slotCount; v++) {
-        int s = slots[v];
-        UpdateTextTex(dev, g_ttToastTitle[s], titles[v], 16, true,  RGB(0xFF,0xFF,0xFF), kTextMaxW);
-        UpdateTextTex(dev, g_ttToastBody[s],  bodies[v], 13, false, RGB(0x99,0xBB,0xDD), kTextMaxW);
-    }
-
-    // Save D3D state
-    ID3D11RenderTargetView *oldRTV[8]={}; ID3D11DepthStencilView *oldDSV=nullptr;
-    ctx->OMGetRenderTargets(8,oldRTV,&oldDSV);
-    D3D11_VIEWPORT oldVP={}; UINT nVP=1; ctx->RSGetViewports(&nVP,&oldVP);
-    ID3D11BlendState *oldBS=nullptr; float oldBF[4]={}; UINT oldSM=0;
-    ctx->OMGetBlendState(&oldBS,oldBF,&oldSM);
-    ID3D11RasterizerState *oldRS=nullptr; ctx->RSGetState(&oldRS);
-    ID3D11DepthStencilState *oldDSS=nullptr; UINT oldSRef=0;
-    ctx->OMGetDepthStencilState(&oldDSS,&oldSRef);
-    ID3D11VertexShader *oldVS=nullptr; ctx->VSGetShader(&oldVS,nullptr,nullptr);
-    ID3D11PixelShader  *oldPS=nullptr; ctx->PSGetShader(&oldPS,nullptr,nullptr);
-    ID3D11InputLayout  *oldIL=nullptr; ctx->IAGetInputLayout(&oldIL);
-    D3D11_PRIMITIVE_TOPOLOGY oldTopo; ctx->IAGetPrimitiveTopology(&oldTopo);
-    ID3D11ShaderResourceView *oldSRV=nullptr; ctx->PSGetShaderResources(0,1,&oldSRV);
-    ID3D11SamplerState *oldSamp=nullptr; ctx->PSGetSamplers(0,1,&oldSamp);
-    ID3D11Buffer *oldVBuf=nullptr; UINT oldVBStride=0, oldVBOffset=0;
-    ctx->IAGetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
-
-    ctx->OMSetRenderTargets(1,&rtv,nullptr);
-    D3D11_VIEWPORT vp={0,0,vpW,vpH,0,1}; ctx->RSSetViewports(1,&vp);
-    ctx->OMSetBlendState(g_bs,nullptr,0xFFFFFFFF);
-    ctx->RSSetState(g_rs);
-    ctx->OMSetDepthStencilState(g_dss,0);
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
-    // Panel dimensions and margin
-    const float PW=360.f, PH=80.f, M=20.f, GAP=8.f;
-    const float PX = vpW - PW - M;  // fixed X for all panels
-
-    ctx->VSSetShader(g_vs,nullptr,0);
-    ctx->PSSetShader(g_ps,nullptr,0);
-    ctx->IASetInputLayout(g_il);
-    UINT stride=sizeof(Vtx11),offset=0;
-    ctx->IASetVertexBuffers(0,1,&g_vb,&stride,&offset);
-
-    // Colored quads pass — all panels, stacked downward from top-right
-    // If the stadium loading overlay is active, start below it to avoid overlap
-    const float kStadOverlayH = 140.f;  // DrawOverlay11 PH
-    bool stadVisible = (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0);
-    float topY = stadVisible ? (M + kStadOverlayH + GAP) : M;
-
-    Vtx11 verts[5 * 4 * MAX_TOASTS]; int n=0;
-    auto R=[&](float x,float y,float w,float h,DWORD col){
-        PushQuad(verts,n,x,y,w,h,vpW,vpH,col);
-    };
-
-    float drawY = topY;
-    for (int v = 0; v < slotCount; v++) {
-        float py = drawY;
-        DWORD accent = (styles[v] == 1) ? 0xFFFFAA00 : 0xFF3399FF;  // amber if warning, blue if info
-        R(PX,        py,       PW,   2.f,    accent);      // top accent bar
-        R(PX,        py+2.f,   PW,   PH-2.f, 0xEE101828);  // background
-        R(PX,        py+2.f,   4.f,  PH-2.f, accent);      // left accent strip
-        R(PX,        py+PH-1.f,PW,   1.f,    accent);      // bottom border
-        R(PX+PW-1.f, py,       1.f,  PH,     accent);      // right border
-        drawY += (PH + GAP);
-    }
-
-    D3D11_MAPPED_SUBRESOURCE ms={};
-    if (SUCCEEDED(ctx->Map(g_vb,0,D3D11_MAP_WRITE_DISCARD,0,&ms))){
-        memcpy(ms.pData,verts,n*sizeof(Vtx11)); ctx->Unmap(g_vb,0);
-    }
-    for(int i=0;i<n;i+=4) ctx->Draw(4,i);
-
-    // Text quads pass
-    if (g_vsT && g_psT && g_ilT && g_vbT && g_samp) {
-        ctx->VSSetShader(g_vsT,nullptr,0);
-        ctx->PSSetShader(g_psT,nullptr,0);
-        ctx->IASetInputLayout(g_ilT);
-        ctx->PSSetSamplers(0,1,&g_samp);
-
-        float drawY2 = topY;
-        for (int v = 0; v < slotCount; v++) {
-            int s = slots[v];
-            float py = drawY2;
-            float TX = PX + 14.f;
-            if (g_ttToastTitle[s].srv)
-                DrawTexQuad(ctx, TX, py+14.f, (float)g_ttToastTitle[s].width, (float)g_ttToastTitle[s].height, vpW, vpH, g_ttToastTitle[s].srv);
-            if (g_ttToastBody[s].srv && bodies[v][0])
-                DrawTexQuad(ctx, TX, py+42.f, (float)g_ttToastBody[s].width, (float)g_ttToastBody[s].height, vpW, vpH, g_ttToastBody[s].srv);
-            drawY2 += (PH + GAP);
-        }
-    }
-
-    // Restore D3D state
-    ctx->OMSetRenderTargets(8,oldRTV,oldDSV);
-    ctx->RSSetViewports(1,&oldVP);
-    ctx->OMSetBlendState(oldBS,oldBF,oldSM);
-    ctx->RSSetState(oldRS);
-    ctx->OMSetDepthStencilState(oldDSS,oldSRef);
-    ctx->VSSetShader(oldVS,nullptr,0);
-    ctx->PSSetShader(oldPS,nullptr,0);
-    ctx->IASetInputLayout(oldIL);
-    ctx->IASetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
-    ctx->IASetPrimitiveTopology(oldTopo);
-    ctx->PSSetShaderResources(0,1,&oldSRV);
-    ctx->PSSetSamplers(0,1,&oldSamp);
-    for(auto *r:oldRTV) if(r) r->Release();
-    if(oldDSV)  oldDSV->Release();
-    if(oldBS)   oldBS->Release();
-    if(oldRS)   oldRS->Release();
-    if(oldDSS)  oldDSS->Release();
-    if(oldVS)   oldVS->Release();
-    if(oldPS)   oldPS->Release();
-    if(oldIL)   oldIL->Release();
-    if(oldVBuf) oldVBuf->Release();
-    if(oldSRV)  oldSRV->Release();
-    if(oldSamp) oldSamp->Release();
-    rtv->Release();
-}
-
-static void DrawOverlay11(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
-    wchar_t stadium[MAX_STR]={}, detail[MAX_STR]={}, imgPath[MAX_IMG]={}, panelTitle[MAX_STR]={};
-    float pct=0.f;
-    if (g_data) {
-        wcsncpy_s(stadium, g_data->stadium_name, MAX_STR-1);
-        wcsncpy_s(detail,  g_data->detail_text,  MAX_STR-1);
-        wcsncpy_s(imgPath, g_data->image_path,   MAX_IMG-1);
-        wcsncpy_s(panelTitle, g_data->panel_title, MAX_STR-1);
-        pct = (float)InterlockedCompareExchange(&g_data->progress_x100,0,0)/100.f;
-    }
-
-    DXGI_SWAP_CHAIN_DESC scd={}; sc->GetDesc(&scd);
-    float vpW=(float)(scd.BufferDesc.Width?scd.BufferDesc.Width:1280);
-    float vpH=(float)(scd.BufferDesc.Height?scd.BufferDesc.Height:720);
-
-    ID3D11Texture2D *bb=nullptr;
-    if (FAILED(sc->GetBuffer(0,__uuidof(ID3D11Texture2D),(void**)&bb))) return;
-    ID3D11RenderTargetView *rtv=nullptr;
-    dev->CreateRenderTargetView(bb,nullptr,&rtv);
-    bb->Release();
-    if (!rtv) return;
-
-    // ── Init D3D resources once ────────────────────────────────────────────
-    if (!g_d3dInitDone) g_d3dInitDone = InitD3D11Overlay(dev);
-    if (!g_vs||!g_ps||!g_il||!g_vb) { rtv->Release(); return; }
-
-    // ── Init COM once (for WIC) on this thread ─────────────────────────────
-    static bool s_comInit = false;
-    if (!s_comInit) {
-        s_comInit = true;
-        HRESULT cohr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-        Log("[DrawOverlay] CoInitializeEx hr=0x%08X", (unsigned)cohr);
-        // S_OK = initialized, S_FALSE = already init MTA, RPC_E_CHANGED_MODE = STA
-        // All outcomes leave COM usable on this thread.
-    }
-
-    // ── Update text textures (GDI) ─────────────────────────────────────────
-    // Panel constants: PW=460, M=20.  Text column starts at px+136 (after image area).
-    // maxPixW for text = PW - 136 - 12 = 312 px
-    const int kTextMaxW = 312;
-    UpdateTextTex(dev, g_ttTitle,  panelTitle[0] ? panelTitle : L"Loading Stadium", 17, false, RGB(0x33,0x99,0xFF), kTextMaxW);
-    UpdateTextTex(dev, g_ttName,   stadium,             16, true,  RGB(0xFF,0xFF,0xFF), kTextMaxW);
-    UpdateTextTex(dev, g_ttDetail, detail,              13, false, RGB(0x99,0xBB,0xDD), kTextMaxW);
-
-    // ── Update preview image (WIC) ─────────────────────────────────────────
-    if (wcscmp(imgPath, g_previewLoadedPath) != 0) {
-        wcscpy_s(g_previewLoadedPath, imgPath);
-        if (imgPath[0] != L'\0') {
-            LoadWICTexture(dev, imgPath, &g_previewTex, &g_previewSRV, &g_previewNatW, &g_previewNatH);
-        } else {
-            if (g_previewTex) { g_previewTex->Release(); g_previewTex = nullptr; }
-            if (g_previewSRV) { g_previewSRV->Release(); g_previewSRV = nullptr; }
-            g_previewNatW = g_previewNatH = 0;
-        }
-    }
-
-    // ── Save D3D state ─────────────────────────────────────────────────────
-    ID3D11RenderTargetView *oldRTV[8]={}; ID3D11DepthStencilView *oldDSV=nullptr;
-    ctx->OMGetRenderTargets(8,oldRTV,&oldDSV);
-    D3D11_VIEWPORT oldVP={}; UINT nVP=1; ctx->RSGetViewports(&nVP,&oldVP);
-    ID3D11BlendState *oldBS=nullptr; float oldBF[4]={}; UINT oldSM=0;
-    ctx->OMGetBlendState(&oldBS,oldBF,&oldSM);
-    ID3D11RasterizerState *oldRS=nullptr; ctx->RSGetState(&oldRS);
-    ID3D11DepthStencilState *oldDSS=nullptr; UINT oldSRef=0;
-    ctx->OMGetDepthStencilState(&oldDSS,&oldSRef);
-    ID3D11VertexShader *oldVS=nullptr; ctx->VSGetShader(&oldVS,nullptr,nullptr);
-    ID3D11PixelShader  *oldPS=nullptr; ctx->PSGetShader(&oldPS,nullptr,nullptr);
-    ID3D11InputLayout  *oldIL=nullptr; ctx->IAGetInputLayout(&oldIL);
-    D3D11_PRIMITIVE_TOPOLOGY oldTopo; ctx->IAGetPrimitiveTopology(&oldTopo);
-    ID3D11ShaderResourceView *oldSRV=nullptr; ctx->PSGetShaderResources(0,1,&oldSRV);
-    ID3D11SamplerState *oldSamp=nullptr; ctx->PSGetSamplers(0,1,&oldSamp);
-    ID3D11Buffer *oldVBuf=nullptr; UINT oldVBStride=0, oldVBOffset=0;
-    ctx->IAGetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
-
-    // ── Set overlay state (shared by both colored and textured draws) ───────
-    ctx->OMSetRenderTargets(1,&rtv,nullptr);
-    D3D11_VIEWPORT vp={0,0,vpW,vpH,0,1}; ctx->RSSetViewports(1,&vp);
-    ctx->OMSetBlendState(g_bs,nullptr,0xFFFFFFFF);
-    ctx->RSSetState(g_rs);
-    ctx->OMSetDepthStencilState(g_dss,0);
-    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-
-    // ── Layout constants ────────────────────────────────────────────────────
-    // Panel: 460 x 140, top-right margin 20 px
-    const float PW=460.f, PH=140.f, M=20.f;
-    const float px=vpW-PW-M, py=M;
-    // Image box: 110 x 88 at (px+12, py+16)
-    const float IX=px+12.f, IY=py+16.f, IW=110.f, IH=88.f;
-    // Text column start
-    const float TX=px+136.f;
-
-    // ── Colored quads pass ─────────────────────────────────────────────────
-    ctx->VSSetShader(g_vs,nullptr,0);
-    ctx->PSSetShader(g_ps,nullptr,0);
-    ctx->IASetInputLayout(g_il);
-    UINT stride=sizeof(Vtx11),offset=0;
-    ctx->IASetVertexBuffers(0,1,&g_vb,&stride,&offset);
-
-    Vtx11 verts[128]; int n=0;
-    auto R=[&](float x,float y,float w,float h,DWORD col){
-        PushQuad(verts,n,x,y,w,h,vpW,vpH,col);
-    };
-    // Panel background + borders
-    R(px,   py,      PW,  3.f,   0xFF3399FF);  // top accent bar
-    R(px,   py+3.f,  PW,  PH-3.f,0xEE101828); // background
-    R(px,   py+PH-1.f,PW, 1.f,   0xFF3399FF);  // bottom border
-    R(px,   py,      1.f, PH,    0xFF3399FF);  // left border
-    R(px+PW-1.f,py,  1.f, PH,    0xFF3399FF);  // right border
-    // Image placeholder area (dark inset, shown when no image or while loading)
-    R(IX,   IY,      IW,  IH,    0xFF0C1420);  // dark background for image
-    // Progress track + fill
-    float tx2=TX, ty2=py+PH-22.f, tw2=PW-136.f-12.f, th2=10.f;
-    R(tx2,ty2,tw2,th2,0xFF222C3C);
-    float f=(std::max)(0.f,(std::min)(1.f,pct/100.f));
-    if (f>0.f) R(tx2,ty2,tw2*f,th2,0xFF3399FF);
-
-    D3D11_MAPPED_SUBRESOURCE ms={};
-    if (SUCCEEDED(ctx->Map(g_vb,0,D3D11_MAP_WRITE_DISCARD,0,&ms))){
-        memcpy(ms.pData,verts,n*sizeof(Vtx11)); ctx->Unmap(g_vb,0);
-    }
-    for(int i=0;i<n;i+=4) ctx->Draw(4,i);
-
-    // ── Textured quads pass (text + image) ─────────────────────────────────
-    if (g_vsT && g_psT && g_ilT && g_vbT && g_samp) {
-        ctx->VSSetShader(g_vsT,nullptr,0);
-        ctx->PSSetShader(g_psT,nullptr,0);
-        ctx->IASetInputLayout(g_ilT);
-        ctx->PSSetSamplers(0,1,&g_samp);
-
-        // Stadium preview image (aspect-corrected within IW x IH)
-        if (g_previewSRV && g_previewNatW > 0 && g_previewNatH > 0) {
-            float imgR = (float)g_previewNatW / (float)g_previewNatH;
-            float boxR = IW / IH;
-            float dw, dh;
-            if (imgR >= boxR) { dw=IW; dh=IW/imgR; }
-            else              { dh=IH; dw=IH*imgR;  }
-            DrawTexQuad(ctx, IX+(IW-dw)/2.f, IY+(IH-dh)/2.f, dw, dh, vpW, vpH, g_previewSRV);
-        }
-
-        // Title ("Loading Stadium" unless overridden by panel_title)
-        if (g_ttTitle.srv)
-            DrawTexQuad(ctx, TX, py+14.f, (float)g_ttTitle.width, (float)g_ttTitle.height, vpW, vpH, g_ttTitle.srv);
-        // Stadium name
-        if (g_ttName.srv && stadium[0])
-            DrawTexQuad(ctx, TX, py+36.f, (float)g_ttName.width, (float)g_ttName.height, vpW, vpH, g_ttName.srv);
-        // Detail text
-        if (g_ttDetail.srv && detail[0])
-            DrawTexQuad(ctx, TX, py+58.f, (float)g_ttDetail.width, (float)g_ttDetail.height, vpW, vpH, g_ttDetail.srv);
-    }
-
-    // ── Restore D3D state ──────────────────────────────────────────────────
-    ctx->OMSetRenderTargets(8,oldRTV,oldDSV);
-    ctx->RSSetViewports(1,&oldVP);
-    ctx->OMSetBlendState(oldBS,oldBF,oldSM);
-    ctx->RSSetState(oldRS);
-    ctx->OMSetDepthStencilState(oldDSS,oldSRef);
-    ctx->VSSetShader(oldVS,nullptr,0);
-    ctx->PSSetShader(oldPS,nullptr,0);
-    ctx->IASetInputLayout(oldIL);
-    ctx->IASetVertexBuffers(0,1,&oldVBuf,&oldVBStride,&oldVBOffset);
-    ctx->IASetPrimitiveTopology(oldTopo);
-    ctx->PSSetShaderResources(0,1,&oldSRV);
-    ctx->PSSetSamplers(0,1,&oldSamp);
-    for(auto *r:oldRTV) if(r) r->Release();
-    if(oldDSV)  oldDSV->Release();
-    if(oldBS)   oldBS->Release();
-    if(oldRS)   oldRS->Release();
-    if(oldDSS)  oldDSS->Release();
-    if(oldVS)   oldVS->Release();
-    if(oldPS)   oldPS->Release();
-    if(oldIL)   oldIL->Release();
-    if(oldVBuf) oldVBuf->Release();
-    if(oldSRV)  oldSRV->Release();
-    if(oldSamp) oldSamp->Release();
-    rtv->Release();
-}
 
 // ---------------------------------------------------------------------------
 // XInput suppression — forward declarations (defined after HookThread helpers)
@@ -1640,39 +473,18 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
     EnterCriticalSection(&g_drawCs);
     HRESULT presentResult = S_OK;
     __try {
-        // Draw order: menu → stadium loading → toasts (toasts always on top)
-        if (g_data && InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0) {
-            ID3D11Device *dev = nullptr;
-            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
-                ID3D11DeviceContext *ctx = nullptr;
-                dev->GetImmediateContext(&ctx);
-                DrawMenuOverlay11(sc, dev, ctx);
-                ctx->Release(); dev->Release();
-            }
-        }
-        if (g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0) {
-            ID3D11Device *dev = nullptr;
-            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
-                ID3D11DeviceContext *ctx = nullptr;
-                dev->GetImmediateContext(&ctx);
-                DrawOverlay11(sc, dev, ctx);
-                ctx->Release(); dev->Release();
-            }
-        }
+        // Menu, stadium-loading panel, and toasts are all RmlUi-rendered now
+        // (DrawMenuOverlay11 — the last hand-rolled D3D11 screen — was
+        // deleted at Phase 2 cutover; see CLAUDE.md's migration notes). One
+        // call drives all three, since they share a single Rml::Context; it
+        // no-ops immediately if none is currently visible.
         {
-            bool anyToast = false;
-            if (g_data) {
-                for (int _ti = 0; _ti < MAX_TOASTS && !anyToast; _ti++)
-                    anyToast = (InterlockedCompareExchange(&g_data->toasts[_ti].visible, 0, 0) != 0);
-            }
-            if (anyToast) {
-                ID3D11Device *dev = nullptr;
-                if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
-                    ID3D11DeviceContext *ctx = nullptr;
-                    dev->GetImmediateContext(&ctx);
-                    DrawToast11(sc, dev, ctx);
-                    ctx->Release(); dev->Release();
-                }
+            ID3D11Device *dev = nullptr;
+            if (SUCCEEDED(sc->GetDevice(__uuidof(ID3D11Device), (void**)&dev))) {
+                ID3D11DeviceContext *ctx = nullptr;
+                dev->GetImmediateContext(&ctx);
+                RmlOverlay_RenderFrame(sc, dev, ctx);
+                ctx->Release(); dev->Release();
             }
         }
         // Call original Present inside the SEH guard so any AV in the

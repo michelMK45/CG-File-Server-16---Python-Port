@@ -112,7 +112,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_enter_down = False
         self._overlay_mouse_left_down = False
         self._overlay_mouse_wheel_steps = 0
-        self._overlay_mouse_click_pending = False
+        # Physical left-button state as captured by the WH_MOUSE_LL hook —
+        # see _sync_rmlui_menu_mouse_feed for why this is preferred over
+        # GetAsyncKeyState(VK_LBUTTON) polling while the menu is open.
+        self._overlay_mouse_left_hook_down = False
         self._kit_home_prev_down = False
         self._kit_home_next_down = False
         self._kit_away_prev_down = False
@@ -123,8 +126,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._kit_cycle_task_running = False
         self._kit_hotkey_hide_job = None
         self._kit_hotkey_shown_at = 0.0
-        self._overlay_mouse_screen_x = None
-        self._overlay_mouse_screen_y = None
+        # Last-seen menu_event_seq, so _handle_rmlui_menu_event only reacts to
+        # a NEW click/scroll event rather than replaying the same one every
+        # 80ms tick (see cgfs16_rmlui_menu.cpp's MenuEventListener).
+        self._rmlui_menu_event_last_seq = 0
         self._overlay_dblclick_last_time = 0.0
         self._overlay_dblclick_last_index = -1
         self._overlay_blocked_key_down = set()
@@ -680,5 +685,16 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
 
 
 def main() -> None:
+    # Per-monitor DPI awareness: without this, GetCursorPos()/ScreenToClient()
+    # (used to feed mouse input to the RmlUi menu, e.g.
+    # app_overlay.py's _sync_rmlui_menu_mouse_feed) return coordinates in this
+    # process's own virtualized 96-DPI space rather than real screen pixels
+    # whenever Windows display scaling isn't 100% — silently breaking mouse
+    # hit-testing against FIFA's real (unscaled) window/backbuffer
+    # coordinates without raising any error.
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
+    except Exception:
+        pass
     app = Server16App()
     app.mainloop()

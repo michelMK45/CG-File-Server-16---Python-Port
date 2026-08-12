@@ -15,7 +15,7 @@ from .win32_types import (
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, HWND_TOPMOST,
     SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
     VK_F12, VK_ESCAPE, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
-    VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_MENU, VK_RETURN,
+    VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_MENU, VK_RETURN, VK_LBUTTON,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11,
     KEYEVENTF_KEYUP,
     WH_MOUSE_LL, WH_KEYBOARD_LL, HC_ACTION,
@@ -26,9 +26,6 @@ from .win32_types import (
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_SUCCESS,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
-    _D3D_MENU_RATIO_W, _D3D_MENU_RATIO_H, _D3D_MENU_MIN_W, _D3D_MENU_MIN_H,
-    _D3D_MENU_VIEW_MARGIN, _D3D_MENU_TAB_H, _D3D_MENU_DASH_MIN_H,
-    _D3D_MENU_DASH_MAX_H, _D3D_MENU_ITEM_H, _D3D_MENU_HINT_ZONE,
 )
 from .file_tools import discover_stadium_names, kit_ui_placeholder_path
 from .kit_mixer import KIT_TYPES
@@ -84,8 +81,9 @@ class OverlayMixin:
         overlay_hwnd = 0
         overlay_vw = 0
         overlay_vh = 0
+        overlay_visible_rows = 0
         try:
-            overlay_hwnd, overlay_vw, overlay_vh = inj.get_menu_metrics()
+            overlay_hwnd, overlay_vw, overlay_vh, overlay_visible_rows = inj.get_menu_metrics()
         except Exception:
             overlay_hwnd = 0
         fifa_fg = (foreground == self._fifa_hwnd and self._fifa_hwnd != 0)
@@ -95,8 +93,18 @@ class OverlayMixin:
         if not self._d3d_menu_visible:
             self._overlay_blocked_key_down.clear()
 
-        if overlay_vw > 0 and overlay_vh > 0:
-            self._overlay_visible_rows = self._compute_overlay_visible_rows(float(overlay_vw), float(overlay_vh))
+        if overlay_visible_rows > 0:
+            # Authoritative: cgfs16_rmlui_menu.cpp's own RCSS-derived layout
+            # (RmlMenu_Sync), kept fresh whenever the menu is open — the only
+            # source now that DrawMenuOverlay11 and its Python-side layout
+            # mirror (_compute_d3d_menu_layout) are gone. Falls through
+            # (keeps the last known value) for the one frame-or-two before
+            # RmlMenu_Sync has run yet this session.
+            self._overlay_visible_rows = overlay_visible_rows
+
+        if self._d3d_menu_visible:
+            self._sync_rmlui_menu_mouse_feed(inj, overlay_hwnd)
+            self._handle_rmlui_menu_event(inj)
 
         f12_down = self._is_overlay_key_down(VK_F12, menu_input_fg)
         key_up_down = self._is_overlay_key_down(VK_UP, menu_input_fg)
@@ -313,7 +321,6 @@ class OverlayMixin:
         self._overlay_enter_down = key_enter_down
         self._overlay_gp_prev_buttons = gamepad_buttons
 
-        self._sync_d3d_menu_mouse_input(menu_input_fg)
         if self._d3d_menu_visible and menu_input_fg:
             self._best_effort_neutralize_game_keys()
 
@@ -558,65 +565,6 @@ class OverlayMixin:
             inj.set_window_info(total, base)
         except Exception:
             pass
-
-    def _compute_d3d_menu_layout(self, vp_w: float, vp_h: float) -> dict[str, float]:
-        margin = _D3D_MENU_VIEW_MARGIN
-        avail_w = max(320.0, vp_w - (2.0 * margin))
-        avail_h = max(240.0, vp_h - (2.0 * margin))
-        menu_w = min(avail_w, max(_D3D_MENU_MIN_W, float(int(vp_w * _D3D_MENU_RATIO_W))))
-        menu_h = min(avail_h, max(_D3D_MENU_MIN_H, float(int(vp_h * _D3D_MENU_RATIO_H))))
-        tab_h = _D3D_MENU_TAB_H
-        dash_h = max(_D3D_MENU_DASH_MIN_H, min(_D3D_MENU_DASH_MAX_H, float(int(menu_h * 0.28))))
-        menu_x = float(int((vp_w - menu_w) // 2))
-        menu_y = float(int((vp_h - menu_h) // 2))
-        content_y = menu_y + tab_h
-        list_x = menu_x + 4.0
-        list_y = content_y + 4.0
-        scroll_w = 12.0
-        scroll_gap = 6.0
-        base_content_w = menu_w - 8.0
-        list_ymax = menu_y + menu_h - dash_h - _D3D_MENU_HINT_ZONE - 14.0
-        tab_w = float(int(menu_w // max(1, len(self._overlay_tab_names))))
-
-        # index 1 = stadiums, index 4 = kits — both show list + preview image
-        # side-by-side. Must stay in sync with cgfs16_overlay.cpp's own
-        # showSplit check in DrawMenuOverlay11 (Python only computes layout
-        # geometry here; the DLL independently decides the same thing for
-        # its own draw call, see CLAUDE.md's shared-memory IPC section).
-        show_split = self._overlay_tab_index in (1, 4)
-        header_h = 30.0
-        show_header = bool(self._overlay_list_header)
-        if show_split:
-            list_side_w = float(int(base_content_w * 0.60))
-            adj_list_w = list_side_w - scroll_w - scroll_gap
-        else:
-            adj_list_w = base_content_w - scroll_w - scroll_gap
-        adj_list_y = list_y + (header_h + 4.0 if show_header else 0.0)
-        adj_scroll_x = list_x + adj_list_w + scroll_gap
-
-        return {
-            "menu_x": menu_x,
-            "menu_y": menu_y,
-            "menu_w": menu_w,
-            "menu_h": menu_h,
-            "tab_h": tab_h,
-            "tab_w": tab_w,
-            "dash_h": dash_h,
-            "list_x": list_x,
-            "list_y": adj_list_y,
-            "list_w": adj_list_w,
-            "list_ymax": list_ymax,
-            "scroll_x": adj_scroll_x,
-            "scroll_y": adj_list_y,
-            "scroll_w": scroll_w,
-            "scroll_h": max(1.0, list_ymax - adj_list_y),
-            "item_h": _D3D_MENU_ITEM_H,
-        }
-
-    def _compute_overlay_visible_rows(self, viewport_w: float, viewport_h: float) -> int:
-        layout = self._compute_d3d_menu_layout(viewport_w, viewport_h)
-        usable = max(1.0, layout["list_ymax"] - layout["list_y"])
-        return max(1, int(usable // layout["item_h"]))
 
     def _get_scope_options_for_tab(self, tab_name: str) -> list[tuple[str, str]]:
         """Return [(display_label, scope_code)] for all valid scopes of the tab."""
@@ -1111,123 +1059,99 @@ class OverlayMixin:
         self._refresh_d3d_window()
         self._update_d3d_preview_image()
 
-    def _sync_d3d_menu_mouse_input(self, menu_input_fg: bool) -> None:
-        left_edge = self._overlay_mouse_click_pending
-        self._overlay_mouse_click_pending = False
+    def _sync_rmlui_menu_mouse_feed(self, inj, overlay_hwnd: int) -> None:
+        """Live mouse feed into the RmlUi menu's Rml::Context — only called
+        while self._d3d_menu_visible is True (see the call site in
+        _sync_d3d_menu_input). Position: plain GetCursorPos on this same
+        ~80ms tick, converted to window-coordinate space (0,0 = top-left
+        client area) against self._fifa_hwnd (preferred over overlay_hwnd,
+        the DLL-reported swapchain output window/reserved2 — confirmed via
+        live testing that the DLL-reported window gives wrong coordinates,
+        for reasons not yet root-caused; self._fifa_hwnd is the
+        cross-checked-working one).
 
-        if not self._d3d_menu_visible:
-            return
-
-        input_hwnd = int(self._fifa_hwnd)
-        vp_w = 0
-        vp_h = 0
-        inj = self._d3d_injector
-        if inj is not None:
-            try:
-                overlay_hwnd, overlay_vw, overlay_vh = inj.get_menu_metrics()
-                if overlay_hwnd:
-                    input_hwnd = int(overlay_hwnd)
-                if overlay_vw > 0 and overlay_vh > 0:
-                    vp_w = int(overlay_vw)
-                    vp_h = int(overlay_vh)
-            except Exception:
-                pass
-
+        Left-button state: read from self._overlay_mouse_left_hook_down
+        (captured by the WH_MOUSE_LL hook, _mouse_hook_thread_func) rather
+        than polling GetAsyncKeyState(VK_LBUTTON) directly, whenever that
+        hook is installed — mirrors _is_overlay_key_down's exact same
+        hook-vs-poll split for keyboard. Confirmed via live testing
+        (2026-08) that GetAsyncKeyState-based polling for the mouse button
+        never observed a "down" state at all while the menu was open and
+        FIFA had focus (zero ButtonDown log lines despite repeated clicks),
+        while GetAsyncKeyState-based *keyboard* polling already had to be
+        bypassed the same way for the same apparent reason — FIFA's
+        exclusive-fullscreen input handling appears to prevent other
+        processes' GetAsyncKeyState polls from seeing button/key state
+        reliably while it holds focus, but low-level hooks (which intercept
+        below that) still see every real transition.
+        cgfs16_rmlui_menu.cpp does its own down/up edge detection against the
+        raw state written here."""
+        input_hwnd = int(self._fifa_hwnd or 0) or int(overlay_hwnd)
         if not input_hwnd:
             return
-
-        client_rect = RECT()
         cursor = POINT()
-        if not self.user32.GetClientRect(input_hwnd, ctypes.byref(client_rect)):
-            return
-
-        if self._overlay_mouse_screen_x is not None and self._overlay_mouse_screen_y is not None:
-            cursor.x = int(self._overlay_mouse_screen_x)
-            cursor.y = int(self._overlay_mouse_screen_y)
-        elif not self.user32.GetCursorPos(ctypes.byref(cursor)):
+        if not self.user32.GetCursorPos(ctypes.byref(cursor)):
             return
         if not self.user32.ScreenToClient(input_hwnd, ctypes.byref(cursor)):
             return
+        if self._mouse_hook is not None:
+            left_down = self._overlay_mouse_left_hook_down
+        else:
+            left_down = bool(self.user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        try:
+            inj.set_rmlui_menu_mouse(int(cursor.x), int(cursor.y), left_down)
+        except Exception:
+            pass
 
-        if vp_w <= 0:
-            vp_w = max(1, int(client_rect.right - client_rect.left))
-        if vp_h <= 0:
-            vp_h = max(1, int(client_rect.bottom - client_rect.top))
-        self._overlay_visible_rows = self._compute_overlay_visible_rows(float(vp_w), float(vp_h))
-        local_x = float(cursor.x)
-        local_y = float(cursor.y)
-        if local_x < 0 or local_y < 0 or local_x >= vp_w or local_y >= vp_h:
+    def _handle_rmlui_menu_event(self, inj) -> None:
+        """Poll the DLL's menu_event_* "last event wins" click/scroll slot
+        (written by cgfs16_rmlui_menu.cpp's MenuEventListener) once per
+        ~80ms tick and replay it through the same tab/selection/activation
+        helpers keyboard/gamepad navigation uses — only called while
+        self._d3d_menu_visible is True (see the call site in
+        _sync_d3d_menu_input). item_click double-click detection uses the
+        same _overlay_dblclick_last_index/_overlay_dblclick_last_time state
+        (and 0.5s window) as the rest of this class's input handling: C++
+        never distinguishes click vs. double-click itself (RmlUi fires
+        Dblclick on the second mouse-down but Click on the following
+        mouse-up — see the migration plan's notes on
+        Context::ProcessMouseButtonDown/Up), it just reports every raw click
+        as item_click and lets this Python logic decide select-vs-activate."""
+        try:
+            seq, kind, index = inj.get_menu_event()
+        except Exception:
             return
-
-        layout = self._compute_d3d_menu_layout(float(vp_w), float(vp_h))
-        menu_x = layout["menu_x"]
-        menu_y = layout["menu_y"]
-        tab_h = layout["tab_h"]
-        tab_w = layout["tab_w"]
-        list_x = layout["list_x"]
-        list_y = layout["list_y"]
-        list_w = layout["list_w"]
-        list_ymax = layout["list_ymax"]
-        scroll_x = layout["scroll_x"]
-        scroll_y = layout["scroll_y"]
-        scroll_w = layout["scroll_w"]
-        scroll_h = layout["scroll_h"]
-        item_h = layout["item_h"]
-
-        tab_strip_x = menu_x + 2.0
-        tab_strip_y = menu_y + 2.0
-        tab_strip_h = tab_h - 2.0
-        if left_edge and tab_strip_x <= local_x < (tab_strip_x + tab_w * len(self._overlay_tab_names)) and tab_strip_y <= local_y < (tab_strip_y + tab_strip_h):
-            tab_index = int((local_x - tab_strip_x) // tab_w)
-            if 0 <= tab_index < len(self._overlay_tab_names):
-                self._set_overlay_tab(tab_index, "mouse")
-                return
-
-        if left_edge and list_x <= local_x < (list_x + list_w) and list_y <= local_y < list_ymax and self._overlay_item_count > 0:
-            row = int((local_y - list_y) // item_h)
-            item_index = self._overlay_scroll_offset + row
-            if 0 <= item_index < self._overlay_item_count:
+        if seq == self._rmlui_menu_event_last_seq:
+            return
+        self._rmlui_menu_event_last_seq = seq
+        index = int(index)
+        if kind == 1:  # tab_click
+            self._set_overlay_tab(index, "rmlui-mouse")
+        elif kind == 2:  # item_click — absolute index into the current tab's full list
+            if 0 <= index < self._overlay_item_count:
                 now = time.monotonic()
-                if (item_index == self._overlay_dblclick_last_index
+                if (index == self._overlay_dblclick_last_index
                         and now - self._overlay_dblclick_last_time < 0.5):
                     self._activate_overlay_selected_item("dblclick")
                     self._overlay_dblclick_last_time = 0.0
                     self._overlay_dblclick_last_index = -1
                 else:
-                    self._set_menu_selection(item_index)
+                    self._set_menu_selection(index)
                     self._overlay_dblclick_last_time = now
-                    self._overlay_dblclick_last_index = item_index
-
-        if left_edge and scroll_x <= local_x < (scroll_x + scroll_w) and scroll_y <= local_y < (scroll_y + scroll_h) and self._overlay_item_count > 0:
-            visible_rows = max(1, int(self._overlay_visible_rows))
-            max_scroll = max(0, self._overlay_item_count - visible_rows)
-            if max_scroll <= 0:
-                return
-
-            track_h = max(1.0, scroll_h)
-            thumb_h = max(22.0, (track_h * float(visible_rows)) / float(self._overlay_item_count))
-            thumb_h = min(track_h, thumb_h)
-            thumb_range = max(1.0, track_h - thumb_h)
-            cur_scroll = max(0, min(self._overlay_scroll_offset, max_scroll))
-            thumb_top = scroll_y + (float(cur_scroll) / float(max_scroll)) * thumb_range
-
-            if local_y < thumb_top:
-                new_scroll = max(0, cur_scroll - visible_rows)
-            elif local_y > (thumb_top + thumb_h):
-                new_scroll = min(max_scroll, cur_scroll + visible_rows)
-            else:
-                rel = (local_y - scroll_y - (thumb_h * 0.5)) / thumb_range
-                rel = max(0.0, min(1.0, rel))
-                new_scroll = int(round(rel * max_scroll))
-
-            self._overlay_scroll_offset = new_scroll
-            sel = max(0, min(self._overlay_selected_index, self._overlay_item_count - 1))
-            if sel < new_scroll:
-                sel = new_scroll
-            elif sel >= (new_scroll + visible_rows):
-                sel = max(new_scroll, min(self._overlay_item_count - 1, new_scroll + visible_rows - 1))
-            self._overlay_selected_index = sel
-            self._refresh_d3d_window()
+                    self._overlay_dblclick_last_index = index
+        elif kind == 3:  # scroll_to — absolute target scroll offset (scrollbar drag/track-click)
+            if self._overlay_item_count > 0:
+                visible_rows = max(1, int(self._overlay_visible_rows))
+                max_scroll = max(0, self._overlay_item_count - visible_rows)
+                new_scroll = max(0, min(index, max_scroll))
+                self._overlay_scroll_offset = new_scroll
+                sel = max(0, min(self._overlay_selected_index, self._overlay_item_count - 1))
+                if sel < new_scroll:
+                    sel = new_scroll
+                elif sel >= new_scroll + visible_rows:
+                    sel = max(new_scroll, min(self._overlay_item_count - 1, new_scroll + visible_rows - 1))
+                self._overlay_selected_index = sel
+                self._refresh_d3d_window()
 
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)
@@ -1238,7 +1162,7 @@ class OverlayMixin:
         inj = self._d3d_injector
         if inj is not None:
             try:
-                overlay_hwnd, _vw, _vh = inj.get_menu_metrics()
+                overlay_hwnd, _vw, _vh, _rows = inj.get_menu_metrics()
                 if overlay_hwnd and fg == int(overlay_hwnd):
                     return True
             except Exception:
@@ -1273,8 +1197,6 @@ class OverlayMixin:
                     info = ctypes.cast(l_param, ctypes.POINTER(MSLLHOOKSTRUCT)).contents
                     mouse_x = int(info.pt.x)
                     mouse_y = int(info.pt.y)
-                    self._overlay_mouse_screen_x = mouse_x
-                    self._overlay_mouse_screen_y = mouse_y
                 except Exception:
                     pass
                 over_fifa = False
@@ -1306,10 +1228,33 @@ class OverlayMixin:
                 # leaving the taskbar icon as the only click that worked.
                 # Wheel scroll keeps the looser position-only gate (harmless to
                 # scroll the menu while just hovering, unfocused, over FIFA).
+                # Physical left-button state, captured unconditionally (like
+                # mouse_x/mouse_y above) — NOT gated on over_fifa/blockable.
+                # Mirrors _overlay_blocked_key_down's precedent: FIFA's
+                # exclusive-fullscreen input grab appears to make
+                # GetAsyncKeyState(VK_LBUTTON) polling from this process
+                # unreliable while FIFA holds focus (confirmed: keyboard
+                # already had to switch off GetAsyncKeyState polling for the
+                # same reason while the menu is open, via this same
+                # WH_*_LL-hook-capture pattern) — the low-level hook still
+                # sees every real button transition even when polling can't.
+                if msg == WM_LBUTTONDOWN:
+                    self._overlay_mouse_left_hook_down = True
+                elif msg == WM_LBUTTONUP:
+                    self._overlay_mouse_left_hook_down = False
                 blockable = msg == WM_MOUSEWHEEL or self._is_overlay_input_foreground()
+                # Reliably eaten at the Windows-message level (confirmed live:
+                # eaten is always True here for a real click) — but FIFA still
+                # sees the click regardless, since it reads mouse input via
+                # DirectInput exclusive acquisition, which bypasses the
+                # window-message pipeline this hook operates on entirely.
+                # Known, accepted limitation: fixing it for real would need
+                # DirectInput-level interception inside FIFA's own process
+                # (mirroring the XInputGetState IAT-patch technique already
+                # used for gamepad suppression, see InitXInputEnable/
+                # TryInstallXInputIATHook in cgfs16_overlay.cpp) — out of
+                # scope unless this becomes a real practical problem.
                 if msg in block_mouse_messages and over_fifa and blockable:
-                    if msg == WM_LBUTTONDOWN:
-                        self._overlay_mouse_click_pending = True
                     return 1
             return int(self.user32.CallNextHookEx(self._mouse_hook or 0, n_code, w_param, l_param))
 
@@ -1333,6 +1278,7 @@ class OverlayMixin:
         self._mouse_hook = None
         self._mouse_hook_proc = None
         self._mouse_hook_thread_id = 0
+        self._overlay_mouse_left_hook_down = False
 
     def _uninstall_mouse_wheel_hook(self) -> None:
         tid = self._mouse_hook_thread_id
@@ -1342,6 +1288,7 @@ class OverlayMixin:
         if t is not None:
             t.join(timeout=1.0)
             self._mouse_hook_thread = None
+        self._overlay_mouse_left_hook_down = False
 
     def _install_keyboard_hook(self) -> None:
         if self._keyboard_hook is not None:

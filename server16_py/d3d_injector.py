@@ -86,6 +86,35 @@ class _OverlayShared(ctypes.Structure):
         # written once after injection so the keyboard hint bar can render
         # real key glyphs instead of text badges.
         ("keyboard_icon_dir",    ctypes.c_wchar * _MAX_IMG),
+        # Absolute directory holding the loose .rml documents rendered by
+        # cgfs16_rmlui.cpp (resources/rmlui/toast.rml, stadium_panel.rml) —
+        # written once after injection so those documents can be edited on
+        # disk without recompiling the DLL.
+        ("rmlui_content_dir",    ctypes.c_wchar * _MAX_IMG),
+        # DLL -> Python: item rows that fit in the RmlUi menu's list area at
+        # the current viewport size, computed once per frame by
+        # cgfs16_rmlui_menu.cpp's RmlMenu_Sync from its own RCSS-derived
+        # layout — replaces the old DrawMenuOverlay11/_compute_d3d_menu_layout
+        # duplication (see get_menu_metrics()).
+        ("menu_visible_rows", ctypes.c_long),
+        # Live mouse feed into the RmlUi Context — written every ~80ms from
+        # _sync_d3d_menu_input (see set_rmlui_menu_mouse()), window-coordinate
+        # space (0,0 = top-left client area), same space as the viewport
+        # telemetry above. left_down is the raw continuous button state; the
+        # DLL does its own down/up edge detection. Only acted on while the
+        # menu is visible — zero effect on the game otherwise.
+        ("rmlui_menu_mouse_x", ctypes.c_long),
+        ("rmlui_menu_mouse_y", ctypes.c_long),
+        ("rmlui_menu_mouse_left_down", ctypes.c_long),
+        # DLL -> Python "last event wins" click/scroll signal — see
+        # get_menu_event(). kind: 0=none, 1=tab_click, 2=item_click,
+        # 3=scroll_to; index is a tab index / absolute item index / absolute
+        # scroll target depending on kind. Written by cgfs16_rmlui_menu.cpp's
+        # MenuEventListener in kind/index-then-seq order (seq last), so a
+        # torn read here can only see a fully-old or fully-new event.
+        ("menu_event_seq", ctypes.c_long),
+        ("menu_event_kind", ctypes.c_long),
+        ("menu_event_index", ctypes.c_long),
     ]
 
 
@@ -317,6 +346,25 @@ class D3DOverlayInjector:
             return
         self._shared.keyboard_icon_dir = (path or "")[:_MAX_IMG - 1]
 
+    def set_rmlui_content_dir(self, path: str) -> None:
+        """Write the resources/rmlui/ directory holding the loose .rml documents
+        (call once after inject)."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.rmlui_content_dir = (path or "")[:_MAX_IMG - 1]
+
+    def set_rmlui_menu_mouse(self, x: int, y: int, left_down: bool) -> None:
+        """Live mouse feed for the RmlUi menu's Context — x/y in the
+        same window-coordinate space as get_menu_metrics()' viewport telemetry
+        (0,0 = top-left client area). left_down is the raw continuous button
+        state, not a click edge — cgfs16_rmlui_menu.cpp does its own down/up
+        edge detection. Only consumed while the menu is visible."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.rmlui_menu_mouse_x = int(x)
+        self._shared.rmlui_menu_mouse_y = int(y)
+        self._shared.rmlui_menu_mouse_left_down = 1 if left_down else 0
+
     def set_list_header(self, text: str) -> None:
         """Set the wizard step header text shown above the menu item list (empty = hidden)."""
         if not self._ready or self._shared is None:
@@ -348,19 +396,38 @@ class D3DOverlayInjector:
             self._shared.dashboard_items[i].value = ""
         self._shared.dashboard_item_count = count
 
-    def get_menu_metrics(self) -> tuple[int, int, int]:
-        """Return runtime menu telemetry as (output_hwnd, viewport_w, viewport_h)."""
+    def get_menu_metrics(self) -> tuple[int, int, int, int]:
+        """Return runtime menu telemetry as
+        (output_hwnd, viewport_w, viewport_h, visible_rows). visible_rows is
+        0 whenever cgfs16_rmlui_menu.cpp's RmlMenu_Sync hasn't run yet this
+        session (neither the real F12 menu nor the F6 dev preview has ever
+        opened) — callers should fall back to their own row estimate in
+        that case."""
         if not self._ready or self._shared is None:
-            return (0, 0, 0)
+            return (0, 0, 0, 0)
         vw = int(self._shared.reserved0)
         vh = int(self._shared.reserved1)
         # Shared from x86 DLL as LONG; normalize into an unsigned handle value.
         hwnd = int(ctypes.c_uint32(int(self._shared.reserved2)).value)
+        rows = int(self._shared.menu_visible_rows)
         if vw < 0:
             vw = 0
         if vh < 0:
             vh = 0
-        return (hwnd, vw, vh)
+        if rows < 0:
+            rows = 0
+        return (hwnd, vw, vh, rows)
+
+    def get_menu_event(self) -> tuple[int, int, int]:
+        """Return (seq, kind, index) from the DLL's "last event wins"
+        click/scroll signal — see MenuEventListener in cgfs16_rmlui_menu.cpp.
+        kind: 0=none, 1=tab_click, 2=item_click, 3=scroll_to. Callers should
+        compare seq against their own last-seen value and only act when it
+        changed (a single slot, not a queue)."""
+        if not self._ready or self._shared is None:
+            return (0, 0, 0)
+        return (int(self._shared.menu_event_seq), int(self._shared.menu_event_kind),
+                int(self._shared.menu_event_index))
 
     def reset_injected(self) -> None:
         """Call when FIFA exits so we re-inject on the next launch."""
@@ -434,6 +501,14 @@ class D3DOverlayInjector:
             self._shared.toasts[i].body    = ""
         self._shared.gamepad_icon_dir = ""
         self._shared.keyboard_icon_dir = ""
+        self._shared.rmlui_content_dir = ""
+        self._shared.menu_visible_rows = 0
+        self._shared.rmlui_menu_mouse_x = 0
+        self._shared.rmlui_menu_mouse_y = 0
+        self._shared.rmlui_menu_mouse_left_down = 0
+        self._shared.menu_event_seq = 0
+        self._shared.menu_event_kind = 0
+        self._shared.menu_event_index = 0
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))
