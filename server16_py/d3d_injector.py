@@ -108,13 +108,41 @@ class _OverlayShared(ctypes.Structure):
         ("rmlui_menu_mouse_left_down", ctypes.c_long),
         # DLL -> Python "last event wins" click/scroll signal — see
         # get_menu_event(). kind: 0=none, 1=tab_click, 2=item_click,
-        # 3=scroll_to; index is a tab index / absolute item index / absolute
-        # scroll target depending on kind. Written by cgfs16_rmlui_menu.cpp's
+        # 3=scroll_to, 4=hero_activate, 5=close_click; index is a tab index /
+        # absolute item index / absolute scroll target / unused(0) depending
+        # on kind.
+        # Written by cgfs16_rmlui_menu.cpp's
         # MenuEventListener in kind/index-then-seq order (seq last), so a
         # torn read here can only see a fully-old or fully-new event.
         ("menu_event_seq", ctypes.c_long),
         ("menu_event_kind", ctypes.c_long),
         ("menu_event_index", ctypes.c_long),
+        # Phase 3 (visual redesign): per-item row thumbnail image paths,
+        # parallel to menu_items[] and windowed identically (index i is the
+        # same logical item in both arrays, same menu_window_base applies) —
+        # only populated by Python while the active tab is Stadiums, left
+        # blank otherwise. See set_menu_content()'s thumb_paths parameter.
+        ("menu_item_thumb_paths", (ctypes.c_wchar * _MAX_IMG) * _MAX_MENU_ITEMS),
+        # Which hint bar the DLL should show: 0 = keyboard/mouse, 1 = gamepad.
+        # See set_input_mode().
+        ("input_mode", ctypes.c_long),
+        # 1 while _update_menu_content() is synchronously computing a new
+        # item list (e.g. the Stadiums tab's filesystem scan) — see
+        # set_menu_loading().
+        ("menu_loading", ctypes.c_long),
+        # Compact scoreboard widget (dashboard, right side, next to the team
+        # crests) — "2 x 1" / "23:45", independent of dashboard_items[] (the
+        # generic stat-line list) since these render as their own large text
+        # beside the crests rather than one more line in that list. See
+        # set_match_score_time().
+        ("score_text",      ctypes.c_wchar * _MAX_STR),
+        ("match_time_text", ctypes.c_wchar * _MAX_STR),
+        # 1 while the keyboard/gamepad "activate" input (Enter / A) is
+        # currently held — drives #hero-btn.hero-pressed's press-shrink in
+        # menu.rml for those two input methods, which (unlike a real mouse
+        # click) never touch RmlUi's own :active pseudo-class. See
+        # set_menu_activate_down().
+        ("menu_activate_down", ctypes.c_long),
     ]
 
 
@@ -269,15 +297,25 @@ class D3DOverlayInjector:
             return
         self._shared.last_input_event = int(event_id)
 
-    def set_menu_content(self, items: list, selected: int = 0, scroll: int = 0) -> None:
+    def set_menu_content(self, items: list, selected: int = 0, scroll: int = 0, thumb_paths: list | None = None) -> None:
+        """thumb_paths, if given, must be the same length/order as items —
+        one row-thumbnail path per item (empty string = no thumbnail for
+        that row). Only meaningful for the Stadiums tab today; pass None
+        (the default) for every other tab so stale thumbnails don't linger
+        in shared memory after switching tabs."""
         if not self._ready or self._shared is None:
             return
         count = min(len(items), _MAX_MENU_ITEMS)
         for i in range(count):
             text = str(items[i])[:_MAX_MENU_ITEM_LEN - 1]
             self._shared.menu_items[i].value = text
+            thumb = ""
+            if thumb_paths and i < len(thumb_paths) and thumb_paths[i]:
+                thumb = str(thumb_paths[i])[:_MAX_IMG - 1]
+            self._shared.menu_item_thumb_paths[i].value = thumb
         for i in range(count, _MAX_MENU_ITEMS):
             self._shared.menu_items[i].value = ""
+            self._shared.menu_item_thumb_paths[i].value = ""
         self._shared.menu_item_count = count
         if count <= 0:
             self._shared.menu_selected_index = 0
@@ -302,6 +340,15 @@ class D3DOverlayInjector:
             return
         self._shared.home_crest_path = home_path[:_MAX_IMG - 1]
         self._shared.away_crest_path = away_path[:_MAX_IMG - 1]
+
+    def set_match_score_time(self, score_text: str = "", time_text: str = "") -> None:
+        """Write the compact score ("2 x 1") and match clock ("23:45") text
+        shown next to the crests in the dashboard's #dash-score widget —
+        independent of set_dashboard_content()'s generic stat-line list."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.score_text = score_text[:_MAX_STR - 1]
+        self._shared.match_time_text = time_text[:_MAX_STR - 1]
 
     def set_preview_image(self, path: str) -> None:
         """Update the preview image path in shared memory without changing visible state."""
@@ -365,6 +412,33 @@ class D3DOverlayInjector:
         self._shared.rmlui_menu_mouse_y = int(y)
         self._shared.rmlui_menu_mouse_left_down = 1 if left_down else 0
 
+    def set_input_mode(self, gamepad: bool) -> None:
+        """Tell cgfs16_rmlui_menu.cpp which hint bar to show: gamepad=True
+        shows the gamepad hint row, gamepad=False shows the keyboard/mouse
+        one. Never both at once — see OverlayShared::input_mode."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.input_mode = 1 if gamepad else 0
+
+    def set_menu_activate_down(self, down: bool) -> None:
+        """Tell cgfs16_rmlui_menu.cpp whether the keyboard/gamepad "activate"
+        input (Enter / A) is currently held, so #hero-btn can show the same
+        press-shrink feedback a real mouse click already gets for free from
+        RmlUi's own :active pseudo-class. See OverlayShared::menu_activate_down."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.menu_activate_down = 1 if down else 0
+
+    def set_menu_loading(self, loading: bool) -> None:
+        """Tell cgfs16_rmlui_menu.cpp to show a loading spinner in place of
+        the item list — call with True immediately before a (synchronous)
+        item-list scan that might take a moment (e.g. the Stadiums tab's
+        discover_stadium_names()), and False right after. See
+        OverlayShared::menu_loading."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.menu_loading = 1 if loading else 0
+
     def set_list_header(self, text: str) -> None:
         """Set the wizard step header text shown above the menu item list (empty = hidden)."""
         if not self._ready or self._shared is None:
@@ -421,9 +495,10 @@ class D3DOverlayInjector:
     def get_menu_event(self) -> tuple[int, int, int]:
         """Return (seq, kind, index) from the DLL's "last event wins"
         click/scroll signal — see MenuEventListener in cgfs16_rmlui_menu.cpp.
-        kind: 0=none, 1=tab_click, 2=item_click, 3=scroll_to. Callers should
-        compare seq against their own last-seen value and only act when it
-        changed (a single slot, not a queue)."""
+        kind: 0=none, 1=tab_click, 2=item_click, 3=scroll_to, 4=hero_activate,
+        5=close_click. Callers should compare seq against their own
+        last-seen value and only act when it changed (a single slot, not a
+        queue)."""
         if not self._ready or self._shared is None:
             return (0, 0, 0)
         return (int(self._shared.menu_event_seq), int(self._shared.menu_event_kind),
@@ -495,6 +570,7 @@ class D3DOverlayInjector:
             self._shared.dashboard_items[i].value = ""
         for i in range(_MAX_MENU_ITEMS):
             self._shared.menu_items[i].value = ""
+            self._shared.menu_item_thumb_paths[i].value = ""
         for i in range(_MAX_TOASTS):
             self._shared.toasts[i].visible = 0
             self._shared.toasts[i].title   = ""

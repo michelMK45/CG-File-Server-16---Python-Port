@@ -179,7 +179,7 @@ class GameMixin:
         self._set_display("away_name", self.tr("team.b"))
         self._update_team_logo("home", "")
         self._update_team_logo("away", "")
-        self._set_display("score", "0 x 0")
+        self._set_display("score", "0 - 0")
         self._set_display("timer", "00:00")
         self._set_display("home_goals", "0")
         self._set_display("away_goals", "0")
@@ -385,7 +385,7 @@ class GameMixin:
         score_away_display = score_away if score_away is not None else 0
         self._set_display("home_goals", str(score_home_display))
         self._set_display("away_goals", str(score_away_display))
-        self._set_display("score", f"{score_home_display} x {score_away_display}")
+        self._set_display("score", f"{score_home_display} - {score_away_display}")
         if raw_time is None:
             minutes = 0
             seconds = 0

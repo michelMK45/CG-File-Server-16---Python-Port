@@ -36,3 +36,14 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir);
 // formerly written by DrawMenuOverlay11 directly) for mouse coordinate
 // transforms and menu-window focus detection.
 void RmlMenu_Sync(int vpW, int vpH, void *outputWindow);
+
+// True whenever #panel is still Shown() in the RmlUi document sense — true
+// for the whole time the menu is open AND for the brief window right after
+// closing while its zoom+fade-out animation is still finishing. Callers
+// (RmlOverlay_RenderFrame) must keep invoking RmlMenu_Sync every frame while
+// this is true even if menu_visible itself already reads false, otherwise
+// the close-out animation is starved of frames and RmlMenu_Sync's own
+// Hide()-and-reset-state logic never runs again — silently breaking every
+// subsequent open animation too, since the state it resets is what re-arms
+// them.
+bool RmlMenu_DocShown();

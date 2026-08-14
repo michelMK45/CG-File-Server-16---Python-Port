@@ -8,83 +8,289 @@ body {
     left: 0px;
     width: 100%;
     height: 100%;
-    font-family: "Segoe UI";
+    font-family: "Rajdhani";
+    font-weight: 600;
 }
 #scrim {
     display: block;
     position: absolute;
-    background-color: #04080DCC;
+    /* The sketch uses a radial-gradient here (circle at 80% 20%) — true
+       radial gradients go through RenderManager::CompileShader, which
+       CgfsRmlRenderInterface doesn't implement (confirmed via grep, and via
+       the DLL log: "Could not generate decorator element data" firing every
+       frame). vertical-gradient is a safe, close approximation: confirmed
+       (DecoratorGradient.cpp's DecoratorStraightGradient::RenderElement)
+       that horizontal-gradient/vertical-gradient render as plain
+       vertex-colored geometry — no CompileShader call at all — so they
+       already work with this renderer's existing, proven RenderGeometry
+       path, unlike every other gradient function. */
+    decorator: vertical-gradient(#1A103CE6 #080B12F2);
 }
 #panel {
     display: block;
     position: absolute;
-    background-color: #101828F4;
-    border: 2px #3399FF;
+    background-color: #0C101CD9;
+    border: 1px #FFFFFF1F;
+    border-radius: 16px;
+    /* Real glow, Phase B (blur) now implemented — kept modest (20px blur =
+       10px sigma = 30px kernel radius, comfortably under this renderer's
+       BLUR_MAX_RADIUS=40) rather than the sketch's original 60px blur,
+       both to stay well inside the kernel's supported range and to avoid
+       the oversized-shadow-texture-vs-window warning a full-panel-sized
+       shadow with a very large blur radius triggered earlier in this
+       phase (see the plan's box-shadow investigation notes). */
+    box-shadow: 0px 8px 20px #000000A6;
+}
+#panel-accent {
+    display: block;
+    position: absolute;
+    /* Sketch's --grad-primary, exact stops — horizontal-gradient is the
+       safe, shader-free decorator (see #scrim's comment). */
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    box-shadow: 0px 0px 10px #00F2FE99;
+    /* cubic-bezier(0.25, 1, 0.5, 1) isn't valid RCSS syntax — same issue
+       already hit and fixed on #tab-glider: the transition value-list
+       splitter is comma-based and not parenthesis-aware, so the commas
+       inside cubic-bezier(...) tear the declaration apart, and RCSS has no
+       arbitrary-bezier support in the first place, only named tween
+       keywords. cubic-out is the closest match. Only actually visible on a
+       window resize (the one thing that changes this element's `width` —
+       SetRectPx writes it every frame, but only a resize ever changes the
+       *value*, so this smooths that instead of snapping). */
+    transition: all 0.3s cubic-out;
+}
+/* Bottom-right resize handle (drag to resize the panel like a real window —
+   see g_panelUserPositioned/g_resizeGrip in cgfs16_rmlui_menu.cpp, which
+   gives this element `drag: drag` and positions it every frame tucked into
+   #panel's own bottom-right corner). Deliberately plain/understated at rest
+   (a faint tinted square) with a brighter hover state as the only
+   affordance it's interactive — same "hover to reveal" language as
+   .hint-item.hint-close and .tab elsewhere in this file. The corner
+   radius echoes #panel's own 16px bottom-right rounding. */
+#resize-grip {
+    display: block;
+    position: absolute;
+    border-radius: 3px 0px 13px 0px;
+    background-color: #FFFFFF1A;
+    transition: background-color 0.2s sine-in-out;
+}
+#resize-grip:hover {
+    background-color: #4FACFE40;
+}
+/* Matches overlay.html's .brand-title/.brand-badge values exactly —
+   font-size/letter-spacing/padding/transform/gradient/box-shadow all now
+   render for real (Phase B implemented box-shadow blur). */
+#brand-title {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 12px;
+    position: absolute;
+}
+.brand-label {
+    display: block;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 38px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    line-height: 1;
+    color: #FFFFFFFF;
+}
+.brand-badge {
+    display: block;
+    decorator: horizontal-gradient(#FF0844 #FFB199);
+    border-radius: 4px;
+    padding: 2px 10px;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 18px;
+    text-transform: uppercase;
+    transform: skewX(-12deg);
+    color: #FFFFFFFF;
+    box-shadow: 0px 0px 12px #FF084480;
 }
 #tabstrip {
     display: flex;
     flex-direction: row;
     position: absolute;
+    background-color: #00000059;
+    border-radius: 8px;
+}
+#tab-glider {
+    display: block;
+    position: absolute;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    border-radius: 4px;
+    /* Matches overlay.html's .tab-glider exactly — this element (not .tab,
+       which paints no background of its own) is the visible colored shape
+       behind the active tab, so IT needs its own skew to read as a
+       parallelogram; missed on the first port, only .tab/.tab-label had it. */
+    transform: skewX(-12deg);
+    box-shadow: 0px 0px 14px #00F2FE99;
+    /* No `transition` here on purpose (a prior version declared one on
+       left/width — deleted, it never actually did anything): RCSS only
+       starts a transition from ElementStyle::TransitionPropertyChanges,
+       which fires on a STYLESHEET DEFINITION change (a class/pseudo-class
+       toggle causing different RCSS rules to match) — never for a plain
+       inline SetProperty() call, which is exactly what
+       cgfs16_rmlui_menu.cpp's SetRectPx does every time this element needs
+       to move. Same root cause, same fix direction, as #panel's own
+       g_panelOpenAnimActive comment: the slide is driven by a manual
+       per-frame tween in C++ instead (see ApplyTabGliderAnim there), not
+       by RCSS at all. */
 }
 .tab {
     display: flex;
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    flex: 1 1 auto;
-    background-color: #0C1620FF;
-    font-size: 14px;
-    color: #FFFFFFFF;
-    border-bottom: 4px #0C1620FF;
+    /* flex-basis 0% (not auto) so all tabs land on the exact same equal
+       width regardless of label length ("Scoreboards" vs "Kits") — auto
+       would size each tab's flex-basis off its own content first, then
+       grow, so tabs with shorter labels ended up narrower than
+       cgfs16_rmlui_menu.cpp's #tab-glider (which is always an exact
+       tabStripW/NUM_MENU_TABS equal split): the glider and the tab box it
+       sits under didn't line up, which is what read as the label not being
+       centered on it. */
+    flex: 1 1 0%;
+    /* position:relative + z-index needed so the tab (in-flow) paints above
+       #tab-glider (position:absolute, z-index:auto) despite coming later in
+       the DOM — without an explicit stacking order, an absolutely-positioned
+       element does not reliably paint behind in-flow siblings just because
+       it appears first in markup. Mirrors the sketch's own .tab-btn
+       {position:relative; z-index:2} / .tab-glider {z-index:1} split. */
+    position: relative;
+    z-index: 2;
+    color: #8B9BB4FF;
+    transform: skewX(-12deg);
+    border-radius: 4px;
+    /* RCSS has no "ease" tween keyword (CSS's own name for it) — the
+       nearest equivalents are the named keywords in
+       PropertyParserAnimation.cpp's table; sine-in-out is a gentle,
+       symmetric ease-in-out, matching the sketch's `transition: color
+       0.25s ease` intent as closely as this renderer's keyword set allows. */
+    transition: color 0.2s sine-in-out;
 }
-.tab.active {
-    background-color: #1C3E60FF;
-    border-bottom: 4px #3399FF;
+/* Dark text follows the glider, not a static :hover/.active rule — see
+   RmlMenu_Sync's hoveredTab/gliderTab computation in cgfs16_rmlui_menu.cpp,
+   which toggles this class on whichever tab the glider is CURRENTLY under
+   (the hovered tab if any, else the real active tab) every frame. Ports
+   overlay.html's `.tab-btn:hover` / `.tabs-wrapper:not(:hover) .tab-btn.
+   active` / `.tabs-wrapper:hover .tab-btn.active:not(:hover)` three-rule
+   combo into one C++-driven class, since RCSS combinator support for that
+   exact "active-unless-something-else-is-hovered" logic isn't something to
+   depend on — the same information is already computed in C++ every frame
+   for the glider's own position, so driving the text color from the same
+   computation keeps both perfectly in sync by construction. */
+.tab.on-glider { color: #080B12FF; }
+.tab-label {
+    display: block;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 24px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    transform: skewX(12deg);
 }
 #content-bg {
     display: block;
     position: absolute;
-    background-color: #080E18F2;
-    border-top: 2px #3399FF;
+    /* Deliberately no background-color: #panel's own glass background
+       already covers this whole area — a second, slightly-different dark
+       fill here (the pre-redesign behavior) is what made the tab strip and
+       the content below it read as two stacked boxes instead of one
+       cohesive card. Only a hairline divider remains. */
+    border-top: 1px #FFFFFF14;
 }
 #dashboard {
     display: flex;
     flex-direction: row;
     align-items: center;
     position: absolute;
-    background-color: #0C1622E4;
-    border-top: 2px #3399FF;
+    /* Same reasoning as #content-bg above — no separate fill, just a
+       divider, so the dashboard band doesn't look like a bolted-on
+       different-colored box. */
+    border-top: 1px #FFFFFF1F;
     padding: 0px 10px;
 }
-#home-crest, #away-crest {
-    display: none;
-    width: 72px;
-    height: 72px;
-}
-#home-crest { margin-right: 14px; }
-#away-crest { margin-left: 14px; }
 #dash-text-col {
     display: flex;
     flex-direction: column;
     flex: 1 1 auto;
-    row-gap: 3px;
+    row-gap: 6px;
+}
+/* Right-hand scoreboard widget — crest/score/crest with the match clock
+   underneath, shown next to (not instead of) #dash-text-col's stat lines.
+   flex-shrink:0 so #dash-text-col (flex:1 1 auto) is what gives way if the
+   panel gets narrow, not this. Visibility toggled wholesale by C++ (same
+   signal that already gated the crests individually pre-redesign: at least
+   one crest path resolved) rather than left to show a bare "0 x 0" with no
+   team context. */
+#dash-score {
+    display: none;
+    flex-direction: column;
+    align-items: center;
+    row-gap: 6px;
+    flex-shrink: 0;
+    padding-left: 18px;
+    /* Pulls the whole widget away from #panel's right edge — plain empty
+       space #dash-text-col (flex:1 1 auto) yields into, since #dashboard's
+       own width is fixed by C++'s SetRectPx. */
+    margin-right: 32px;
+}
+#dash-score-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 22px;
+}
+#home-crest, #away-crest {
+    display: none;
+    width: 76px;
+    height: 76px;
+    flex-shrink: 0;
+}
+#dash-score-text {
+    display: block;
+    flex-shrink: 0;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 46px;
+    letter-spacing: 1px;
+    color: #FFFFFFFF;
+    min-width: 80px;
+    text-align: center;
+}
+#dash-time-text {
+    display: block;
+    font-family: "Teko";
+    font-weight: 600;
+    font-size: 23px;
+    letter-spacing: 1.5px;
+    color: #8B9BB4FF;
 }
 .dashline {
     display: none;
-    font-size: 14px;
-    color: #C6DAEDFF;
+    font-size: 18px;
+    letter-spacing: 0.5px;
+    color: #D6E0F0FF;
     white-space: nowrap;
 }
 #wizard-header {
     display: none;
     position: absolute;
-    background-color: #111E30FF;
-    border-bottom: 2px #2A537D;
+    /* Subtle white-tint overlay rather than its own distinct solid navy
+       patch (the pre-redesign color) — reads as a highlighted band within
+       the one glass panel, not a separately-colored box stacked on top. */
+    background-color: #FFFFFF0F;
+    border-bottom: 1px #FFFFFF1F;
+    border-radius: 6px;
 }
 #wizard-header-text {
     display: block;
     padding: 4px 8px;
-    font-size: 13px;
+    font-size: 16px;
     color: #FFCC55FF;
 }
 #list-area {
@@ -95,50 +301,204 @@ body {
 }
 .row {
     display: none;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 8px;
     height: 28px;
-    font-size: 14px;
-    color: #CCDDEEFF;
-    white-space: nowrap;
-    overflow: hidden;
+    font-size: 18px;
+    color: #CCD8EAFF;
     padding-left: 12px;
-    vertical-align: middle;
+    border-radius: 4px;
     background-color: #00000000;
 }
 .row.selected {
-    background-color: #1C3E60FF;
-    border-left: 3px #3399FF;
+    background-color: #00F2FE29;
+    border-left: 3px #00F2FEFF;
 }
-.row:hover { background-color: #14304CFF; }
+.row:hover { background-color: #4FACFE1F; }
+/* Stadiums tab only — taller row so .row-thumb is actually a recognizable
+   photo instead of a color chip; toggled per-row from RmlMenu_Sync only
+   while activeTab == Stadiums (see ITEM_H_STADIUMS). */
+.row.stadium-row { height: 56px; }
+.row-thumb {
+    display: none;
+    width: 84px;
+    height: 47px;
+    border-radius: 6px;
+    flex-shrink: 0;
+}
+.row-text {
+    display: block;
+    flex: 1 1 auto;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
 #empty-state {
     display: none;
     position: absolute;
     align-items: center;
     justify-content: center;
-    font-size: 14px;
-    color: #6688AAFF;
+    font-size: 18px;
+    color: #8B9BB4FF;
 }
 #scrollbar-track {
     display: block;
     position: absolute;
-    background-color: #0E1A26CC;
-    border: 1px #2A537D;
+    background-color: #0E1522CC;
+    border-radius: 6px;
 }
 #scrollbar-thumb {
     display: none;
     position: absolute;
-    background-color: #1C3E60FF;
-    border-left: 2px #3399FF;
+    background-color: #4FACFEFF;
+    border-radius: 6px;
 }
 #split-preview {
     display: none;
+    flex-direction: column;
     position: absolute;
-    background-color: #0C1520CC;
-    border-top: 1px #2A537D;
-    border-left: 1px #2A537D;
-    text-align: center;
-    vertical-align: middle;
+    background-color: #0F1423E6;
+    border: 1px #00F2FE4D;
+    border-radius: 12px;
+    box-shadow: 0px 0px 20px #00F2FE26;
+    padding: 16px;
+    row-gap: 12px;
+    /* RmlUi defaults to content-box (RCSS's box-sizing default matches
+       CSS2.1): without this, `width`/`height` from cgfs16_rmlui_menu.cpp's
+       SetRectPx(g_splitPreview, ...) size the CONTENT box only, and this
+       rule's own padding+border get added on top — the box rendered ~17px
+       past its intended right/bottom edge each side (34px total), which is
+       exactly the "looks like a separate floating window, sticks out past
+       the panel" bug. border-box makes width/height mean the full box
+       SetRectPx already intends, padding/border included. */
+    box-sizing: border-box;
 }
-#split-preview img { max-width: 100%; max-height: 100%; }
+#hero-img-wrap {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0px;
+    border-radius: 8px;
+    overflow: hidden;
+    background-color: #00000033;
+}
+#preview-img {
+    display: block;
+    max-width: 100%;
+    max-height: 100%;
+}
+#hero-fade {
+    display: block;
+    position: absolute;
+    left: 0px;
+    bottom: 0px;
+    width: 100%;
+    height: 50%;
+    /* Top-to-transparent fade over the bottom of the preview image, for
+       title legibility — re-added now that horizontal/vertical-gradient are
+       confirmed to render for real (plain vertex-colored geometry, unlike
+       linear-gradient()/radial-gradient(), see #scrim's comment); dropped
+       earlier in this phase when it looked like no gradient function
+       rendered at all. */
+    decorator: vertical-gradient(#0F142300 #0F1423FF);
+}
+#hero-title {
+    display: block;
+    flex-shrink: 0;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 38px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #FFFFFFFF;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+#hero-btn {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    column-gap: 8px;
+    flex-shrink: 0;
+    /* Sketch's --grad-green, exact stops. */
+    decorator: horizontal-gradient(#11998E #38EF7D);
+    border-radius: 6px;
+    padding: 10px;
+    box-shadow: 0px 4px 12px #38EF7D66;
+    /* :hover/:active are real RmlUi pseudo-classes here (unlike #tab-glider's
+       left/width, these ARE stylesheet-definition changes, so `transition`
+       genuinely animates them — see cgfs16_rmlui_menu.cpp's glider comments
+       for the contrasting case where it doesn't). .hero-highlight/.hero-
+       pressed are the same two states, just driven by C++ instead, for
+       gamepad/keyboard input that never touches a real mouse button — see
+       g_heroHighlightCache's comment in cgfs16_rmlui_menu.cpp. */
+    transform: scale(1);
+    transition: transform 0.15s cubic-out;
+}
+#hero-btn:hover, #hero-btn.hero-highlight {
+    decorator: horizontal-gradient(#14B39F #45FF97);
+    box-shadow: 0px 6px 18px #38EF7DA8;
+    transform: scale(1.03);
+}
+/* Listed after :hover/.hero-highlight so a press while already hovered
+   (the normal mouse-click sequence) wins the cascade and shrinks instead
+   of staying grown. */
+#hero-btn:active, #hero-btn.hero-pressed {
+    transform: scale(0.92);
+}
+.hero-btn-icon {
+    display: block;
+    width: 24px;
+    height: 24px;
+}
+.hero-btn-label {
+    display: block;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 24px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #08150FFF;
+}
+/* Floating "press A/Enter" icon for tabs with no hero button (Scoreboards/
+   Movies/TV Logos) — RmlMenu_Sync positions it over whichever row is
+   hovered (mouse) or, failing that, the keyboard/gamepad-selected row. */
+#row-action-hint {
+    display: none;
+    position: absolute;
+}
+/* L/R (gamepad) or Left/Right (keyboard) tab-switch hints, flanking the tab
+   strip itself rather than living in the bottom hint bar. */
+#tab-hint-l, #tab-hint-r {
+    display: none;
+    position: absolute;
+}
+/* Loading spinner, shown over the list area in place of the (stale) row
+   list while Python's _update_menu_content() is still computing a new one
+   (see RmlOverlay_MenuLoading — set around any wizard-step/tab navigation,
+   most usefully for the Stadiums tab's filesystem scan). No conic-gradient/
+   mask support in this renderer (see the codebase's other gradient-decorator
+   comments), so this is the classic pre-conic-gradient technique instead: a
+   full ring plus one differently-colored side, spun with `animation` (a
+   real RCSS feature — RmlUi's own Samples/basic/animation/data/animation.rml
+   uses the identical from/to rotate() keyframe pair for its own spinner). */
+#loading-spinner {
+    display: none;
+    position: absolute;
+    border-radius: 22px;
+    border: 4px #FFFFFF26;
+    border-top-color: #00F2FE;
+    animation: 0.9s linear-out infinite spin;
+}
+@keyframes spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
 .hint-row {
     display: flex;
     flex-direction: row;
@@ -152,6 +512,20 @@ body {
     flex-direction: row;
     align-items: center;
     column-gap: 5px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background-color: #FFFFFF0D;
+}
+/* "Close" hint (Esc/B) is also a real clickable button (C++ side adds a
+   Click listener on hintkey2/hintgp2 — see g_hintCloseKey/g_hintCloseGp in
+   cgfs16_rmlui_menu.cpp) — same look as every other hint item at rest, only
+   a hover highlight added so it reads as interactive, same treatment as
+   .row:hover elsewhere in this file. */
+.hint-item.hint-close {
+    transition: background-color 0.2s sine-in-out;
+}
+.hint-item.hint-close:hover {
+    background-color: #FFFFFF26;
 }
 .hint-item .icons {
     display: flex;
@@ -165,8 +539,8 @@ body {
 }
 .hint-item .label {
     display: block;
-    font-size: 12px;
-    color: #CCDDEEFF;
+    font-size: 14px;
+    color: #8B9BB4FF;
     white-space: nowrap;
 }
 </style>
@@ -174,86 +548,96 @@ body {
 <body>
 <div id="scrim"></div>
 <div id="panel">
+<div id="panel-accent"></div>
+<div id="brand-title"><span class="brand-label">CGFS</span><span class="brand-badge">PYTHON PORT</span></div>
 <div id="tabstrip">
+<div id="tab-glider"></div>
 <div id="tab0" class="tab"><div class="tab-label">Scoreboards</div></div>
 <div id="tab1" class="tab"><div class="tab-label">Stadiums</div></div>
 <div id="tab2" class="tab"><div class="tab-label">Movies</div></div>
 <div id="tab3" class="tab"><div class="tab-label">TV Logos</div></div>
 <div id="tab4" class="tab"><div class="tab-label">Kits</div></div>
 </div>
+<img id="tab-hint-l"/>
+<img id="tab-hint-r"/>
 <div id="content-bg"></div>
 <div id="wizard-header"><div id="wizard-header-text"></div></div>
 <div id="list-area">
-<div id="row0" class="row"></div>
-<div id="row1" class="row"></div>
-<div id="row2" class="row"></div>
-<div id="row3" class="row"></div>
-<div id="row4" class="row"></div>
-<div id="row5" class="row"></div>
-<div id="row6" class="row"></div>
-<div id="row7" class="row"></div>
-<div id="row8" class="row"></div>
-<div id="row9" class="row"></div>
-<div id="row10" class="row"></div>
-<div id="row11" class="row"></div>
-<div id="row12" class="row"></div>
-<div id="row13" class="row"></div>
-<div id="row14" class="row"></div>
-<div id="row15" class="row"></div>
-<div id="row16" class="row"></div>
-<div id="row17" class="row"></div>
-<div id="row18" class="row"></div>
-<div id="row19" class="row"></div>
-<div id="row20" class="row"></div>
-<div id="row21" class="row"></div>
-<div id="row22" class="row"></div>
-<div id="row23" class="row"></div>
-<div id="row24" class="row"></div>
-<div id="row25" class="row"></div>
-<div id="row26" class="row"></div>
-<div id="row27" class="row"></div>
-<div id="row28" class="row"></div>
-<div id="row29" class="row"></div>
-<div id="row30" class="row"></div>
-<div id="row31" class="row"></div>
-<div id="row32" class="row"></div>
-<div id="row33" class="row"></div>
-<div id="row34" class="row"></div>
-<div id="row35" class="row"></div>
-<div id="row36" class="row"></div>
-<div id="row37" class="row"></div>
-<div id="row38" class="row"></div>
-<div id="row39" class="row"></div>
-<div id="row40" class="row"></div>
-<div id="row41" class="row"></div>
-<div id="row42" class="row"></div>
-<div id="row43" class="row"></div>
-<div id="row44" class="row"></div>
-<div id="row45" class="row"></div>
-<div id="row46" class="row"></div>
-<div id="row47" class="row"></div>
-<div id="row48" class="row"></div>
-<div id="row49" class="row"></div>
-<div id="row50" class="row"></div>
-<div id="row51" class="row"></div>
-<div id="row52" class="row"></div>
-<div id="row53" class="row"></div>
-<div id="row54" class="row"></div>
-<div id="row55" class="row"></div>
-<div id="row56" class="row"></div>
-<div id="row57" class="row"></div>
-<div id="row58" class="row"></div>
-<div id="row59" class="row"></div>
-<div id="row60" class="row"></div>
-<div id="row61" class="row"></div>
-<div id="row62" class="row"></div>
-<div id="row63" class="row"></div>
+<div id="row0" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row1" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row2" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row3" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row4" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row5" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row6" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row7" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row8" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row9" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row10" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row11" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row12" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row13" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row14" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row15" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row16" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row17" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row18" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row19" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row20" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row21" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row22" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row23" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row24" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row25" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row26" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row27" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row28" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row29" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row30" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row31" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row32" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row33" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row34" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row35" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row36" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row37" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row38" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row39" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row40" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row41" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row42" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row43" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row44" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row45" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row46" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row47" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row48" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row49" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row50" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row51" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row52" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row53" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row54" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row55" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row56" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row57" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row58" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row59" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row60" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row61" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row62" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row63" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
 </div>
 <div id="empty-state">No items available</div>
+<img id="row-action-hint"/>
+<div id="loading-spinner"></div>
 <div id="scrollbar-track"><div id="scrollbar-thumb"></div></div>
-<div id="split-preview"><img id="preview-img"/></div>
+<div id="split-preview">
+<div id="hero-img-wrap"><img id="preview-img"/><div id="hero-fade"></div></div>
+<div id="hero-title"></div>
+<div id="hero-btn"><img class="hero-btn-icon"/><div class="hero-btn-label">Select</div></div>
+</div>
 <div id="dashboard">
-<img id="home-crest"/>
 <div id="dash-text-col">
 <div id="dash0" class="dashline"></div>
 <div id="dash1" class="dashline"></div>
@@ -266,22 +650,26 @@ body {
 <div id="dash8" class="dashline"></div>
 <div id="dash9" class="dashline"></div>
 </div>
+<div id="dash-score">
+<div id="dash-score-row">
+<img id="home-crest"/>
+<div id="dash-score-text"></div>
 <img id="away-crest"/>
+</div>
+<div id="dash-time-text"></div>
+</div>
 </div>
 <div id="hint-key-row" class="hint-row">
 <div id="hintkey0" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
 <div id="hintkey1" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintkey2" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintkey3" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintkey4" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintkey2" class="hint-item hint-close"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
 </div>
 <div id="hint-gp-row" class="hint-row">
 <div id="hintgp0" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
 <div id="hintgp1" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintgp2" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintgp3" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
-<div id="hintgp4" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
+<div id="hintgp2" class="hint-item hint-close"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label"></div></div>
 </div>
+<div id="resize-grip"></div>
 </div>
 </body>
 </rml>

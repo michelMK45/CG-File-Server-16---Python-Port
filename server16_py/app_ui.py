@@ -1071,7 +1071,7 @@ class UIMixin:
         center = tk.Frame(body, bg=self.card)
         center.grid(row=0, column=1, sticky="nsew", padx=8)
         tk.Label(center, text=self.tr("match.score"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9)).pack(pady=(18, 2))
-        score_label = tk.Label(center, text="0 x 0", bg=self.card, fg=self.gold, font=("Bahnschrift", 28, "bold"))
+        score_label = tk.Label(center, text="0 - 0", bg=self.card, fg=self.gold, font=("Bahnschrift", 28, "bold"))
         score_label.pack()
         tk.Label(center, text=self.tr("match.time"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9)).pack(pady=(18, 2))
         timer_label = tk.Label(center, text="00:00", bg=self.card, fg=self.accent, font=("Consolas", 18, "bold"))

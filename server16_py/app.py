@@ -116,6 +116,12 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # see _sync_rmlui_menu_mouse_feed for why this is preferred over
         # GetAsyncKeyState(VK_LBUTTON) polling while the menu is open.
         self._overlay_mouse_left_hook_down = False
+        # Which hint bar the overlay menu should show — "keyboard" or
+        # "gamepad", updated to whichever device was used most recently (see
+        # _sync_d3d_menu_input / _sync_rmlui_menu_mouse_feed) and pushed to
+        # the DLL via D3DOverlayInjector.set_input_mode().
+        self._overlay_input_mode = "keyboard"
+        self._overlay_mouse_last_pos: tuple[int, int] | None = None
         self._kit_home_prev_down = False
         self._kit_home_next_down = False
         self._kit_away_prev_down = False
@@ -166,6 +172,12 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_list_header: str = ""
         self._d3d_menu_visible = False
         self._overlay_items: list[str] = []
+        # Resolved row-thumbnail path per stadium name, for the Stadiums tab's
+        # per-row image (Phase 3 visual redesign) — stadium names/preview
+        # images are stable for the lifetime of a session, so this is a
+        # plain unbounded dict, unlike the DLL's own bounded LRU texture
+        # cache (which holds actual GPU textures, not path strings).
+        self._overlay_stadium_thumb_cache: dict[str, str] = {}
         self._overlay_item_count     = 0
         self._overlay_selected_index = 0
         self._overlay_scroll_offset  = 0

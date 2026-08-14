@@ -130,8 +130,50 @@ struct OverlayShared {
     // event, never a mix — same "write the flag last" principle as `visible`
     // for the stadium-loading panel (see CLAUDE.md), just DLL->Python here.
     volatile LONG menu_event_seq;    // increments on every event; 0 = none yet
-    volatile LONG menu_event_kind;   // 0=none, 1=tab_click, 2=item_click, 3=scroll_to
+    volatile LONG menu_event_kind;   // 0=none, 1=tab_click, 2=item_click, 3=scroll_to, 4=hero_activate, 5=close_click
     volatile LONG menu_event_index;  // tab index / absolute item index / absolute scroll target
+    // Phase 3 (visual redesign): per-item row thumbnail image paths, parallel
+    // to menu_items[] and windowed identically (same index i belongs to the
+    // same logical item, same windowBase applies) — written by Python only
+    // when the active tab is Stadiums, left blank (and ignored) otherwise.
+    // Unlike image_path (one path, for the currently-selected item's big
+    // hero preview), this can have many entries alive on screen at once as
+    // the list scrolls, so cgfs16_rmlui_menu.cpp caches these behind a small
+    // bounded LRU texture cache rather than the single-slot reload-on-change
+    // pattern image_path/home_crest_path/away_crest_path use.
+    wchar_t menu_item_thumb_paths[MAX_MENU_ITEMS][MAX_IMG];
+    // Which hint bar cgfs16_rmlui_menu.cpp should show: 0 = keyboard/mouse,
+    // 1 = gamepad. Written every ~80ms by Python's _sync_d3d_menu_input from
+    // whichever device produced input most recently (button/key down or
+    // meaningful analog stick movement, mouse move/click) — never both hint
+    // rows are shown at once. Defaults to 0 (keyboard/mouse) until the first
+    // input is observed.
+    volatile LONG input_mode;
+    // 1 while Python's _update_menu_content() is (synchronously) computing a
+    // new item list for the wizard/tab it just navigated to — e.g. the
+    // Stadiums tab's discover_stadium_names() filesystem scan, which can
+    // take a moment. Set immediately before that work starts and cleared
+    // right after, so cgfs16_rmlui_menu.cpp can show a loading spinner in
+    // place of the (stale, about-to-be-replaced) row list for exactly that
+    // window — rendering keeps running on FIFA's own Present thread the
+    // whole time even though Python's main thread is blocked doing the scan,
+    // which is what makes the spinner actually animate instead of freezing.
+    volatile LONG menu_loading;
+    // Compact scoreboard widget (dashboard, right side, next to the team
+    // crests) — "2 x 1" / "23:45", independent of dashboard_items[] (the
+    // generic stat-line list) since these render as their own large text
+    // beside the crests rather than one more line in that list. Written by
+    // Python's set_match_score_time(), read via RmlOverlay_ScoreText()/
+    // RmlOverlay_MatchTimeText() below.
+    wchar_t score_text[MAX_STR];
+    wchar_t match_time_text[MAX_STR];
+    // 1 while the keyboard/gamepad "activate" input (Enter / A) is
+    // currently held — drives #hero-btn.hero-pressed's press-shrink in
+    // menu.rml for those two input methods, which (unlike a real mouse
+    // click) never touch RmlUi's own :active pseudo-class. Written by
+    // Python's set_menu_activate_down(), read via
+    // RmlOverlay_MenuActivateDown() below.
+    volatile LONG menu_activate_down;
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -221,6 +263,12 @@ LONG RmlOverlay_MenuWindowBase() {
 const wchar_t *RmlOverlay_MenuItemText(int index) {
     return (g_data && index >= 0 && index < MAX_MENU_ITEMS) ? g_data->menu_items[index] : L"";
 }
+// Phase 3: per-item row thumbnail path (see the OverlayShared field comment
+// on menu_item_thumb_paths) — empty string means "no thumbnail for this row",
+// which the renderer treats identically to "not loaded yet".
+const wchar_t *RmlOverlay_MenuItemThumbPath(int index) {
+    return (g_data && index >= 0 && index < MAX_MENU_ITEMS) ? g_data->menu_item_thumb_paths[index] : L"";
+}
 LONG RmlOverlay_DashboardItemCount() {
     return g_data ? InterlockedCompareExchange(&g_data->dashboard_item_count, 0, 0) : 0;
 }
@@ -229,6 +277,8 @@ const wchar_t *RmlOverlay_DashboardItemText(int index) {
 }
 const wchar_t *RmlOverlay_HomeCrestPath()   { return g_data ? g_data->home_crest_path   : L""; }
 const wchar_t *RmlOverlay_AwayCrestPath()   { return g_data ? g_data->away_crest_path   : L""; }
+const wchar_t *RmlOverlay_ScoreText()       { return g_data ? g_data->score_text        : L""; }
+const wchar_t *RmlOverlay_MatchTimeText()   { return g_data ? g_data->match_time_text   : L""; }
 const wchar_t *RmlOverlay_ListHeader()      { return g_data ? g_data->list_header       : L""; }
 const wchar_t *RmlOverlay_GamepadIconDir()  { return g_data ? g_data->gamepad_icon_dir  : L""; }
 const wchar_t *RmlOverlay_KeyboardIconDir() { return g_data ? g_data->keyboard_icon_dir : L""; }
@@ -247,6 +297,18 @@ void RmlOverlay_PushMenuEvent(int kind, int index) {
     InterlockedExchange(&g_data->menu_event_kind, (LONG)kind);
     InterlockedExchange(&g_data->menu_event_index, (LONG)index);
     InterlockedIncrement(&g_data->menu_event_seq);
+}
+// Which hint bar to show — see the OverlayShared::input_mode field comment.
+LONG RmlOverlay_InputMode() {
+    return g_data ? InterlockedCompareExchange(&g_data->input_mode, 0, 0) : 0;
+}
+// See the OverlayShared::menu_loading field comment.
+bool RmlOverlay_MenuLoading() {
+    return g_data && InterlockedCompareExchange(&g_data->menu_loading, 0, 0) != 0;
+}
+// See the OverlayShared::menu_activate_down field comment.
+bool RmlOverlay_MenuActivateDown() {
+    return g_data && InterlockedCompareExchange(&g_data->menu_activate_down, 0, 0) != 0;
 }
 static HMODULE       g_selfModule = NULL;
 static volatile LONG g_unloading = 0;

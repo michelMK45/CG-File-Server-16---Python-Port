@@ -59,6 +59,30 @@ class OverlayMixin:
             self._fifa_hwnd_checked_at = now
             self._fifa_hwnd = self._find_fifa_window_handle()
 
+    def _overlay_back_or_close(self, now: float, reason: str) -> None:
+        """Contextual back/close, one step at a time: one wizard step back,
+        one scope-selection step back, or (at the top level) actually
+        closes the menu. Shared by the Esc key handling below and the
+        "Close" hint item's click handler (EVK_CLOSE_CLICK) in
+        _handle_rmlui_menu_event, so clicking it does exactly what Esc
+        already does — not by the gamepad B handling further down, which
+        defers its own final close step until B is released (see its own
+        comment on XInputEnable timing, which doesn't apply to a mouse
+        click)."""
+        if self._overlay_wizard_phase is not None:
+            self._wizard_back()
+            self._overlay_toggle_ready_at = now + 0.22
+        elif not self._overlay_scope_phase:
+            self._overlay_scope_back()
+            self._overlay_toggle_ready_at = now + 0.22
+        else:
+            self._d3d_menu_visible = False
+            self._overlay_toggle_ready_at = now + 0.22
+            self.log(f"D3D menu closed via {reason}")
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
+            self._publish_overlay_menu_state()
+
     def _sync_d3d_menu_input(self) -> None:
         """Manages the D3D in-game menu (F12 / Hold Start for 0.6s)."""
         if not self._ensure_d3d_overlay_injected(log_errors=False):
@@ -104,7 +128,7 @@ class OverlayMixin:
 
         if self._d3d_menu_visible:
             self._sync_rmlui_menu_mouse_feed(inj, overlay_hwnd)
-            self._handle_rmlui_menu_event(inj)
+            self._handle_rmlui_menu_event(inj, now)
 
         f12_down = self._is_overlay_key_down(VK_F12, menu_input_fg)
         key_up_down = self._is_overlay_key_down(VK_UP, menu_input_fg)
@@ -124,6 +148,27 @@ class OverlayMixin:
         right_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
         a_down = bool(gamepad_buttons & XINPUT_GAMEPAD_A)
         b_down = bool(gamepad_buttons & XINPUT_GAMEPAD_B)
+
+        # Which hint bar to show (see set_input_mode()): whichever device
+        # produced real input most recently wins. Mouse activity is tracked
+        # separately in _sync_rmlui_menu_mouse_feed (called above, earlier
+        # this same tick) since it already polls cursor position every tick;
+        # this only has to cover keyboard keys and gamepad buttons/sticks.
+        STICK_ACTIVITY_DEADZONE = 9000
+        gamepad_active = (
+            gamepad_buttons != 0
+            or abs(int(stick_ry)) > STICK_ACTIVITY_DEADZONE
+            or abs(int(stick_ly)) > STICK_ACTIVITY_DEADZONE
+        )
+        keyboard_key_active = (
+            key_up_down or key_down_down or key_left_down or key_right_down
+            or key_escape_down or key_pgup_down or key_pgdn_down
+            or key_home_down or key_end_down or key_enter_down
+        )
+        if gamepad_active:
+            self._overlay_input_mode = "gamepad"
+        elif keyboard_key_active:
+            self._overlay_input_mode = "keyboard"
 
         prev_buttons = self._overlay_gp_prev_buttons
         start_edge = start_down and not bool(prev_buttons & XINPUT_GAMEPAD_START)
@@ -200,25 +245,24 @@ class OverlayMixin:
                 self._uninstall_keyboard_hook()
 
         if self._d3d_menu_visible and inj is not None:
+            self._push_overlay_dashboard(inj)
             try:
-                inj.set_dashboard_content(self._build_overlay_dashboard_lines())
+                inj.set_input_mode(self._overlay_input_mode == "gamepad")
+            except Exception:
+                pass
+            try:
+                # Drives #hero-btn's press-shrink for the keyboard/gamepad
+                # "activate" inputs (menu.rml's #hero-btn.hero-pressed) —
+                # mouse clicks already get the same feedback for free from
+                # RmlUi's own :active pseudo-class, but Enter/A never touch
+                # the real mouse button state, so C++ has no other way to
+                # know they're currently held.
+                inj.set_menu_activate_down(bool(key_enter_down or a_down))
             except Exception:
                 pass
 
         if self._d3d_menu_visible and key_escape_edge and now >= self._overlay_toggle_ready_at:
-            if self._overlay_wizard_phase is not None:
-                self._wizard_back()
-                self._overlay_toggle_ready_at = now + 0.22
-            elif not self._overlay_scope_phase:
-                self._overlay_scope_back()
-                self._overlay_toggle_ready_at = now + 0.22
-            else:
-                self._d3d_menu_visible = False
-                self._overlay_toggle_ready_at = now + 0.22
-                self.log("D3D menu closed via keyboard")
-                self._uninstall_mouse_wheel_hook()
-                self._uninstall_keyboard_hook()
-                self._publish_overlay_menu_state()
+            self._overlay_back_or_close(now, "keyboard")
 
         if self._d3d_menu_visible and b_edge and now >= self._overlay_toggle_ready_at:
             if self._overlay_wizard_phase is not None:
@@ -243,13 +287,24 @@ class OverlayMixin:
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
 
-        if self._d3d_menu_visible and now >= self._overlay_tab_ready_at:
+        # Tab switch: same initial-delay-then-repeat feel as list navigation
+        # below (hold L/R or Left/Right to keep cycling tabs, not just one
+        # step per press).
+        if self._d3d_menu_visible:
+            tab_left_down = left_shoulder_down or key_left_down
+            tab_right_down = right_shoulder_down or key_right_down
             if left_shoulder_edge or key_left_edge:
                 self._set_overlay_tab(self._overlay_tab_index - 1, "gamepad-l")
-                self._overlay_tab_ready_at = now + 0.14
+                self._overlay_tab_ready_at = now + 0.40
             elif right_shoulder_edge or key_right_edge:
                 self._set_overlay_tab(self._overlay_tab_index + 1, "gamepad-r")
-                self._overlay_tab_ready_at = now + 0.14
+                self._overlay_tab_ready_at = now + 0.40
+            elif (tab_left_down or tab_right_down) and now >= self._overlay_tab_ready_at:
+                if tab_left_down:
+                    self._set_overlay_tab(self._overlay_tab_index - 1, "gamepad-l")
+                else:
+                    self._set_overlay_tab(self._overlay_tab_index + 1, "gamepad-r")
+                self._overlay_tab_ready_at = now + 0.03
 
         # DPAD up/down: navigate list items (with initial delay + repeat)
         if self._d3d_menu_visible and self._overlay_item_count > 0:
@@ -279,7 +334,19 @@ class OverlayMixin:
             wheel_steps = self._overlay_mouse_wheel_steps
             if wheel_steps:
                 self._overlay_mouse_wheel_steps = 0
-                self._navigate_menu_items(-wheel_steps * 3)
+                # One item per notch (matches the arrow keys' own step of 1),
+                # not *3: on a short list (e.g. the wizard's 2-option scope
+                # picker) a 3-item jump through a 2-item circular list lands
+                # on the same index regardless of scroll direction (-3 % 2
+                # == 3 % 2 == 1), which is exactly what read as "scroll
+                # direction reversed/random" — direction only becomes
+                # reliably distinguishable once the step size is 1. A fast
+                # real-world scroll already accumulates multiple notches
+                # into wheel_steps before this fires (WH_MOUSE_LL hook adds
+                # one per notch as they happen), so long lists still move
+                # several items on a fast flick — this isn't losing speed,
+                # just removing an artificial multiplier on top of it.
+                self._navigate_menu_items(-wheel_steps)
 
             abs_ry = abs(int(stick_ry))
             deadzone = 9000
@@ -410,131 +477,143 @@ class OverlayMixin:
         inj = self._d3d_injector
         if inj is None:
             return
+        self._push_overlay_dashboard(inj)
+        # Loading spinner (cgfs16_rmlui_menu.cpp) while this function does its
+        # (synchronous, on this same thread) item-list scan below — e.g.
+        # discover_stadium_names() for the Stadiums tab, which can take a
+        # moment. try/finally so a stuck-on spinner can't survive an
+        # exception anywhere in this function.
         try:
-            inj.set_dashboard_content(self._build_overlay_dashboard_lines())
+            inj.set_menu_loading(True)
         except Exception:
             pass
-        items: list[str] = []
         try:
-            def _list_dirs(base) -> list[str]:
-                if base is None:
-                    return []
-                p = Path(base)
-                if not p.exists():
-                    return []
-                return sorted(d.name for d in p.iterdir() if d.is_dir())
+            items: list[str] = []
+            try:
+                def _list_dirs(base) -> list[str]:
+                    if base is None:
+                        return []
+                    p = Path(base)
+                    if not p.exists():
+                        return []
+                    return sorted(d.name for d in p.iterdir() if d.is_dir())
 
-            def _list_file_stems(base) -> list[str]:
-                if base is None:
-                    return []
-                p = Path(base)
-                if not p.exists():
-                    return []
-                return [f.stem for f in sorted(p.iterdir()) if f.is_file()]
+                def _list_file_stems(base) -> list[str]:
+                    if base is None:
+                        return []
+                    p = Path(base)
+                    if not p.exists():
+                        return []
+                    return [f.stem for f in sorted(p.iterdir()) if f.is_file()]
 
-            def _first_img_dir(*paths) -> Path | None:
-                for p in paths:
-                    if Path(p).exists():
-                        return Path(p)
-                return None
+                def _first_img_dir(*paths) -> Path | None:
+                    for p in paths:
+                        if Path(p).exists():
+                            return Path(p)
+                    return None
 
+                if self._overlay_scope_phase:
+                    tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                    scope_options = self._get_scope_options_for_tab(tab_name)
+                    items = [label for label, _code in scope_options]
+                elif self._overlay_wizard_phase == "police":
+                    items = [str(i) for i in range(1, 11)]
+                elif self._overlay_wizard_phase == "pitch":
+                    exedir = getattr(self, "exedir", None)
+                    img_dir = _first_img_dir(
+                        Path(exedir) / "FSW" / "Images" / "PitchMowPattern",
+                        Path(exedir) / "FSW" / "PitchMowPattern",
+                    ) if exedir else None
+                    items = _list_file_stems(img_dir) or ["0"]
+                elif self._overlay_wizard_phase == "net":
+                    exedir = getattr(self, "exedir", None)
+                    img_dir = _first_img_dir(
+                        Path(exedir) / "FSW" / "Images" / "Nets",
+                        Path(exedir) / "FSW" / "Nets",
+                    ) if exedir else None
+                    items = _list_file_stems(img_dir) or ["0"]
+                elif self._overlay_wizard_phase == "kittype":
+                    items = [self.kitmix_kittype_labels[k] for k in KIT_TYPES]
+                else:
+                    tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                    if tab_name == "scoreboards":
+                        items = _list_dirs(getattr(self, "ScoreBoard", None))
+                    elif tab_name == "stadiums":
+                        stadium_root = getattr(self, "targetpath", None)
+                        items = discover_stadium_names(stadium_root) if stadium_root else []
+                    elif tab_name == "movies":
+                        items = _list_dirs(getattr(self, "Movies", None))
+                    elif tab_name == "tvlogos":
+                        items = _list_dirs(getattr(self, "TVLogo", None))
+                    elif tab_name == "chants":
+                        exedir = getattr(self, "exedir", None)
+                        if exedir:
+                            items = _list_dirs(Path(exedir) / "FSV")
+                    elif tab_name == "kits":
+                        team_id = (self.HID if self._overlay_selected_scope == "home" else self.AID) or ""
+                        kittype_code = self._overlay_selected_kittype or "0"
+                        kit_sets = self.kit_mixer.list_kit_sets(team_id, kittype_code) if team_id else []
+                        # A leading None represents the team's own default/
+                        # original kit (what "Restore Original Kit" would revert
+                        # to) — same convention as the F7-F10 hotkey cycle, so
+                        # it's selectable here as just one more entry.
+                        self._overlay_kit_sets_cache = [None] + kit_sets
+                        items = ["Default"] + [
+                            f"{e['tourn_id']}  —  {'Complete' if e['complete'] else 'Partial'}"
+                            for e in kit_sets
+                        ]
+            except Exception as exc:
+                self.log(f"Menu content error (wizard={self._overlay_wizard_phase}): {exc}")
+            self._overlay_items = items
+            self._overlay_selected_index = 0
+            self._overlay_scroll_offset  = 0
+            self._overlay_item_count     = len(items)
+            self._overlay_window_base    = 0
+
+            # Wizard step header shown above the item list
+            phase = self._overlay_wizard_phase
             if self._overlay_scope_phase:
                 tab_name = self._overlay_tab_names[self._overlay_tab_index]
-                scope_options = self._get_scope_options_for_tab(tab_name)
-                items = [label for label, _code in scope_options]
-            elif self._overlay_wizard_phase == "police":
-                items = [str(i) for i in range(1, 11)]
-            elif self._overlay_wizard_phase == "pitch":
-                exedir = getattr(self, "exedir", None)
-                img_dir = _first_img_dir(
-                    Path(exedir) / "FSW" / "Images" / "PitchMowPattern",
-                    Path(exedir) / "FSW" / "PitchMowPattern",
-                ) if exedir else None
-                items = _list_file_stems(img_dir) or ["0"]
-            elif self._overlay_wizard_phase == "net":
-                exedir = getattr(self, "exedir", None)
-                img_dir = _first_img_dir(
-                    Path(exedir) / "FSW" / "Images" / "Nets",
-                    Path(exedir) / "FSW" / "Nets",
-                ) if exedir else None
-                items = _list_file_stems(img_dir) or ["0"]
-            elif self._overlay_wizard_phase == "kittype":
-                items = [self.kitmix_kittype_labels[k] for k in KIT_TYPES]
+                header = f"Select scope  ->  {tab_name.rstrip('s').title()}"
+            elif phase == "police":
+                header = f"Stadium: {self._overlay_wizard_stadium or '?'}  ->  Police Pattern"
+            elif phase == "pitch":
+                header = f"Police: {self._overlay_wizard_police or '?'}  ->  Pitch Mow Pattern"
+            elif phase == "net":
+                header = f"Pitch: {self._overlay_wizard_pitch or '?'}  ->  Net Pattern"
+            elif phase == "kittype":
+                team_label = "Home Team" if self._overlay_selected_scope == "home" else "Away Team"
+                header = f"{team_label}  ->  Select Kit Type"
             else:
-                tab_name = self._overlay_tab_names[self._overlay_tab_index]
-                if tab_name == "scoreboards":
-                    items = _list_dirs(getattr(self, "ScoreBoard", None))
-                elif tab_name == "stadiums":
-                    stadium_root = getattr(self, "targetpath", None)
-                    items = discover_stadium_names(stadium_root) if stadium_root else []
-                elif tab_name == "movies":
-                    items = _list_dirs(getattr(self, "Movies", None))
-                elif tab_name == "tvlogos":
-                    items = _list_dirs(getattr(self, "TVLogo", None))
-                elif tab_name == "chants":
-                    exedir = getattr(self, "exedir", None)
-                    if exedir:
-                        items = _list_dirs(Path(exedir) / "FSV")
-                elif tab_name == "kits":
-                    team_id = (self.HID if self._overlay_selected_scope == "home" else self.AID) or ""
-                    kittype_code = self._overlay_selected_kittype or "0"
-                    kit_sets = self.kit_mixer.list_kit_sets(team_id, kittype_code) if team_id else []
-                    # A leading None represents the team's own default/
-                    # original kit (what "Restore Original Kit" would revert
-                    # to) — same convention as the F7-F10 hotkey cycle, so
-                    # it's selectable here as just one more entry.
-                    self._overlay_kit_sets_cache = [None] + kit_sets
-                    items = ["Default"] + [
-                        f"{e['tourn_id']}  —  {'Complete' if e['complete'] else 'Partial'}"
-                        for e in kit_sets
-                    ]
-        except Exception as exc:
-            self.log(f"Menu content error (wizard={self._overlay_wizard_phase}): {exc}")
-        self._overlay_items = items
-        self._overlay_selected_index = 0
-        self._overlay_scroll_offset  = 0
-        self._overlay_item_count     = len(items)
-        self._overlay_window_base    = 0
+                scope_label = ""
+                if self._overlay_selected_scope is not None:
+                    tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                    for label, code in self._get_scope_options_for_tab(tab_name):
+                        if code == self._overlay_selected_scope:
+                            scope_label = label
+                            break
+                if self._overlay_tab_names[self._overlay_tab_index] == "kits" and scope_label:
+                    kittype_label = "Home"
+                    for key, code in KIT_TYPES.items():
+                        if code == self._overlay_selected_kittype:
+                            kittype_label = self.kitmix_kittype_labels.get(key, key.capitalize())
+                            break
+                    header = f"[{scope_label}]  ->  {kittype_label}"
+                else:
+                    header = f"[{scope_label}]" if scope_label else ""
+            self._overlay_list_header = header
+            try:
+                inj.set_list_header(header)
+            except Exception:
+                pass
 
-        # Wizard step header shown above the item list
-        phase = self._overlay_wizard_phase
-        if self._overlay_scope_phase:
-            tab_name = self._overlay_tab_names[self._overlay_tab_index]
-            header = f"Select scope  →  {tab_name.rstrip('s').title()}"
-        elif phase == "police":
-            header = f"Stadium: {self._overlay_wizard_stadium or '?'}  →  Police Pattern"
-        elif phase == "pitch":
-            header = f"Police: {self._overlay_wizard_police or '?'}  →  Pitch Mow Pattern"
-        elif phase == "net":
-            header = f"Pitch: {self._overlay_wizard_pitch or '?'}  →  Net Pattern"
-        elif phase == "kittype":
-            team_label = "Home Team" if self._overlay_selected_scope == "home" else "Away Team"
-            header = f"{team_label}  →  Select Kit Type"
-        else:
-            scope_label = ""
-            if self._overlay_selected_scope is not None:
-                tab_name = self._overlay_tab_names[self._overlay_tab_index]
-                for label, code in self._get_scope_options_for_tab(tab_name):
-                    if code == self._overlay_selected_scope:
-                        scope_label = label
-                        break
-            if self._overlay_tab_names[self._overlay_tab_index] == "kits" and scope_label:
-                kittype_label = "Home"
-                for key, code in KIT_TYPES.items():
-                    if code == self._overlay_selected_kittype:
-                        kittype_label = self.kitmix_kittype_labels.get(key, key.capitalize())
-                        break
-                header = f"[{scope_label}]  →  {kittype_label}"
-            else:
-                header = f"[{scope_label}]" if scope_label else ""
-        self._overlay_list_header = header
-        try:
-            inj.set_list_header(header)
-        except Exception:
-            pass
-
-        self._refresh_d3d_window()
-        self._update_d3d_preview_image()
+            self._refresh_d3d_window()
+            self._update_d3d_preview_image()
+        finally:
+            try:
+                inj.set_menu_loading(False)
+            except Exception:
+                pass
 
     def _refresh_d3d_window(self) -> None:
         """Write a sliding window of the current tab's items to shared memory."""
@@ -560,11 +639,39 @@ class OverlayMixin:
         window_items = items[base : base + _WIN]
         window_scroll = max(0, scroll - base)
         window_sel = max(0, sel - base)
+        window_thumbs = self._resolve_stadium_row_thumbs(window_items)
         try:
-            inj.set_menu_content(window_items, window_sel, window_scroll)
+            inj.set_menu_content(window_items, window_sel, window_scroll, thumb_paths=window_thumbs)
             inj.set_window_info(total, base)
         except Exception:
             pass
+
+    def _resolve_stadium_row_thumbs(self, window_items: list[str]) -> list[str] | None:
+        """Per-row thumbnail paths for the Stadiums tab's list (Phase 3 visual
+        redesign) — None for every other tab/phase, so set_menu_content()
+        clears menu_item_thumb_paths[] instead of leaving stale entries from
+        a previous Stadiums visit. Uses the same
+        _resolve_stadium_preview_path_or_default() the big hero preview
+        already calls for the selected item, cached per stadium name since
+        it does real filesystem lookups and the same names recur constantly
+        while scrolling."""
+        if self._overlay_scope_phase or self._overlay_wizard_phase is not None:
+            return None
+        if self._overlay_tab_names[self._overlay_tab_index] != "stadiums":
+            return None
+        cache = self._overlay_stadium_thumb_cache
+        thumbs: list[str] = []
+        for name in window_items:
+            cached = cache.get(name)
+            if cached is None:
+                try:
+                    path = self._resolve_stadium_preview_path_or_default(name)
+                except Exception:
+                    path = None
+                cached = str(path) if path else ""
+                cache[name] = cached
+            thumbs.append(cached)
+        return thumbs
 
     def _get_scope_options_for_tab(self, tab_name: str) -> list[tuple[str, str]]:
         """Return [(display_label, scope_code)] for all valid scopes of the tab."""
@@ -850,13 +957,28 @@ class OverlayMixin:
                     self.log(f"Overlay wizard apply skipped ({source}): no match context")
             self._update_menu_content()
 
+    def _overlay_label_text(self, key: str, fallback: str = "-") -> str:
+        """Read a main-window Tk dashboard label's current text — shared by
+        _build_overlay_dashboard_lines (the generic stat-line list, whose
+        keys like 'stadium'/'match_clock_split' are built via _build_stat
+        into self.labels) and _push_overlay_dashboard (the compact
+        score/time text next to the crest widget, whose 'score'/'timer'
+        keys instead live in self.info_labels — the Matchup card registers
+        them with _register_info_label, not _build_stat, since they're
+        already live-updated there via _set_display's info_labels loop).
+        Checking both here is what actually makes the overlay's score/time
+        track the live match instead of being stuck on the fallback."""
+        label = self.labels.get(key)
+        if label is None:
+            info = self.info_labels.get(key)
+            label = info[0] if info else None
+        if label is None:
+            return fallback
+        text = str(label.cget("text") or "").strip()
+        return text or fallback
+
     def _build_overlay_dashboard_lines(self) -> list[str]:
-        def _label_text(key: str, fallback: str = "-") -> str:
-            label = self.labels.get(key)
-            if label is None:
-                return fallback
-            text = str(label.cget("text") or "").strip()
-            return text or fallback
+        _label_text = self._overlay_label_text
 
         if self._overlay_wizard_phase is not None:
             phase = self._overlay_wizard_phase
@@ -886,11 +1008,28 @@ class OverlayMixin:
             f"{self.tr('stat.movie')}: {_with_type(_label_text('movie', 'default'), self._movie_assignment_type)}",
             self.tr("card.match.title"),
             f"{self.tr('stat.current_page')}: {_label_text('page')}",
-            f"{self.tr('stat.minute_second')}: {_label_text('match_clock_split', '00 / 00')}",
             f"{self.tr('stat.tournament')}: {_label_text('tour')}",
             f"{self.tr('stat.round_id')}: {_label_text('round')}",
             f"{self.tr('stat.status')}: {_label_text('status', self.display_value('idle'))}",
         ]
+
+    def _push_overlay_dashboard(self, inj) -> None:
+        """Refresh both the generic dashboard stat-line list and the compact
+        score/time text shown next to the team crests (see #dash-score in
+        menu.rml) — called every ~80ms tick while the menu is open
+        (_sync_d3d_menu_input) and once more right after a tab/wizard-step
+        change (_update_menu_content)."""
+        try:
+            inj.set_dashboard_content(self._build_overlay_dashboard_lines())
+        except Exception:
+            pass
+        try:
+            inj.set_match_score_time(
+                self._overlay_label_text("score", "0 - 0"),
+                self._overlay_label_text("timer", "00:00"),
+            )
+        except Exception:
+            pass
 
     def _update_d3d_preview_image(self) -> None:
         """Update shared memory image_path to the preview of the currently highlighted item."""
@@ -1098,12 +1237,20 @@ class OverlayMixin:
             left_down = self._overlay_mouse_left_hook_down
         else:
             left_down = bool(self.user32.GetAsyncKeyState(VK_LBUTTON) & 0x8000)
+        # Real mouse activity (moved since last tick, or a click) counts as
+        # keyboard/mouse input for the hint-bar mode — plain GetCursorPos
+        # would otherwise report "movement" every tick even while the cursor
+        # sits still, which would fight gamepad navigation for the hint row.
+        pos = (int(cursor.x), int(cursor.y))
+        if left_down or pos != self._overlay_mouse_last_pos:
+            self._overlay_input_mode = "keyboard"
+        self._overlay_mouse_last_pos = pos
         try:
             inj.set_rmlui_menu_mouse(int(cursor.x), int(cursor.y), left_down)
         except Exception:
             pass
 
-    def _handle_rmlui_menu_event(self, inj) -> None:
+    def _handle_rmlui_menu_event(self, inj, tick_now: float) -> None:
         """Poll the DLL's menu_event_* "last event wins" click/scroll slot
         (written by cgfs16_rmlui_menu.cpp's MenuEventListener) once per
         ~80ms tick and replay it through the same tab/selection/activation
@@ -1116,7 +1263,11 @@ class OverlayMixin:
         Dblclick on the second mouse-down but Click on the following
         mouse-up — see the migration plan's notes on
         Context::ProcessMouseButtonDown/Up), it just reports every raw click
-        as item_click and lets this Python logic decide select-vs-activate."""
+        as item_click and lets this Python logic decide select-vs-activate.
+        tick_now is _sync_d3d_menu_input's own perf_counter() snapshot for
+        this tick — passed through for close_click, which reuses
+        _overlay_back_or_close (the same helper the Esc key uses), rather
+        than a separately-sampled clock."""
         try:
             seq, kind, index = inj.get_menu_event()
         except Exception:
@@ -1152,6 +1303,15 @@ class OverlayMixin:
                     sel = max(new_scroll, min(self._overlay_item_count - 1, new_scroll + visible_rows - 1))
                 self._overlay_selected_index = sel
                 self._refresh_d3d_window()
+        elif kind == 4:  # hero_activate — hero panel's "Select" button; activates
+            # the already-selected item immediately, no double-click needed
+            # (unlike item_click, which only selects on a single click).
+            if self._overlay_item_count > 0:
+                self._activate_overlay_selected_item("click")
+        elif kind == 5:  # close_click — the "Close" hint item; same contextual
+            # back/close as the Esc key (one wizard step back, one scope
+            # step back, or actually close at the top level).
+            self._overlay_back_or_close(tick_now, "rmlui-mouse")
 
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)
@@ -1366,7 +1526,7 @@ class OverlayMixin:
         """F7/F8 = home prev/next, F9/F10 = away prev/next — cycles the
         currently-selected Simple Mode kit type (self.kitmix_kittype) for
         whichever team is loaded. F11 cycles that shared kit type itself
-        (Home→Away→Keeper→Third→Home...) so it can be changed without
+        (Home->Away->Keeper->Third->Home...) so it can be changed without
         switching to the CGFS window — both sides always cycle within
         whatever type F11 last selected, matching the single shared
         combobox Simple Mode already has. Fires whenever FIFA is detected,
