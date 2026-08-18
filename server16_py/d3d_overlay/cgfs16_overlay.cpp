@@ -174,6 +174,38 @@ struct OverlayShared {
     // Python's set_menu_activate_down(), read via
     // RmlOverlay_MenuActivateDown() below.
     volatile LONG menu_activate_down;
+    // 1 while the F12 overlay should show the "Filter" button beside the
+    // wizard-header band (Stadiums tab only) — clickable with the mouse AND
+    // shows the Y glyph in gamepad mode. Python computes the gating
+    // condition (Stadiums tab, past the scope step, not mid-wizard) and
+    // just tells the DLL yes/no — see set_stadium_filter_hint_visible() /
+    // RmlOverlay_StadiumFilterHintVisible().
+    volatile LONG stadium_filter_hint_visible;
+    // 1 while the Stadiums country-filter bubble (opened by the Filter
+    // button / gamepad Y) is open — tells cgfs16_rmlui_menu.cpp to render
+    // #list-area as a small bordered popover anchored under the wizard-
+    // header instead of the normal full-height list. See
+    // set_stadium_filter_panel_open() / RmlOverlay_StadiumFilterPanelOpen().
+    volatile LONG stadium_filter_panel_open;
+    // Parallel to menu_items[]/menu_item_thumb_paths[], windowed identically
+    // — 1 marks a row as "checked" (lit up via .row-checked) rather than
+    // encoding that into the row's own text. Only meaningful while the
+    // Stadiums filter bubble is open; left all-zero otherwise. See
+    // set_menu_content()'s checked parameter /
+    // RmlOverlay_MenuItemChecked().
+    volatile LONG menu_item_checked[MAX_MENU_ITEMS];
+    // DLL -> Python: real number of columns the Stadiums country-filter grid
+    // is actually rendering this frame, computed by RmlMenu_Sync from the
+    // same box-model math (item width + column-gap) that #list-area.bubble's
+    // RCSS uses. A previous version of this feature hardcoded the column
+    // count (7) identically on both sides — worked only by coincidence at
+    // whatever panel width it was tuned against; at any other width RmlUi's
+    // flex-wrap actually fit a different number of columns per line, so a
+    // full-row Up/Down step (a fixed multiple of the hardcoded count) landed
+    // in the wrong column — the highlighted cell visibly walked diagonally.
+    // Sending the real, current count back removes the need for either side
+    // to guess. Only meaningful while stadium_filter_panel_open is set.
+    volatile LONG menu_filter_grid_cols;
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -229,6 +261,12 @@ bool RmlOverlay_MenuVisible() {
 // RCSS-derived layout math; read by d3d_injector.py's get_menu_metrics().
 void RmlOverlay_SetMenuVisibleRows(int rows) {
     if (g_data) InterlockedExchange(&g_data->menu_visible_rows, (LONG)rows);
+}
+// DLL -> Python: real column count of the Stadiums filter grid this frame —
+// see menu_filter_grid_cols' field comment. Read by
+// d3d_injector.py's get_filter_grid_cols().
+void RmlOverlay_SetMenuFilterGridCols(int cols) {
+    if (g_data) InterlockedExchange(&g_data->menu_filter_grid_cols, (LONG)cols);
 }
 // DLL -> Python: swapchain output viewport width/height/HWND, written by
 // RmlMenu_Sync whenever the menu is visible. Formerly written directly by
@@ -309,6 +347,19 @@ bool RmlOverlay_MenuLoading() {
 // See the OverlayShared::menu_activate_down field comment.
 bool RmlOverlay_MenuActivateDown() {
     return g_data && InterlockedCompareExchange(&g_data->menu_activate_down, 0, 0) != 0;
+}
+// See the OverlayShared::stadium_filter_hint_visible field comment.
+bool RmlOverlay_StadiumFilterHintVisible() {
+    return g_data && InterlockedCompareExchange(&g_data->stadium_filter_hint_visible, 0, 0) != 0;
+}
+// See the OverlayShared::stadium_filter_panel_open field comment.
+bool RmlOverlay_StadiumFilterPanelOpen() {
+    return g_data && InterlockedCompareExchange(&g_data->stadium_filter_panel_open, 0, 0) != 0;
+}
+// See the OverlayShared::menu_item_checked field comment.
+bool RmlOverlay_MenuItemChecked(int index) {
+    if (!g_data || index < 0 || index >= MAX_MENU_ITEMS) return false;
+    return InterlockedCompareExchange(&g_data->menu_item_checked[index], 0, 0) != 0;
 }
 static HMODULE       g_selfModule = NULL;
 static volatile LONG g_unloading = 0;

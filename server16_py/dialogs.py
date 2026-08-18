@@ -8,7 +8,13 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from .file_tools import discover_stadium_names, resolve_stadium_preview_path, stadium_preview_fallback_path
+from .file_tools import (
+    discover_stadium_names,
+    resolve_stadium_preview_path,
+    stadium_country_code,
+    stadium_country_counts,
+    stadium_preview_fallback_path,
+)
 
 
 SCOREBOARD_SCOPE_OPTIONS = (
@@ -551,14 +557,7 @@ class StadiumDialog(BaseDialog):
         return [item.stem for item in sorted(folder.iterdir()) if item.is_file()]
 
     def _country_code_for_stadium(self, stadium_name: str) -> str:
-        stadium_name = (stadium_name or "").strip()
-        if stadium_name == "None":
-            return "Other"
-        if " - " in stadium_name:
-            code = stadium_name.split(" - ", 1)[0].strip().upper()
-            if len(code) == 3 and code.isalpha():
-                return code
-        return "Other"
+        return stadium_country_code(stadium_name)
 
     @staticmethod
     def _normalize_text(value: str) -> str:
@@ -566,12 +565,7 @@ class StadiumDialog(BaseDialog):
         return "".join(char for char in normalized if not unicodedata.combining(char)).lower()
 
     def _build_country_group_values(self, stadium_names: list[str]) -> list[str]:
-        counts: dict[str, int] = {}
-        for name in stadium_names:
-            if name == "None":
-                continue
-            code = self._country_code_for_stadium(name)
-            counts[code] = counts.get(code, 0) + 1
+        counts = stadium_country_counts(stadium_names)
         values = [f"{self.tr('dialog.stadium.all_countries')} ({sum(counts.values())})"]
         self._country_group_labels = {"All Countries": values[0]}
         for code in sorted(counts):

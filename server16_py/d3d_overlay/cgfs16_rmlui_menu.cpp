@@ -32,6 +32,7 @@ void Log(const char *fmt, ...);
 // cgfs16_overlay.cpp / d3d_injector.py exactly.
 bool RmlOverlay_MenuVisible();
 void RmlOverlay_SetMenuVisibleRows(int rows);
+void RmlOverlay_SetMenuFilterGridCols(int cols);
 void RmlOverlay_SetMenuViewportTelemetry(int vpW, int vpH, void *outputWindow);
 long RmlOverlay_ActiveTab();
 long RmlOverlay_MenuItemCount();
@@ -58,12 +59,27 @@ void RmlOverlay_PushMenuEvent(int kind, int index);
 long RmlOverlay_InputMode();
 bool RmlOverlay_MenuLoading();
 bool RmlOverlay_MenuActivateDown();
+bool RmlOverlay_StadiumFilterHintVisible();
+bool RmlOverlay_StadiumFilterPanelOpen();
+bool RmlOverlay_MenuItemChecked(int index);
 
 #define MAX_MENU_ITEMS    256
 #define MAX_DASH_ITEMS    10
 #define NUM_MENU_TABS     5
 #define MAX_IMG           512
-#define ROW_POOL          64
+// Matches MAX_MENU_ITEMS: for a single-column list, 64 was already more
+// than any realistic visibleRows (a tall list only ever needs enough pool
+// slots to cover the tallest possible viewport). The Stadiums filter
+// bubble's grid broke that assumption — each "line" consumes as many pool
+// slots as the grid has real columns (filterGridCols, see RmlMenu_Sync), so
+// visibleRows there routinely exceeded 64 well before the box ran out of
+// actual vertical room,
+// silently truncating the grid to ~9 lines even when 15-20+ would fit —
+// see the RmlMenu_Sync comment on visibleRows for the full column-count
+// math. Pinning ROW_POOL to the same ceiling as MAX_MENU_ITEMS removes any
+// future possibility of the pool being the bottleneck again, regardless of
+// column count or screen size.
+#define ROW_POOL          256
 // Navigate/Scroll/Close only — Select (A/Enter) and Tab (LB+RB / Left+Right)
 // moved out of the bottom hint bar into contextual spots (hero button /
 // selected-or-hovered row, and beside the tab strip respectively). See
@@ -182,9 +198,9 @@ static bool ApplyPanelCloseAnim(Rml::Element *el) {
 // truth for these tables today) gets deleted at cutover, at which point only
 // this copy remains.
 // ---------------------------------------------------------------------------
-enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_ICON_COUNT };
+enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_Y, GP_ICON_COUNT };
 static const wchar_t * const kGpIconFiles[GP_ICON_COUNT] = {
-    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png",
+    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png", L"y.png",
 };
 struct HintDef { int icons[2]; const wchar_t *description; };
 // Tab (LB+RB) and Select (A) live beside the tab strip / hero button / row
@@ -224,6 +240,8 @@ static Rml::Element *g_contentBg = nullptr;
 static Rml::Element *g_wizardHeader = nullptr;
 static Rml::Element *g_wizardHeaderText = nullptr;
 static Rml::Element *g_listArea = nullptr;
+// Stadiums country filter bubble — see .bubble in menu.rml.
+static bool           g_listAreaBubbleCache = false;
 static Rml::Element *g_row[ROW_POOL] = {};
 // .row-text/.row-thumb children (Phase 3) — text is set on g_rowText, not
 // g_row itself, because SetInnerRML replaces ALL children of its target,
@@ -234,6 +252,9 @@ static std::wstring  g_rowTextCache[ROW_POOL];
 static std::wstring  g_rowThumbPathLoaded[ROW_POOL];
 static bool           g_rowShown[ROW_POOL] = {};
 static bool           g_rowSelected[ROW_POOL] = {};
+// Stadiums country filter bubble only — see .row.checked in menu.rml /
+// RmlOverlay_MenuItemChecked.
+static bool           g_rowChecked[ROW_POOL] = {};
 static bool           g_rowStadiumStyled[ROW_POOL] = {};
 static Rml::Element *g_emptyState = nullptr;
 static Rml::Element *g_loadingSpinner = nullptr;
@@ -275,6 +296,27 @@ static Rml::Element *g_tabHintL = nullptr;
 static Rml::Element *g_tabHintR = nullptr;
 static wchar_t        g_tabHintLIconLoaded[MAX_IMG] = {};
 static wchar_t        g_tabHintRIconLoaded[MAX_IMG] = {};
+// "Filter" button beside the wizard-header band — opens/closes the
+// Stadiums country filter bubble (see stadium_filter_panel_open). Visible
+// (and clickable) in both gamepad and keyboard/mouse mode, shown only when
+// RmlOverlay_StadiumFilterHintVisible() says so. Missing from the document
+// is tolerated (not part of RmlMenu_Load's required-elements check) since
+// it's a nicety, not load-bearing.
+static Rml::Element *g_filterBtn = nullptr;
+static Rml::Element *g_filterBtnIcon = nullptr;
+static wchar_t        g_filterBtnIconLoaded[MAX_IMG] = {};
+// "Clear" button beside it — unchecks every country code. Mouse-clickable
+// (plain "Clear" label). Gamepad has no separate button for this — the
+// gesture is holding Y on g_filterBtn itself for 0.6s, handled Python-side
+// (see _clear_stadium_filter in app_overlay.py) — but this element is
+// re-labeled "Hold to Clear" + given the same Y glyph in gamepad mode so
+// that gesture is actually discoverable on screen, rather than the label
+// staying the mouse-only "Clear" wording gamepad users have no click target
+// for.
+static Rml::Element *g_filterClearBtn = nullptr;
+static Rml::Element *g_filterClearBtnIcon = nullptr;
+static Rml::Element *g_filterClearBtnLabel = nullptr;
+static wchar_t        g_filterClearBtnIconLoaded[MAX_IMG] = {};
 static Rml::Element *g_dashboard = nullptr;
 static Rml::Element *g_dashScore = nullptr;
 static Rml::Element *g_homeCrest = nullptr;
@@ -529,6 +571,13 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     }
     g_tabHintL = g_menuDoc->GetElementById("tab-hint-l");
     g_tabHintR = g_menuDoc->GetElementById("tab-hint-r");
+    g_filterBtn = g_menuDoc->GetElementById("filter-btn");
+    if (g_filterBtn) g_filterBtnIcon = g_filterBtn->QuerySelector(".icon1");
+    g_filterClearBtn = g_menuDoc->GetElementById("filter-clear-btn");
+    if (g_filterClearBtn) {
+        g_filterClearBtnIcon = g_filterClearBtn->QuerySelector(".icon1");
+        g_filterClearBtnLabel = g_filterClearBtn->QuerySelector(".label");
+    }
     g_contentBg = g_menuDoc->GetElementById("content-bg");
     g_wizardHeader = g_menuDoc->GetElementById("wizard-header");
     g_wizardHeaderText = g_menuDoc->GetElementById("wizard-header-text");
@@ -629,6 +678,12 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     // both get a listener since either could be the visible one.
     g_hintCloseKey->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
     g_hintCloseGp->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+    // "Filter" button (Stadiums tab) — opens/closes the country filter
+    // bubble (see EVK_FILTER_TOGGLE). Optional element (see g_filterBtn's
+    // comment), so guarded rather than asserted in the required-elements ok
+    // check above.
+    if (g_filterBtn) g_filterBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+    if (g_filterClearBtn) g_filterClearBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
 
     Log("[RmlMenu] Load ok ('%s')", path.c_str());
     return true;
@@ -636,7 +691,7 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
 
 // menu_event_kind values — must match d3d_injector.py's get_menu_event() /
 // app_overlay.py's _handle_rmlui_menu_event() docstrings exactly.
-enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5 };
+enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5, EVK_FILTER_TOGGLE = 6, EVK_FILTER_CLEAR = 7 };
 
 // Converts a relative position along the scrollbar track [0, 1] into an
 // absolute scroll target, using the same maxScrollTotal = totalCount -
@@ -656,6 +711,14 @@ void MenuEventListener::ProcessEvent(Rml::Event &event) {
     if (event == Rml::EventId::Click) {
         if (cur == g_heroBtn) {
             RmlOverlay_PushMenuEvent(EVK_HERO_ACTIVATE, 0);
+            return;
+        }
+        if (cur == g_filterBtn) {
+            RmlOverlay_PushMenuEvent(EVK_FILTER_TOGGLE, 0);
+            return;
+        }
+        if (cur == g_filterClearBtn) {
+            RmlOverlay_PushMenuEvent(EVK_FILTER_CLEAR, 0);
             return;
         }
         if (cur == g_hintCloseKey || cur == g_hintCloseGp) {
@@ -810,7 +873,19 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     long windowBase = (std::max)(0L, RmlOverlay_MenuWindowBase());
     const wchar_t *listHeaderW = RmlOverlay_ListHeader();
     bool showHeader = listHeaderW && listHeaderW[0] != L'\0';
-    bool showSplit = (activeTab == 1 || activeTab == 4);
+    // Stadiums country filter bubble — see stadium_filter_panel_open's field
+    // comment. Gated on TAB_STADIUMS defensively (Python only ever sets it
+    // while on that tab, but a stale True lingering across a fast tab-switch
+    // frame should never make an unrelated tab's list shrink into a bubble).
+    bool filterPanelOpen = (activeTab == TAB_STADIUMS) && RmlOverlay_StadiumFilterPanelOpen();
+    // filterPanelOpen must be computed before this: a stadium preview is
+    // meaningless while picking country filters, and — more importantly —
+    // showSplit also drives listSideW/adjListW below, which the grid's real
+    // column count (filterGridCols, see the visibleRows block further down)
+    // is derived from. Squeezing the grid into ~60% of the panel's width
+    // (the split-preview share) left far less room than a popover this size
+    // reasonably wants — full width lets the grid actually use the space.
+    bool showSplit = (activeTab == 1 || activeTab == 4) && !filterPanelOpen;
     // Computed once here (not down at the bottom hint bar anymore) since the
     // tab-strip hints, hero-btn icon, and row-action hint all need it too.
     bool gamepadMode = RmlOverlay_InputMode() != 0;
@@ -875,7 +950,10 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     // drives visibleRows/scrollbar sizing to match what flex actually renders.
     const float ITEM_H_DEFAULT = 28.f;
     const float ITEM_H_STADIUMS = 56.f;
-    const float ITEM_H = (activeTab == TAB_STADIUMS) ? ITEM_H_STADIUMS : ITEM_H_DEFAULT;
+    // Filter bubble rows are plain text (country codes, no thumbnail) even
+    // though activeTab is Stadiums — always the short default height, never
+    // the tall thumbnail-row height.
+    const float ITEM_H = (activeTab == TAB_STADIUMS && !filterPanelOpen) ? ITEM_H_STADIUMS : ITEM_H_DEFAULT;
     const float SCROLL_W = 12.f;
     const float SCROLL_GAP = 6.f;
     const float HEADER_H = 30.f;
@@ -907,8 +985,44 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     const float adjListW = listSideW - SCROLL_W - SCROLL_GAP;
     const float lScrollX = lListX + adjListW + SCROLL_GAP;
     const float lAdjListY = lListY + (showHeader ? (HEADER_H + 4.f) : 0.f);
+    // Bubble mode used to cap the list to a fixed handful of rows so it read
+    // as a small popover — dropped: at smaller output resolutions the real
+    // available column height was already less than that cap, so the cap
+    // wasn't even the limiting factor there and just left most users with a
+    // half-empty box. Full available height (same as the non-bubble list)
+    // instead — more rows on screen, less scrolling, in every case. The
+    // bordered/backgrounded .bubble styling (menu.rml) still reads as a
+    // distinct popover even at full height.
     const float adjScrollH = (std::max)(1.f, lListYMax - lAdjListY);
-    const int visibleRows = (std::max)(1, (int)floorf((lListYMax - lAdjListY) / ITEM_H));
+    // Filter bubble rows lay out as a grid (#list-area.bubble in menu.rml:
+    // flex-wrap row instead of a single column). A fixed column count used
+    // to be hardcoded identically on both this file and app_overlay.py's
+    // _FILTER_GRID_COLS — that only ever matched RmlUi's actual flex-wrap
+    // column count by coincidence at whatever panel width it was tuned
+    // against; at any other width (a different resolution, a resized panel)
+    // a different number of real columns fit per line, so a full-row
+    // Up/Down step sized for the wrong column count landed one column off —
+    // the highlighted cell visibly walked diagonally. FILTER_COL_W/GAP below
+    // mirror #list-area.bubble .row's own fixed `width`/`column-gap` RCSS
+    // exactly, so filterGridCols is the real, current fit — computed here
+    // (the one place panel geometry is computed, per this file's header
+    // comment) and sent to Python via RmlOverlay_SetMenuFilterGridCols so it
+    // never has to duplicate this math or guess. visibleRows becomes "cells
+    // that fit" (columns * lines) using that real count, not just "lines
+    // that fit" — Python's virtual-scroll window/scrollbar/PgUp-PgDn math
+    // just treats visibleRows as "how many flat-indexed items are on
+    // screen" and stays correct without needing to know rows wrap into
+    // columns at all. FILTER_ROW_GAP mirrors menu.rml's row-gap so the fit
+    // estimate accounts for the gap between lines, not just each line's own
+    // height.
+    const float FILTER_COL_W = 130.f;
+    const float FILTER_COL_GAP = 8.f;
+    const int filterGridCols = (std::max)(1, (int)floorf((adjListW + FILTER_COL_GAP) / (FILTER_COL_W + FILTER_COL_GAP)));
+    RmlOverlay_SetMenuFilterGridCols(filterGridCols);
+    const float FILTER_ROW_GAP = 6.f;
+    const int visibleRows = filterPanelOpen
+        ? (std::max)(1, filterGridCols * (int)floorf((adjScrollH + FILTER_ROW_GAP) / (ITEM_H + FILTER_ROW_GAP)))
+        : (std::max)(1, (int)floorf(adjScrollH / ITEM_H));
     RmlOverlay_SetMenuVisibleRows(visibleRows);
     // Step 4: cache for the scrollbar event handlers (MenuEventListener),
     // which run from an event callback outside this function's call stack.
@@ -1026,8 +1140,71 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         if (g_wizardHeaderText) g_wizardHeaderText->SetInnerRML(WideToUtf8(listHeaderW));
     }
 
-    // ── Item list (fixed 64-row pool; pool slot k = real item scrollOffset+k)
+    // ── "Filter" button (Stadiums country filter bubble), floating at the
+    // header band's right edge. Clickable in BOTH gamepad and keyboard/mouse
+    // mode (see EVK_FILTER_TOGGLE) — gamepad mode additionally shows the Y
+    // glyph next to the "Filter" label, since that's also a direct shortcut
+    // for it; keyboard/mouse mode shows just the label, click-only. Python
+    // already gates the full condition (Stadiums tab, past the scope step,
+    // not mid-wizard) into stadium_filter_hint_visible; showHeader is ANDed
+    // in defensively so this never floats with no header row to anchor
+    // beside (in practice the two are always true together on the Stadiums
+    // leaf list, since a scope is always selected by the time you reach it).
+    bool showFilterBtn = showHeader && RmlOverlay_StadiumFilterHintVisible();
+    // 38px tall to match .hint-item's own box (3px padding + 32px icon +
+    // 3px padding, per menu.rml's .hint-item/.hint-item img rules) rather
+    // than clipping the icon. Declared outside the visibility ifs below so
+    // both the Filter and Clear buttons can share the same anchor math.
+    const float btnH = 38.f;
+    const float btnW = 108.f;
+    const float btnX = lListX + adjListW + SCROLL_W + SCROLL_GAP - btnW - 6.f;
+    const float btnY = lListY + (HEADER_H - btnH) / 2.f;
+    if (g_filterBtn) {
+        SetVisible(g_filterBtn, showFilterBtn, "flex");
+        if (showFilterBtn) {
+            SetRectPx(g_filterBtn, btnX, btnY, btnW, btnH);
+            if (g_filterBtnIcon) {
+                if (gamepadMode) {
+                    SetIconSrcCached(g_filterBtnIcon, g_filterBtnIconLoaded, MAX_IMG, gpDir, kGpIconFiles[GP_Y]);
+                    g_filterBtnIcon->SetProperty("display", "block");
+                } else {
+                    g_filterBtnIcon->SetProperty("display", "none");
+                }
+            }
+        }
+    }
+    // "Clear" button — same visibility as Filter, anchored just to its left.
+    // Mouse/keyboard mode: plain "Clear" label, click-only. Gamepad mode:
+    // "Hold to Clear" + the same Y glyph as the Filter button, since Y-hold
+    // on that button (not this one) is the actual gamepad gesture — see
+    // g_filterClearBtn's own comment above. Width flexes per mode since the
+    // gamepad label is longer.
+    if (g_filterClearBtn) {
+        SetVisible(g_filterClearBtn, showFilterBtn, "flex");
+        if (showFilterBtn) {
+            const float clearW = gamepadMode ? 150.f : 76.f;
+            const float clearX = btnX - clearW - 8.f;
+            SetRectPx(g_filterClearBtn, clearX, btnY, clearW, btnH);
+            if (g_filterClearBtnIcon) {
+                if (gamepadMode) {
+                    SetIconSrcCached(g_filterClearBtnIcon, g_filterClearBtnIconLoaded, MAX_IMG, gpDir, kGpIconFiles[GP_Y]);
+                    g_filterClearBtnIcon->SetProperty("display", "block");
+                } else {
+                    g_filterClearBtnIcon->SetProperty("display", "none");
+                }
+            }
+            if (g_filterClearBtnLabel) {
+                g_filterClearBtnLabel->SetInnerRML(gamepadMode ? "Hold to Clear" : "Clear");
+            }
+        }
+    }
+
+    // ── Item list (fixed ROW_POOL-row pool; pool slot k = real item scrollOffset+k)
     SetRectPx(g_listArea, lListX, lAdjListY, adjListW, adjScrollH);
+    if (filterPanelOpen != g_listAreaBubbleCache) {
+        if (g_listArea) g_listArea->SetClass("bubble", filterPanelOpen);
+        g_listAreaBubbleCache = filterPanelOpen;
+    }
     // Row action hint (A/Enter) tracking — see its positioning block right
     // after this loop. Rows are plain flex-column in-flow (no per-row
     // SetRectPx), so pool slot k's panel-local rect is derivable directly:
@@ -1062,6 +1239,11 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
             if (g_row[k]) g_row[k]->SetClass("selected", selected);
             g_rowSelected[k] = selected;
         }
+        bool checked = filterPanelOpen && RmlOverlay_MenuItemChecked((int)realIndex);
+        if (checked != g_rowChecked[k]) {
+            if (g_row[k]) g_row[k]->SetClass("checked", checked);
+            g_rowChecked[k] = checked;
+        }
         if (!showSplit) {
             float rowTopLocal = lAdjListY + (float)k * ITEM_H;
             // Hover only tested in keyboard/mouse mode — a gamepad user's
@@ -1095,7 +1277,7 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         // setting the same src across frames/elements is cheap and shared,
         // so no separate texture cache is needed here, just a per-row
         // reload guard to avoid redundant SetAttribute calls every frame.
-        bool stadiumRow = (activeTab == TAB_STADIUMS);
+        bool stadiumRow = (activeTab == TAB_STADIUMS) && !filterPanelOpen;
         if (stadiumRow != g_rowStadiumStyled[k]) {
             if (g_row[k]) g_row[k]->SetClass("stadium-row", stadiumRow);
             g_rowStadiumStyled[k] = stadiumRow;
@@ -1118,10 +1300,24 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     // get this inside their hero button instead (see showSplit below);
     // every other tab attaches it to whichever row is hovered, falling back
     // to the selected row when nothing is (see the tracking above the loop).
+    // Explicitly excluded from the Stadiums filter grid (filterPanelOpen):
+    // this positioning is Y-only (targetLocalY, one row's vertical slot) and
+    // anchors X to the fixed right edge of the list area — correct for a
+    // single-column list, where every row spans the full width, but the
+    // filter grid's rows are narrow, multi-column cells, so this would just
+    // sit pinned to the right edge regardless of which cell was actually
+    // hovered/selected ("the icon doesn't follow the hover"). Making it
+    // properly column-aware wasn't worth doing: filter rows are a checklist
+    // toggled by a single click/A press, not a "select then press A to
+    // proceed" list, so this affordance doesn't even apply here — before
+    // showSplit was made grid-aware (see its own comment above) filterPanelOpen
+    // was implicitly covered by showSplit always being true on the Stadiums
+    // tab; now that showSplit can be false while filterPanelOpen is true, it
+    // needs to be excluded here explicitly instead.
     {
         long targetAbsIndex = (rowHintHoverAbsIndex >= 0) ? rowHintHoverAbsIndex : rowHintSelAbsIndex;
         float targetLocalY = (rowHintHoverAbsIndex >= 0) ? rowHintHoverLocalY : rowHintSelLocalY;
-        bool showRowHint = !showSplit && targetAbsIndex >= 0;
+        bool showRowHint = !showSplit && !filterPanelOpen && targetAbsIndex >= 0;
         SetVisible(g_rowActionHint, showRowHint, "block");
         if (showRowHint) {
             const float ROW_HINT_SIZE = 20.f;

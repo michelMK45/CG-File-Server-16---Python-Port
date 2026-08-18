@@ -177,13 +177,41 @@ def discover_stadium_names(stadium_gbd: str | Path) -> list[str]:
             elif item.is_file() and item.suffix.lower() in STADIUM_ARCHIVE_SUFFIXES:
                 add(item.stem)
 
-    previews = stadium_preview_dir(root)
-    if previews.exists():
-        for item in previews.iterdir():
-            if item.is_file() and item.suffix.lower() in STADIUM_PREVIEW_SUFFIXES:
-                add(item.stem)
+    # Note: a preview thumbnail (render/thumbnail/stadium/*) never adds a stadium
+    # name by itself - it only decorates one already found above via the real
+    # folder/archive scan (see resolve_stadium_preview_path). A leftover/renamed
+    # thumbnail with no matching model must never surface as a selectable
+    # stadium on its own, since applying it crashes the load (no source to copy
+    # from; see _resolve_stadium_source).
 
     return sorted(names.values(), key=lambda value: _normalized_lookup_name(value))
+
+
+def stadium_country_code(stadium_name: str) -> str:
+    """3-letter country-code prefix convention used by community stadium
+    packs (e.g. "ARG - Estadio ..."); "Other" for anything that doesn't
+    match. Shared by the desktop StadiumDialog country filter and the F12
+    overlay's Stadiums country filter panel."""
+    stadium_name = (stadium_name or "").strip()
+    if not stadium_name or stadium_name == "None":
+        return "Other"
+    if " - " in stadium_name:
+        code = stadium_name.split(" - ", 1)[0].strip().upper()
+        if len(code) == 3 and code.isalpha():
+            return code
+    return "Other"
+
+
+def stadium_country_counts(stadium_names: list[str]) -> dict[str, int]:
+    """Maps country code -> number of stadiums with that code, for building
+    a country filter list."""
+    counts: dict[str, int] = {}
+    for name in stadium_names:
+        if name == "None":
+            continue
+        code = stadium_country_code(name)
+        counts[code] = counts.get(code, 0) + 1
+    return counts
 
 
 def is_archive(path: Path) -> bool:

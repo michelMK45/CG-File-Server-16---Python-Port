@@ -24,11 +24,28 @@ from .win32_types import (
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_QUIT,
     XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_BACK,
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
-    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_SUCCESS,
+    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_Y, XINPUT_SUCCESS,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
+    XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
 )
-from .file_tools import discover_stadium_names, kit_ui_placeholder_path
+from .file_tools import (
+    discover_stadium_names,
+    kit_ui_placeholder_path,
+    stadium_country_code,
+    stadium_country_counts,
+)
 from .kit_mixer import KIT_TYPES
+
+# Stadiums country filter bubble grid — fallback column count only, used
+# before cgfs16_rmlui_menu.cpp has ever reported the real, current count
+# (self._overlay_filter_grid_cols, via get_filter_grid_cols()/
+# menu_filter_grid_cols) this session. A single hardcoded count used to be
+# the only source on this side, kept in sync by hand with the CSS/C++ side —
+# it could only ever match RmlUi's actual flex-wrap column count by
+# coincidence at whatever panel width it was tuned against, so a full-row
+# Up/Down step sized off it landed one column off at any other width (the
+# highlighted cell visibly walked diagonally). See _filter_grid_cols().
+_FILTER_GRID_COLS_FALLBACK = 7
 
 
 class OverlayMixin:
@@ -69,7 +86,11 @@ class OverlayMixin:
         defers its own final close step until B is released (see its own
         comment on XInputEnable timing, which doesn't apply to a mouse
         click)."""
-        if self._overlay_wizard_phase is not None:
+        if self._overlay_filter_phase:
+            self._overlay_filter_phase = False
+            self._update_menu_content()
+            self._overlay_toggle_ready_at = now + 0.22
+        elif self._overlay_wizard_phase is not None:
             self._wizard_back()
             self._overlay_toggle_ready_at = now + 0.22
         elif not self._overlay_scope_phase:
@@ -126,6 +147,17 @@ class OverlayMixin:
             # RmlMenu_Sync has run yet this session.
             self._overlay_visible_rows = overlay_visible_rows
 
+        try:
+            # Same "authoritative, falls through until RmlMenu_Sync has run"
+            # rule as overlay_visible_rows above — see get_filter_grid_cols()
+            # and _FILTER_GRID_COLS_FALLBACK's own comment for why this can't
+            # just be a hardcoded constant on this side.
+            filter_grid_cols = inj.get_filter_grid_cols()
+        except Exception:
+            filter_grid_cols = 0
+        if filter_grid_cols > 0:
+            self._overlay_filter_grid_cols = filter_grid_cols
+
         if self._d3d_menu_visible:
             self._sync_rmlui_menu_mouse_feed(inj, overlay_hwnd)
             self._handle_rmlui_menu_event(inj, now)
@@ -148,6 +180,7 @@ class OverlayMixin:
         right_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
         a_down = bool(gamepad_buttons & XINPUT_GAMEPAD_A)
         b_down = bool(gamepad_buttons & XINPUT_GAMEPAD_B)
+        y_down = bool(gamepad_buttons & XINPUT_GAMEPAD_Y)
 
         # Which hint bar to show (see set_input_mode()): whichever device
         # produced real input most recently wins. Mouse activity is tracked
@@ -208,6 +241,8 @@ class OverlayMixin:
         key_enter_edge = key_enter_down and not getattr(self, "_overlay_enter_down", False)
         a_edge = a_down and not bool(prev_buttons & XINPUT_GAMEPAD_A)
         b_edge = b_down and not bool(prev_buttons & XINPUT_GAMEPAD_B)
+        y_edge = y_down and not bool(prev_buttons & XINPUT_GAMEPAD_Y)
+        y_up_edge = (not y_down) and bool(prev_buttons & XINPUT_GAMEPAD_Y)
         start_hold_toggle = False
 
         if start_down and not back_down and self._overlay_gp_start_pressed_at > 0.0:
@@ -231,6 +266,9 @@ class OverlayMixin:
                 self._overlay_selected_kittype = None
                 self._overlay_kit_sets_cache = []
                 self._overlay_scope_phase = True
+                self._overlay_filter_phase = False
+                self._overlay_stadium_country_filter = set()
+                self._overlay_stadium_sort_desc = False
                 self._update_menu_content()
             else:
                 self._overlay_wizard_phase = None
@@ -241,6 +279,9 @@ class OverlayMixin:
                 self._overlay_selected_kittype = None
                 self._overlay_kit_sets_cache = []
                 self._overlay_scope_phase = False
+                self._overlay_filter_phase = False
+                self._overlay_stadium_country_filter = set()
+                self._overlay_stadium_sort_desc = False
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
 
@@ -260,12 +301,27 @@ class OverlayMixin:
                 inj.set_menu_activate_down(bool(key_enter_down or a_down))
             except Exception:
                 pass
+            try:
+                tab_name = self._overlay_tab_names[self._overlay_tab_index]
+                show_filter_btn = (
+                    tab_name == "stadiums"
+                    and not self._overlay_scope_phase
+                    and self._overlay_wizard_phase is None
+                )
+                inj.set_stadium_filter_hint_visible(show_filter_btn)
+                inj.set_stadium_filter_panel_open(self._overlay_filter_phase)
+            except Exception:
+                pass
 
         if self._d3d_menu_visible and key_escape_edge and now >= self._overlay_toggle_ready_at:
             self._overlay_back_or_close(now, "keyboard")
 
         if self._d3d_menu_visible and b_edge and now >= self._overlay_toggle_ready_at:
-            if self._overlay_wizard_phase is not None:
+            if self._overlay_filter_phase:
+                self._overlay_filter_phase = False
+                self._update_menu_content()
+                self._overlay_toggle_ready_at = now + 0.22
+            elif self._overlay_wizard_phase is not None:
                 self._wizard_back()
                 self._overlay_toggle_ready_at = now + 0.22
             elif not self._overlay_scope_phase:
@@ -287,10 +343,40 @@ class OverlayMixin:
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
 
+        # Y: Stadiums-tab country filter bubble. A quick tap toggles the
+        # bubble open/closed (_toggle_stadium_filter_panel) — resolved on
+        # RELEASE, not press, so it can be told apart from a 0.6s hold, which
+        # clears the active filter instead (_clear_stadium_filter) — same
+        # press/hold-latch pattern as the gamepad Start-hold-to-open-menu
+        # gesture above, just with an added short-tap action on release. The
+        # mouse equivalents are the Filter button (EVK_FILTER_TOGGLE) and the
+        # separate Clear button (EVK_FILTER_CLEAR) — see
+        # _handle_rmlui_menu_event. B/Esc close the bubble one step at a
+        # time via _overlay_back_or_close / the b_edge handling above.
+        if y_edge:
+            self._overlay_gp_y_pressed_at = now
+            self._overlay_gp_y_hold_latched = False
+        y_hold_clear = False
+        if y_down and self._overlay_gp_y_pressed_at > 0.0:
+            if (now - self._overlay_gp_y_pressed_at) >= 0.60 and not self._overlay_gp_y_hold_latched:
+                y_hold_clear = True
+                self._overlay_gp_y_hold_latched = True
+        if self._d3d_menu_visible and y_hold_clear:
+            self._clear_stadium_filter()
+        if (self._d3d_menu_visible and y_up_edge and now >= self._overlay_toggle_ready_at
+                and not self._overlay_gp_y_hold_latched):
+            self._toggle_stadium_filter_panel()
+            self._overlay_toggle_ready_at = now + 0.22
+        if not y_down:
+            self._overlay_gp_y_pressed_at = 0.0
+            self._overlay_gp_y_hold_latched = False
+
         # Tab switch: same initial-delay-then-repeat feel as list navigation
         # below (hold L/R or Left/Right to keep cycling tabs, not just one
-        # step per press).
-        if self._d3d_menu_visible:
+        # step per press). Suppressed while the Stadiums filter bubble is
+        # open — LB/RB and Left/Right are repurposed as grid column
+        # navigation there instead (see the block right below).
+        if self._d3d_menu_visible and not self._overlay_filter_phase:
             tab_left_down = left_shoulder_down or key_left_down
             tab_right_down = right_shoulder_down or key_right_down
             if left_shoulder_edge or key_left_edge:
@@ -306,8 +392,39 @@ class OverlayMixin:
                     self._set_overlay_tab(self._overlay_tab_index + 1, "gamepad-r")
                 self._overlay_tab_ready_at = now + 0.03
 
-        # DPAD up/down: navigate list items (with initial delay + repeat)
+        # Filter bubble grid navigation: LB/RB, DPAD left/right, and Left/Right
+        # move one cell within the current line (the grid is a flat item list
+        # under the hood — see _filter_grid_cols() — so this is just
+        # _navigate_menu_items(+-1), same helper DPAD up/down below uses).
+        # DPAD left/right previously weren't read anywhere (only DPAD_UP/DOWN
+        # were even imported), so a gamepad user stuck on the D-pad rather
+        # than LB/RB had no way to move sideways in the grid at all. Same
+        # initial-delay-then-repeat feel as the tab switcher this replaces
+        # while the bubble is open.
+        if self._d3d_menu_visible and self._overlay_filter_phase and self._overlay_item_count > 0:
+            dpad_left_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            dpad_left_edge = dpad_left_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right_edge = dpad_right_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            grid_left_down = left_shoulder_down or key_left_down or dpad_left_down
+            grid_right_down = right_shoulder_down or key_right_down or dpad_right_down
+            if left_shoulder_edge or key_left_edge or dpad_left_edge:
+                self._navigate_menu_items(-1)
+                self._overlay_tab_ready_at = now + 0.40
+            elif right_shoulder_edge or key_right_edge or dpad_right_edge:
+                self._navigate_menu_items(1)
+                self._overlay_tab_ready_at = now + 0.40
+            elif (grid_left_down or grid_right_down) and now >= self._overlay_tab_ready_at:
+                self._navigate_menu_items(-1 if grid_left_down else 1)
+                self._overlay_tab_ready_at = now + 0.03
+
+        # DPAD up/down: navigate list items (with initial delay + repeat).
+        # In the Stadiums filter bubble's grid layout, one "line" is
+        # _filter_grid_cols() items — see that method's own comment — so
+        # up/down there jumps a full line instead of just one cell (which
+        # the grid-nav block above already handles).
         if self._d3d_menu_visible and self._overlay_item_count > 0:
+            nav_step = self._filter_grid_cols() if self._overlay_filter_phase else 1
             dpad_up   = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_UP)
             dpad_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
             dpad_up_edge   = dpad_up   and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
@@ -315,13 +432,13 @@ class OverlayMixin:
             nav_up = dpad_up or key_up_down
             nav_down = dpad_down or key_down_down
             if dpad_up_edge or key_up_edge:
-                self._navigate_menu_items(-1)
+                self._navigate_menu_items(-nav_step)
                 self._overlay_nav_repeat_at = now + 0.40
             elif dpad_down_edge or key_down_edge:
-                self._navigate_menu_items(1)
+                self._navigate_menu_items(nav_step)
                 self._overlay_nav_repeat_at = now + 0.40
             elif (nav_up or nav_down) and now >= self._overlay_nav_repeat_at:
-                self._navigate_menu_items(-1 if nav_up else 1)
+                self._navigate_menu_items(-nav_step if nav_up else nav_step)
                 self._overlay_nav_repeat_at = now + 0.03
             if key_pgup_edge:
                 self._navigate_menu_items(-self._overlay_visible_rows)
@@ -346,14 +463,37 @@ class OverlayMixin:
                 # one per notch as they happen), so long lists still move
                 # several items on a fast flick — this isn't losing speed,
                 # just removing an artificial multiplier on top of it.
-                self._navigate_menu_items(-wheel_steps)
+                #
+                # Filter bubble grid is the one exception: a 1-item step just
+                # nudges the cursor sideways within the same visible line —
+                # with most/all rows already on screen there's nothing for
+                # the viewport to actually scroll until the cursor eventually
+                # walks off the bottom, which reads as "the wheel doesn't do
+                # anything". A full grid line per notch (_filter_grid_cols())
+                # makes the wheel move the *view*, not just the highlight —
+                # the reversed-direction hazard above doesn't apply here
+                # since the filter list is never as short as 2-3 items.
+                wheel_step = self._filter_grid_cols() if self._overlay_filter_phase else 1
+                self._navigate_menu_items(-wheel_steps * wheel_step)
 
             abs_ry = abs(int(stick_ry))
             deadzone = 9000
             if abs_ry > deadzone:
-                norm = min(1.0, float(abs_ry - deadzone) / float(32767 - deadzone))
-                step = max(1, int(round(1.0 + norm * 9.0)))
-                interval = max(0.04, 0.18 - (norm * 0.12))
+                if self._overlay_filter_phase:
+                    # Same fixed full-row step as D-pad/keyboard use in the
+                    # Stadiums filter grid (see _filter_grid_cols) instead of
+                    # the variable 1-9 acceleration below — that scaling is
+                    # tuned for flying through a long flat list and, sized
+                    # against the flat index instead of a real grid row,
+                    # landed mid-row rather than a full line down/up — the
+                    # same "diagonal" drift already fixed for D-pad/keyboard,
+                    # just not yet for the stick.
+                    step = self._filter_grid_cols()
+                    interval = 0.10
+                else:
+                    norm = min(1.0, float(abs_ry - deadzone) / float(32767 - deadzone))
+                    step = max(1, int(round(1.0 + norm * 9.0)))
+                    interval = max(0.04, 0.18 - (norm * 0.12))
                 if now >= self._overlay_gp_rstick_repeat_at:
                     self._navigate_menu_items(-step if stick_ry > 0 else step)
                     self._overlay_gp_rstick_repeat_at = now + interval
@@ -365,11 +505,15 @@ class OverlayMixin:
             lstick_in_zone = lstick_up or lstick_down
             lstick_entered_zone = lstick_in_zone and not self._overlay_gp_lstick_prev_in_zone
             self._overlay_gp_lstick_prev_in_zone = lstick_in_zone
+            # Full-row step in the filter grid, same reasoning as the right
+            # stick just above — a plain +-1 landed mid-row instead of a
+            # full line down/up.
+            lstick_nav_step = self._filter_grid_cols() if self._overlay_filter_phase else 1
             if lstick_entered_zone:
-                self._navigate_menu_items(-1 if lstick_up else 1)
+                self._navigate_menu_items(-lstick_nav_step if lstick_up else lstick_nav_step)
                 self._overlay_gp_lstick_repeat_at = now + 0.40
             elif lstick_in_zone and now >= self._overlay_gp_lstick_repeat_at:
-                self._navigate_menu_items(-1 if lstick_up else 1)
+                self._navigate_menu_items(-lstick_nav_step if lstick_up else lstick_nav_step)
                 self._overlay_gp_lstick_repeat_at = now + 0.03
 
         if self._d3d_menu_visible and (key_enter_edge or a_edge):
@@ -396,6 +540,9 @@ class OverlayMixin:
             self._d3d_menu_visible = False
             self._overlay_wizard_phase = None
             self._overlay_wizard_stadium = None
+            self._overlay_filter_phase = False
+            self._overlay_stadium_country_filter = set()
+            self._overlay_stadium_sort_desc = False
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
@@ -455,6 +602,9 @@ class OverlayMixin:
         self._overlay_selected_kittype = None
         self._overlay_kit_sets_cache = []
         self._overlay_scope_phase = True
+        self._overlay_filter_phase = False
+        self._overlay_stadium_country_filter = set()
+        self._overlay_stadium_sort_desc = False
         self._publish_overlay_menu_state()
         if self._d3d_injector is not None:
             try:
@@ -472,8 +622,13 @@ class OverlayMixin:
         except Exception:
             pass
 
-    def _update_menu_content(self) -> None:
-        """Populate the D3D menu content list for the active tab (or current wizard step)."""
+    def _update_menu_content(self, preserve_position: bool = False) -> None:
+        """Populate the D3D menu content list for the active tab (or current
+        wizard step). preserve_position=True keeps the current selection/
+        scroll instead of snapping back to the top — used when toggling a
+        Stadiums filter bubble row, where the row list's shape never
+        actually changes (only which rows are checked), so resetting the
+        cursor back to row 0 on every checkbox tap would be disorienting."""
         inj = self._d3d_injector
         if inj is None:
             return
@@ -489,6 +644,7 @@ class OverlayMixin:
             pass
         try:
             items: list[str] = []
+            checked: list[bool] = []
             try:
                 def _list_dirs(base) -> list[str]:
                     if base is None:
@@ -512,7 +668,29 @@ class OverlayMixin:
                             return Path(p)
                     return None
 
-                if self._overlay_scope_phase:
+                if self._overlay_filter_phase:
+                    # Stadiums-tab country filter bubble (Filter button /
+                    # gamepad Y). Rows are plain text rendered through the
+                    # same row pool as every other list, resized into a small
+                    # popover by RmlMenu_Sync while stadium_filter_panel_open
+                    # is set; _overlay_filter_rows is the parallel (kind,
+                    # value) list _activate_filter_row uses to know what the
+                    # highlighted/clicked row actually does. "Checked" state
+                    # is signaled visually (menu_item_checked -> .row-checked
+                    # in menu.rml), not with bracket text in the label.
+                    stadium_root = getattr(self, "targetpath", None)
+                    all_names = discover_stadium_names(stadium_root) if stadium_root else []
+                    counts = stadium_country_counts(all_names)
+                    sort_label = "Sort: Z -> A" if self._overlay_stadium_sort_desc else "Sort: A -> Z"
+                    rows: list[tuple[str, str]] = [("sort", "")]
+                    items = [sort_label]
+                    checked = [False]
+                    for code in sorted(counts):
+                        items.append(f"{code} ({counts[code]})")
+                        checked.append(code in self._overlay_stadium_country_filter)
+                        rows.append(("code", code))
+                    self._overlay_filter_rows = rows
+                elif self._overlay_scope_phase:
                     tab_name = self._overlay_tab_names[self._overlay_tab_index]
                     scope_options = self._get_scope_options_for_tab(tab_name)
                     items = [label for label, _code in scope_options]
@@ -540,7 +718,15 @@ class OverlayMixin:
                         items = _list_dirs(getattr(self, "ScoreBoard", None))
                     elif tab_name == "stadiums":
                         stadium_root = getattr(self, "targetpath", None)
-                        items = discover_stadium_names(stadium_root) if stadium_root else []
+                        names = discover_stadium_names(stadium_root) if stadium_root else []
+                        if self._overlay_stadium_country_filter:
+                            names = [
+                                name for name in names
+                                if stadium_country_code(name) in self._overlay_stadium_country_filter
+                            ]
+                        if self._overlay_stadium_sort_desc:
+                            names = list(reversed(names))
+                        items = names
                     elif tab_name == "movies":
                         items = _list_dirs(getattr(self, "Movies", None))
                     elif tab_name == "tvlogos":
@@ -565,14 +751,23 @@ class OverlayMixin:
             except Exception as exc:
                 self.log(f"Menu content error (wizard={self._overlay_wizard_phase}): {exc}")
             self._overlay_items = items
-            self._overlay_selected_index = 0
-            self._overlay_scroll_offset  = 0
+            self._overlay_item_checked = checked if len(checked) == len(items) else [False] * len(items)
+            if preserve_position:
+                max_index = max(0, len(items) - 1)
+                self._overlay_selected_index = max(0, min(self._overlay_selected_index, max_index))
+                self._overlay_scroll_offset = max(0, min(self._overlay_scroll_offset, max_index))
+            else:
+                self._overlay_selected_index = 0
+                self._overlay_scroll_offset  = 0
             self._overlay_item_count     = len(items)
             self._overlay_window_base    = 0
 
             # Wizard step header shown above the item list
             phase = self._overlay_wizard_phase
-            if self._overlay_scope_phase:
+            if self._overlay_filter_phase:
+                n_selected = len(self._overlay_stadium_country_filter)
+                header = f"Filter countries ({n_selected} selected)" if n_selected else "Filter countries"
+            elif self._overlay_scope_phase:
                 tab_name = self._overlay_tab_names[self._overlay_tab_index]
                 header = f"Select scope  ->  {tab_name.rstrip('s').title()}"
             elif phase == "police":
@@ -601,6 +796,12 @@ class OverlayMixin:
                     header = f"[{scope_label}]  ->  {kittype_label}"
                 else:
                     header = f"[{scope_label}]" if scope_label else ""
+                if self._overlay_tab_names[self._overlay_tab_index] == "stadiums":
+                    if self._overlay_stadium_country_filter:
+                        codes = ", ".join(sorted(self._overlay_stadium_country_filter))
+                        header = f"{header}  Filter: {codes}".strip()
+                    if self._overlay_stadium_sort_desc:
+                        header = f"{header}  (Z->A)".strip()
             self._overlay_list_header = header
             try:
                 inj.set_list_header(header)
@@ -640,8 +841,9 @@ class OverlayMixin:
         window_scroll = max(0, scroll - base)
         window_sel = max(0, sel - base)
         window_thumbs = self._resolve_stadium_row_thumbs(window_items)
+        window_checked = self._overlay_item_checked[base : base + _WIN] if self._overlay_filter_phase else None
         try:
-            inj.set_menu_content(window_items, window_sel, window_scroll, thumb_paths=window_thumbs)
+            inj.set_menu_content(window_items, window_sel, window_scroll, thumb_paths=window_thumbs, checked=window_checked)
             inj.set_window_info(total, base)
         except Exception:
             pass
@@ -655,7 +857,7 @@ class OverlayMixin:
         already calls for the selected item, cached per stadium name since
         it does real filesystem lookups and the same names recur constantly
         while scrolling."""
-        if self._overlay_scope_phase or self._overlay_wizard_phase is not None:
+        if self._overlay_scope_phase or self._overlay_wizard_phase is not None or self._overlay_filter_phase:
             return None
         if self._overlay_tab_names[self._overlay_tab_index] != "stadiums":
             return None
@@ -820,7 +1022,60 @@ class OverlayMixin:
             self._overlay_wizard_pitch = None
         self._update_menu_content()
 
+    def _toggle_stadium_filter_panel(self) -> None:
+        """Opens/closes the Stadiums country filter bubble — shared by the
+        gamepad Y button (_sync_d3d_menu_input) and a mouse/Enter/A click on
+        the Filter button (EVK_FILTER_TOGGLE via _handle_rmlui_menu_event).
+        Only reachable from the tab's own leaf list (not mid-scope-selection
+        or mid-wizard); a no-op on every other tab."""
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if tab_name != "stadiums" or self._overlay_scope_phase or self._overlay_wizard_phase is not None:
+            return
+        self._overlay_filter_phase = not self._overlay_filter_phase
+        self._update_menu_content()
+
+    def _clear_stadium_filter(self) -> None:
+        """Clears the Stadiums country filter (unchecks every code) — shared
+        by a 0.6s gamepad Y hold and a mouse click on the "Clear" button
+        (EVK_FILTER_CLEAR via _handle_rmlui_menu_event). Works whether the
+        filter bubble is currently open or closed, same gating as
+        _toggle_stadium_filter_panel; a no-op if nothing was filtered."""
+        tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if tab_name != "stadiums" or self._overlay_scope_phase or self._overlay_wizard_phase is not None:
+            return
+        if not self._overlay_stadium_country_filter:
+            return
+        self._overlay_stadium_country_filter.clear()
+        self._update_menu_content(preserve_position=self._overlay_filter_phase)
+
+    def _activate_filter_row(self, source: str) -> None:
+        """Handles Enter/A/click while the Stadiums country filter bubble is
+        open: flips the sort-order row, or toggles one country code in/out of
+        _overlay_stadium_country_filter (multi-select — the resulting
+        stadium list matches ANY checked code). Applying is just pressing
+        the Filter button again (_toggle_stadium_filter_panel) — there's no
+        dedicated row for it. _overlay_filter_rows is rebuilt by
+        _update_menu_content in lockstep with the displayed _overlay_items,
+        so the same selected index maps to the right row here."""
+        if not self._overlay_filter_rows:
+            return
+        sel = max(0, min(self._overlay_selected_index, len(self._overlay_filter_rows) - 1))
+        kind, value = self._overlay_filter_rows[sel]
+        if kind == "sort":
+            self._overlay_stadium_sort_desc = not self._overlay_stadium_sort_desc
+            self._update_menu_content(preserve_position=True)
+        elif kind == "code":
+            if value in self._overlay_stadium_country_filter:
+                self._overlay_stadium_country_filter.discard(value)
+            else:
+                self._overlay_stadium_country_filter.add(value)
+            self._update_menu_content(preserve_position=True)
+
     def _activate_overlay_selected_item(self, source: str) -> None:
+        if self._overlay_filter_phase:
+            self._activate_filter_row(source)
+            return
+
         if self._overlay_scope_phase:
             tab_name = self._overlay_tab_names[self._overlay_tab_index]
             scope_options = self._get_scope_options_for_tab(tab_name)
@@ -1068,6 +1323,8 @@ class OverlayMixin:
                         if p.exists():
                             preview_path = str(p)
                             break
+        elif self._overlay_filter_phase:
+            pass
         elif tab_name == "stadiums" and selected_item:
             try:
                 path = self._resolve_stadium_preview_path_or_default(selected_item)
@@ -1166,19 +1423,13 @@ class OverlayMixin:
         return fallback_path
 
     def _navigate_menu_items(self, delta: int) -> None:
-        """Move selection up/down in the current tab list."""
+        """Move selection up/down (or, in the Stadiums filter grid, one cell) in the current tab list."""
         count = self._overlay_item_count
         if count == 0:
             return
         sel = (self._overlay_selected_index + delta) % count
         self._overlay_selected_index = sel
-        scroll = self._overlay_scroll_offset
-        visible_rows = max(1, int(self._overlay_visible_rows))
-        if sel < scroll:
-            scroll = sel
-        elif sel >= scroll + visible_rows:
-            scroll = sel - visible_rows + 1
-        self._overlay_scroll_offset = scroll
+        self._scroll_to_selection(sel)
         self._refresh_d3d_window()
         self._update_d3d_preview_image()
 
@@ -1188,15 +1439,46 @@ class OverlayMixin:
             return
         sel = max(0, min(int(index), count - 1))
         self._overlay_selected_index = sel
-        scroll = self._overlay_scroll_offset
-        visible_rows = max(1, int(self._overlay_visible_rows))
-        if sel < scroll:
-            scroll = sel
-        elif sel >= scroll + visible_rows:
-            scroll = sel - visible_rows + 1
-        self._overlay_scroll_offset = scroll
+        self._scroll_to_selection(sel)
         self._refresh_d3d_window()
         self._update_d3d_preview_image()
+
+    def _filter_grid_cols(self) -> int:
+        """Real column count of the Stadiums filter grid, as last reported
+        by cgfs16_rmlui_menu.cpp (RmlMenu_Sync computes it from the same
+        box-model math #list-area.bubble's RCSS uses — see
+        get_filter_grid_cols()/menu_filter_grid_cols). Falls back to
+        _FILTER_GRID_COLS_FALLBACK for the one frame-or-two before the menu
+        has opened this session and RmlMenu_Sync has had a chance to run —
+        a hardcoded guess on this side used to be the only source, which
+        only matched RmlUi's actual rendered column count by coincidence at
+        one specific panel width (see _FILTER_GRID_COLS_FALLBACK's own
+        comment)."""
+        return self._overlay_filter_grid_cols or _FILTER_GRID_COLS_FALLBACK
+
+    def _scroll_to_selection(self, sel: int) -> None:
+        """Adjusts _overlay_scroll_offset so `sel` stays inside the visible
+        window. cgfs16_rmlui_menu.cpp's ROW_POOL loop always renders the item
+        at scroll_offset as the window's first (leftmost/column-0) pool slot
+        — fine for a plain single-column list, where "row" and "flat index"
+        are the same thing, but in the Stadiums filter bubble's grid an
+        unaligned scroll offset makes the grid re-flow starting at whatever
+        column `sel` happened to land in, shifting every other column on
+        screen — so pressing Up/Down (a fixed step sized to the real column
+        count, that should stay in the same column) visibly walks the
+        highlight diagonally instead. Snapping the scroll offset to a full
+        grid-row boundary keeps column 0 always column 0 on screen; for a
+        plain list (cols == 1) this reduces to the exact same math as
+        before."""
+        cols = self._filter_grid_cols() if self._overlay_filter_phase else 1
+        scroll = self._overlay_scroll_offset
+        visible_rows = max(1, int(self._overlay_visible_rows))
+        row_start = sel - (sel % cols)
+        if sel < scroll:
+            scroll = row_start
+        elif sel >= scroll + visible_rows:
+            scroll = row_start - visible_rows + cols
+        self._overlay_scroll_offset = max(0, scroll)
 
     def _sync_rmlui_menu_mouse_feed(self, inj, overlay_hwnd: int) -> None:
         """Live mouse feed into the RmlUi menu's Rml::Context — only called
@@ -1280,21 +1562,35 @@ class OverlayMixin:
             self._set_overlay_tab(index, "rmlui-mouse")
         elif kind == 2:  # item_click — absolute index into the current tab's full list
             if 0 <= index < self._overlay_item_count:
-                now = time.monotonic()
-                if (index == self._overlay_dblclick_last_index
-                        and now - self._overlay_dblclick_last_time < 0.5):
-                    self._activate_overlay_selected_item("dblclick")
-                    self._overlay_dblclick_last_time = 0.0
-                    self._overlay_dblclick_last_index = -1
-                else:
+                if self._overlay_filter_phase:
+                    # Filter bubble rows are a checklist, not a picker — a
+                    # single click should toggle/apply immediately rather
+                    # than waiting for a double-click like the normal list.
                     self._set_menu_selection(index)
-                    self._overlay_dblclick_last_time = now
-                    self._overlay_dblclick_last_index = index
+                    self._activate_overlay_selected_item("click")
+                else:
+                    now = time.monotonic()
+                    if (index == self._overlay_dblclick_last_index
+                            and now - self._overlay_dblclick_last_time < 0.5):
+                        self._activate_overlay_selected_item("dblclick")
+                        self._overlay_dblclick_last_time = 0.0
+                        self._overlay_dblclick_last_index = -1
+                    else:
+                        self._set_menu_selection(index)
+                        self._overlay_dblclick_last_time = now
+                        self._overlay_dblclick_last_index = index
         elif kind == 3:  # scroll_to — absolute target scroll offset (scrollbar drag/track-click)
             if self._overlay_item_count > 0:
                 visible_rows = max(1, int(self._overlay_visible_rows))
                 max_scroll = max(0, self._overlay_item_count - visible_rows)
                 new_scroll = max(0, min(index, max_scroll))
+                if self._overlay_filter_phase:
+                    # Keep the grid row-aligned (see _scroll_to_selection) —
+                    # an arbitrary scrollbar-drag offset would otherwise
+                    # re-flow the grid starting mid-row, shifting every
+                    # column on screen the same way unaligned keyboard/
+                    # gamepad scrolling used to.
+                    new_scroll -= new_scroll % self._filter_grid_cols()
                 self._overlay_scroll_offset = new_scroll
                 sel = max(0, min(self._overlay_selected_index, self._overlay_item_count - 1))
                 if sel < new_scroll:
@@ -1312,6 +1608,12 @@ class OverlayMixin:
             # back/close as the Esc key (one wizard step back, one scope
             # step back, or actually close at the top level).
             self._overlay_back_or_close(tick_now, "rmlui-mouse")
+        elif kind == 6:  # filter_toggle — a mouse click on the Stadiums
+            # "Filter" button; same toggle the gamepad Y button fires.
+            self._toggle_stadium_filter_panel()
+        elif kind == 7:  # filter_clear — a mouse click on the Stadiums
+            # "Clear" button; same action as holding gamepad Y for 0.6s.
+            self._clear_stadium_filter()
 
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)

@@ -155,6 +155,12 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_left_pressed_at = 0.0
         self._overlay_gp_right_pressed_at = 0.0
         self._overlay_gp_start_hold_latched = False
+        # Gamepad Y on the Stadiums tab: tap toggles the filter bubble
+        # (_toggle_stadium_filter_panel), a 0.6s hold clears the active
+        # filter (_clear_stadium_filter) instead — same press/hold-latch
+        # pattern as Start above, just resolved on release rather than open.
+        self._overlay_gp_y_pressed_at = 0.0
+        self._overlay_gp_y_hold_latched = False
         self._overlay_gp_rstick_repeat_at = 0.0
         self._overlay_gp_lstick_repeat_at = 0.0
         self._overlay_gp_lstick_prev_in_zone = False
@@ -170,8 +176,21 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_kit_preview_cache: dict[str, str] = {}
         self._overlay_kit_preview_pending: set[str] = set()
         self._overlay_list_header: str = ""
+        # Stadiums-tab country filter panel (Y button) — see
+        # _activate_filter_row / _update_menu_content in app_overlay.py.
+        # Session-scoped by design: reset whenever the overlay opens/closes
+        # or the tab changes, never persisted to settings.
+        self._overlay_filter_phase = False
+        self._overlay_stadium_country_filter: set[str] = set()
+        self._overlay_stadium_sort_desc = False
+        self._overlay_filter_rows: list[tuple[str, str]] = []
         self._d3d_menu_visible = False
         self._overlay_items: list[str] = []
+        # Parallel to _overlay_items — True marks a row as "checked" (lit up
+        # in the RmlUi row via .row-checked). Only populated meaningfully by
+        # the Stadiums filter panel branch of _update_menu_content; all-False
+        # for every other tab/phase.
+        self._overlay_item_checked: list[bool] = []
         # Resolved row-thumbnail path per stadium name, for the Stadiums tab's
         # per-row image (Phase 3 visual redesign) — stadium names/preview
         # images are stable for the lifetime of a session, so this is a
@@ -183,6 +202,12 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_scroll_offset  = 0
         self._overlay_window_base    = 0
         self._overlay_visible_rows   = 20
+        # Real Stadiums filter-grid column count, as reported by
+        # cgfs16_rmlui_menu.cpp (see get_filter_grid_cols() /
+        # menu_filter_grid_cols) — falls back to _FILTER_GRID_COLS_FALLBACK
+        # in app_overlay.py until the menu has opened at least once this
+        # session and RmlMenu_Sync has had a chance to compute a real value.
+        self._overlay_filter_grid_cols = 0
         self._overlay_nav_ready_at   = 0.0
         self._overlay_nav_repeat_at  = 0.0
         self._fifa_hwnd = 0

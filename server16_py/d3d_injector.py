@@ -143,6 +143,29 @@ class _OverlayShared(ctypes.Structure):
         # click) never touch RmlUi's own :active pseudo-class. See
         # set_menu_activate_down().
         ("menu_activate_down", ctypes.c_long),
+        # 1 to show the "Filter" button beside the wizard-header band
+        # (Stadiums tab) — clickable with the mouse, shows the Y glyph in
+        # gamepad mode. See set_stadium_filter_hint_visible().
+        ("stadium_filter_hint_visible", ctypes.c_long),
+        # 1 while the Stadiums country-filter bubble is open — tells the DLL
+        # to render #list-area as a small bordered popover instead of the
+        # normal full-height list. See set_stadium_filter_panel_open().
+        ("stadium_filter_panel_open", ctypes.c_long),
+        # Parallel to menu_items[]/menu_item_thumb_paths[], windowed
+        # identically — 1 marks a row as "checked" (lit up via .row-checked)
+        # instead of encoding that into the row's own text. Only meaningful
+        # while the Stadiums filter bubble is open. See set_menu_content()'s
+        # checked parameter.
+        ("menu_item_checked", ctypes.c_long * _MAX_MENU_ITEMS),
+        # DLL -> Python: real number of columns the Stadiums country-filter
+        # grid is actually rendering this frame, computed by RmlMenu_Sync
+        # from the same box-model math (fixed item width + column-gap)
+        # #list-area.bubble's RCSS uses — see get_filter_grid_cols() and
+        # menu_filter_grid_cols' field comment in cgfs16_overlay.cpp for why
+        # a hardcoded column count on this side couldn't reliably match
+        # RmlUi's actual flex-wrap column count at every panel width. Only
+        # meaningful while stadium_filter_panel_open is set.
+        ("menu_filter_grid_cols", ctypes.c_long),
     ]
 
 
@@ -297,12 +320,25 @@ class D3DOverlayInjector:
             return
         self._shared.last_input_event = int(event_id)
 
-    def set_menu_content(self, items: list, selected: int = 0, scroll: int = 0, thumb_paths: list | None = None) -> None:
+    def set_menu_content(
+        self,
+        items: list,
+        selected: int = 0,
+        scroll: int = 0,
+        thumb_paths: list | None = None,
+        checked: list | None = None,
+    ) -> None:
         """thumb_paths, if given, must be the same length/order as items —
         one row-thumbnail path per item (empty string = no thumbnail for
         that row). Only meaningful for the Stadiums tab today; pass None
         (the default) for every other tab so stale thumbnails don't linger
-        in shared memory after switching tabs."""
+        in shared memory after switching tabs.
+
+        checked, if given, must be the same length/order as items — True
+        marks a row as "checked" (lit up via .row-checked in menu.rml)
+        instead of encoding that into the row's own text. Only meaningful
+        while the Stadiums country filter bubble is open; pass None (the
+        default) otherwise so stale highlights don't linger."""
         if not self._ready or self._shared is None:
             return
         count = min(len(items), _MAX_MENU_ITEMS)
@@ -313,9 +349,11 @@ class D3DOverlayInjector:
             if thumb_paths and i < len(thumb_paths) and thumb_paths[i]:
                 thumb = str(thumb_paths[i])[:_MAX_IMG - 1]
             self._shared.menu_item_thumb_paths[i].value = thumb
+            self._shared.menu_item_checked[i] = 1 if (checked and i < len(checked) and checked[i]) else 0
         for i in range(count, _MAX_MENU_ITEMS):
             self._shared.menu_items[i].value = ""
             self._shared.menu_item_thumb_paths[i].value = ""
+            self._shared.menu_item_checked[i] = 0
         self._shared.menu_item_count = count
         if count <= 0:
             self._shared.menu_selected_index = 0
@@ -429,6 +467,25 @@ class D3DOverlayInjector:
             return
         self._shared.menu_activate_down = 1 if down else 0
 
+    def set_stadium_filter_hint_visible(self, visible: bool) -> None:
+        """Tell cgfs16_rmlui_menu.cpp whether to show the "Y: Filter" gamepad
+        hint pill beside the wizard-header band — call with the full gating
+        condition already resolved (Stadiums tab, past the scope step, not
+        mid-wizard, filter panel not already open); the DLL only ANDs in
+        gamepad-mode on top. See OverlayShared::stadium_filter_hint_visible."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.stadium_filter_hint_visible = 1 if visible else 0
+
+    def set_stadium_filter_panel_open(self, open_: bool) -> None:
+        """Tell cgfs16_rmlui_menu.cpp whether the Stadiums country filter
+        bubble is currently open, so #list-area renders as a small bordered
+        popover instead of the normal full-height list. See
+        OverlayShared::stadium_filter_panel_open."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.stadium_filter_panel_open = 1 if open_ else 0
+
     def set_menu_loading(self, loading: bool) -> None:
         """Tell cgfs16_rmlui_menu.cpp to show a loading spinner in place of
         the item list — call with True immediately before a (synchronous)
@@ -492,11 +549,24 @@ class D3DOverlayInjector:
             rows = 0
         return (hwnd, vw, vh, rows)
 
+    def get_filter_grid_cols(self) -> int:
+        """Real column count of the Stadiums country-filter grid this frame,
+        computed by cgfs16_rmlui_menu.cpp's RmlMenu_Sync from the same
+        box-model math #list-area.bubble's RCSS uses (see
+        menu_filter_grid_cols' field comment). 0 before the menu has ever
+        opened this session (RmlMenu_Sync hasn't run yet) — callers should
+        fall back to their own default in that case, same as
+        get_menu_metrics()'s visible_rows."""
+        if not self._ready or self._shared is None:
+            return 0
+        cols = int(self._shared.menu_filter_grid_cols)
+        return cols if cols > 0 else 0
+
     def get_menu_event(self) -> tuple[int, int, int]:
         """Return (seq, kind, index) from the DLL's "last event wins"
         click/scroll signal — see MenuEventListener in cgfs16_rmlui_menu.cpp.
         kind: 0=none, 1=tab_click, 2=item_click, 3=scroll_to, 4=hero_activate,
-        5=close_click. Callers should compare seq against their own
+        5=close_click, 6=filter_toggle, 7=filter_clear. Callers should compare seq against their own
         last-seen value and only act when it changed (a single slot, not a
         queue)."""
         if not self._ready or self._shared is None:

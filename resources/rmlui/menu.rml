@@ -299,6 +299,49 @@ body {
     position: absolute;
     overflow: hidden;
 }
+/* Stadiums country filter bubble state — #list-area is reused as-is (same
+   rows, same virtual scroll/click handling) just resized/repositioned into
+   a small popover by RmlMenu_Sync while stadium_filter_panel_open is set,
+   with this class toggled on top for the "floating box" look. Mirrors
+   #panel's own background/border/shadow language (see its rule above). */
+#list-area.bubble {
+    background-color: #0C101CF2;
+    border: 1px #FFCC554D;
+    border-radius: 12px;
+    box-shadow: 0px 8px 20px #000000A6;
+    /* Grid instead of a single vertical stack. How many columns actually
+       fit per line is NOT a fixed number — flex-wrap greedily packs as many
+       130px-wide cells as the panel's current width allows, and that width
+       varies with output resolution/panel size. Two earlier approaches both
+       broke navigation as a result: (1) a percentage .row width, which
+       under RmlUi's default content-box sizing had .row's own padding-left
+       (12px) added on top rather than eaten into, so the real per-column
+       footprint didn't reliably match what the fixed COLS constant on the
+       Python/C++ side assumed, silently wrapping to fewer columns than
+       expected; (2) after switching to this fixed 130px width, hardcoding
+       that same wrong assumption (7) elsewhere just moved the mismatch the
+       other way — a wide panel fits well more than 7 130px cells per line,
+       so a "full row" step sized for 7 landed mid-row instead. Either way
+       the symptom was the same: the highlighted cell visibly walked
+       diagonally on a straight Up/Down press instead of moving one row.
+       The actual fix isn't a better constant — cgfs16_rmlui_menu.cpp's
+       RmlMenu_Sync now computes the real, current column count from this
+       same 130px width + 8px column-gap (FILTER_COL_W/FILTER_COL_GAP) and
+       reports it to Python each frame (menu_filter_grid_cols /
+       get_filter_grid_cols()), so both sides always agree on whatever the
+       real count is, at any panel width, instead of guessing a shared
+       number up front. This fixed width is the one thing that must stay in
+       sync — it's the box-model input that computation is derived from. */
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-content: flex-start;
+    column-gap: 8px;
+    row-gap: 6px;
+}
+#list-area.bubble .row {
+    width: 130px;
+    box-sizing: border-box;
+}
 .row {
     display: none;
     flex-direction: row;
@@ -314,6 +357,15 @@ body {
 .row.selected {
     background-color: #00F2FE29;
     border-left: 3px #00F2FEFF;
+}
+/* Stadiums country filter bubble only — lit up while a row's country code
+   is an active member of the filter (see menu_item_checked /
+   RmlOverlay_MenuItemChecked). Deliberately a different side/color than
+   .selected (right border, amber) so a row that's both the current cursor
+   position AND checked still shows both cues at once. */
+.row.checked {
+    background-color: #FFCC5522;
+    border-right: 3px #FFCC55FF;
 }
 .row:hover { background-color: #4FACFE1F; }
 /* Stadiums tab only — taller row so .row-thumb is actually a recognizable
@@ -478,6 +530,11 @@ body {
     display: none;
     position: absolute;
 }
+#filter-btn, #filter-clear-btn {
+    display: none;
+    position: absolute;
+}
+#filter-btn:hover, #filter-clear-btn:hover { background-color: #FFFFFF26; }
 /* Loading spinner, shown over the list area in place of the (stale) row
    list while Python's _update_menu_content() is still computing a new one
    (see RmlOverlay_MenuLoading — set around any wizard-step/tab navigation,
@@ -515,6 +572,19 @@ body {
     padding: 3px 10px;
     border-radius: 6px;
     background-color: #FFFFFF0D;
+    /* The bottom Navigate/Scroll/Close hint row items never get an explicit
+       pixel width from C++ (only their container row does — RmlMenu_Sync's
+       SetRectPx(g_hintKeyRow/g_hintGpRow, ...)), so content-box vs
+       border-box never mattered for them; they just auto-size to their
+       content. #filter-btn/#filter-clear-btn DO get an explicit SetRectPx
+       width, though, and under content-box (RmlUi's default) this class's
+       own padding (3px 10px) added on top of that width rather than eating
+       into it — the same pitfall #split-preview's own box-sizing comment
+       above already documents for this file. That silently grew each
+       button ~20px wider than RmlMenu_Sync's math assumed, which was
+       exactly enough to make them overlap each other and hang off the
+       panel's right edge. */
+    box-sizing: border-box;
 }
 /* "Close" hint (Esc/B) is also a real clickable button (C++ side adds a
    Click listener on hintkey2/hintgp2 — see g_hintCloseKey/g_hintCloseGp in
@@ -542,6 +612,13 @@ body {
     font-size: 14px;
     color: #8B9BB4FF;
     white-space: nowrap;
+    /* Safety net for #filter-clear-btn's longer gamepad-mode text ("Hold to
+       Clear" vs "Clear") — nowrap text doesn't shrink to fit a flex
+       container on its own, so without this it would spill past the
+       button's own (now border-box-correct, see .hint-item) right edge
+       instead of just being clipped. */
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 </style>
 </head>
@@ -562,6 +639,8 @@ body {
 <img id="tab-hint-r"/>
 <div id="content-bg"></div>
 <div id="wizard-header"><div id="wizard-header-text"></div></div>
+<div id="filter-btn" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Filter</div></div>
+<div id="filter-clear-btn" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Clear</div></div>
 <div id="list-area">
 <div id="row0" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
 <div id="row1" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
@@ -627,6 +706,198 @@ body {
 <div id="row61" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
 <div id="row62" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
 <div id="row63" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row64" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row65" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row66" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row67" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row68" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row69" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row70" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row71" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row72" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row73" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row74" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row75" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row76" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row77" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row78" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row79" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row80" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row81" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row82" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row83" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row84" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row85" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row86" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row87" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row88" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row89" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row90" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row91" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row92" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row93" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row94" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row95" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row96" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row97" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row98" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row99" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row100" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row101" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row102" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row103" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row104" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row105" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row106" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row107" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row108" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row109" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row110" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row111" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row112" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row113" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row114" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row115" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row116" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row117" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row118" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row119" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row120" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row121" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row122" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row123" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row124" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row125" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row126" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row127" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row128" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row129" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row130" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row131" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row132" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row133" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row134" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row135" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row136" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row137" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row138" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row139" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row140" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row141" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row142" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row143" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row144" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row145" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row146" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row147" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row148" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row149" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row150" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row151" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row152" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row153" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row154" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row155" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row156" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row157" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row158" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row159" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row160" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row161" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row162" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row163" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row164" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row165" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row166" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row167" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row168" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row169" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row170" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row171" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row172" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row173" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row174" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row175" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row176" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row177" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row178" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row179" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row180" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row181" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row182" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row183" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row184" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row185" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row186" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row187" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row188" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row189" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row190" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row191" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row192" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row193" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row194" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row195" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row196" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row197" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row198" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row199" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row200" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row201" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row202" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row203" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row204" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row205" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row206" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row207" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row208" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row209" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row210" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row211" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row212" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row213" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row214" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row215" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row216" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row217" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row218" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row219" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row220" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row221" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row222" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row223" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row224" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row225" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row226" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row227" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row228" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row229" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row230" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row231" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row232" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row233" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row234" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row235" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row236" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row237" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row238" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row239" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row240" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row241" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row242" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row243" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row244" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row245" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row246" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row247" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row248" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row249" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row250" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row251" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row252" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row253" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row254" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
+<div id="row255" class="row"><img class="row-thumb"/><div class="row-text"></div></div>
 </div>
 <div id="empty-state">No items available</div>
 <img id="row-action-hint"/>
