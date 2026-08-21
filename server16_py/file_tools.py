@@ -578,15 +578,20 @@ def copy_glares(src: str | Path, day_or_night: str, index: str, inj_id: str, exe
     dst.write_text("\r\n".join(rewritten) + "\r\n", encoding="utf-8")
 
 
-def extra_setup(source_dir: str | Path, dest_dir: str | Path, source_index: str, asset_prefix: str, dest_index: str) -> None:
+def extra_setup(source_dir: str | Path, dest_dir: str | Path, source_index: str, asset_prefix: str, dest_index: str) -> list[str]:
+    """Copy files from source_dir matching "{asset_prefix}_{source_index}_" into dest_dir,
+    renaming "_{source_index}" to "_{dest_index}" in the destination filename. Returns the
+    list of destination filenames actually written, so callers can log/verify a match was
+    found rather than silently no-op'ing when source_index doesn't correspond to any file."""
     src_root = Path(source_dir)
     dest_root = Path(dest_dir)
     dest_root.mkdir(parents=True, exist_ok=True)
     if not src_root.exists():
-        return
+        return []
     token = f"_{source_index}"
     replacement = f"_{dest_index}"
     check = f"{asset_prefix}_{source_index}_"
+    copied: list[str] = []
     for item in src_root.rglob("*"):
         if not item.is_file():
             continue
@@ -594,6 +599,37 @@ def extra_setup(source_dir: str | Path, dest_dir: str | Path, source_index: str,
             continue
         target_name = item.name.replace(token, replacement)
         _copy_file_if_needed(item, dest_root / target_name)
+        copied.append(target_name)
+    return copied
+
+
+def apply_specific_net_color(source_dir: str | Path, dest_dir: str | Path, source_index: str, stadium_id: str) -> list[str]:
+    """Copy the netcolor_{source_index}_* variant into dest_dir as specificnetcolor_0_{stadium_id}_*.
+
+    goalnet.lua's GetRMNetColour() checks this slot-specific path before falling back to the
+    shared netcolor_0_* file that extra_setup() always overwrites. Since stadium_id (the 176/261
+    injection slot) alternates every stadium load, this gives the engine a path it has not
+    already cached this session — the plain netcolor_0_* overwrite alone only ever takes effect
+    on the very first load after a game restart, because the engine never re-reads a path it has
+    already resolved once.
+    """
+    src_root = Path(source_dir)
+    dest_root = Path(dest_dir)
+    dest_root.mkdir(parents=True, exist_ok=True)
+    if not src_root.exists():
+        return []
+    check = f"netcolor_{source_index}_"
+    copied: list[str] = []
+    for item in src_root.rglob("*"):
+        if not item.is_file():
+            continue
+        if check.lower() not in item.name.lower():
+            continue
+        suffix = item.name[len(check):]
+        target_name = f"specificnetcolor_0_{stadium_id}_{suffix}"
+        _copy_file_if_needed(item, dest_root / target_name)
+        copied.append(target_name)
+    return copied
 
 
 def checkver(_fifa_exe: str) -> str:

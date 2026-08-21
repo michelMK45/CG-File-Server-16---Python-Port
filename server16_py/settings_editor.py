@@ -253,8 +253,8 @@ class SettingsSectionFrame(tk.Frame):
         self.pitch_var = tk.StringVar(value=self.STADIUM_DEFAULTS["pitch"])
         self.net_var = tk.StringVar(value=self.STADIUM_DEFAULTS["net"])
         self._add_combo_row(self.body, 1, "Police", self.police_var, [str(i) for i in range(1, 11)])
-        self._add_combo_row(self.body, 2, "Pitch", self.pitch_var, self._file_stems(self.app.PitchMowsource))
-        self._add_combo_row(self.body, 3, "Net", self.net_var, self._file_stems(self.app.Nsource))
+        self._add_combo_row(self.body, 2, "Pitch", self.pitch_var, self._asset_indices(self.app.PitchMowsource))
+        self._add_combo_row(self.body, 3, "Net", self.net_var, self._asset_indices(self.app.Nsource))
 
     def _build_net_editor(self) -> None:
         self.down_var = tk.StringVar(value=self.NET_DEFAULTS["down"])
@@ -431,11 +431,24 @@ class SettingsSectionFrame(tk.Frame):
             return discover_stadium_names(base)
         return sorted(path.name for path in base.iterdir() if path.is_dir())
 
-    def _file_stems(self, folder: Path) -> list[str]:
+    def _asset_indices(self, folder: Path) -> list[str]:
+        """Return the variant index token (e.g. "5" from "netcolor_5_textures.rx3")
+        for files in folder, matching the "{prefix}_{index}_..." naming convention
+        that extra_setup()/legacy ExtraSetup() actually match against. Showing raw
+        file stems here would save a value the backend can never match (see
+        extra_setup's check = f"{{asset_prefix}}_{{source_index}}_")."""
         if not folder.exists():
             return ["0"]
-        values = [item.stem for item in sorted(folder.iterdir()) if item.is_file()]
-        return values or ["0"]
+        indices: set[str] = set()
+        for item in folder.iterdir():
+            if not item.is_file():
+                continue
+            parts = item.stem.split("_")
+            if len(parts) >= 2:
+                indices.add(parts[1])
+        if not indices:
+            return ["0"]
+        return sorted(indices, key=lambda v: (0, int(v)) if v.isdigit() else (1, v))
 
     def _on_entry_selected(self, _event=None) -> None:
         selection = self.entries_list.curselection()

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .file_tools import copy, copy_if_exists, copy_tvlogo, extra_setup
+from .file_tools import copy, copy_if_exists, copy_tvlogo
 
 if TYPE_CHECKING:
     from .app import Server16App
@@ -296,7 +296,6 @@ class AssetRuntime:
         app = self.app
         if not app.module_enabled("StadiumNet"):
             return
-        extra_setup(app.Nsource, app.Ndest, "0", "netcolor", "0")
         source_key = "stadiumnetid" if not app.curstad else "stadiumnetname"
         source_section = app.STADID if not app.curstad else app.StadName
         if app.settings_ini.key_exists(app.TOURROUNDID, "exclude") or not app.settings_ini.key_exists(source_section, source_key):

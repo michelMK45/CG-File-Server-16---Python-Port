@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
-from .file_tools import clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
+from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
 from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
@@ -112,6 +112,7 @@ class StadiumRuntime:
             app.ScoreboardStadName = ""
             clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
             clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
+            extra_setup(app.Nsource, app.Ndest, "0", "netcolor", "0")
             return
         section_id = None
         section_name = None
@@ -195,6 +196,7 @@ class StadiumRuntime:
         copy(app.exedir / "FSW" / "stadium", app.exedir / "data" / "sceneassets")
         clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
         clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
+        extra_setup(app.Nsource, app.Ndest, "0", "netcolor", "0")
         app.curstad = ""
         app.ScoreboardStadName = ""
         app.stadmovie = False
@@ -345,10 +347,24 @@ class StadiumRuntime:
                     (f"Night glare texture {suffix}", lambda s=suffix: copy_if_exists(glare3 / f"glare3_{s}.rx3", dest / "fx" / f"glares_{injid}_3_{s}.rx3")),
                 ]
             )
+        def _apply_net_color() -> None:
+            # Also write the slot-specific override (specificnetcolor_0_{injid}_...) that
+            # goalnet.lua checks before the shared netcolor_0_* fallback below. The shared
+            # fallback alone only ever takes effect right after a game restart, because the
+            # engine caches netcolor_0_* the first time it loads it and never re-reads it —
+            # the slot-specific path gives it a filename it hasn't already cached this session.
+            specific = apply_specific_net_color(app.Nsource, app.Ndest, net, injid)
+            generic = extra_setup(app.Nsource, app.Ndest, net, "netcolor", "0")
+            copied = specific + generic
+            if copied:
+                app.log(f"Net color applied for {stad_name}: source index [{net}] -> {copied}")
+            else:
+                app.log(f"Net color NOT applied for {stad_name}: no file matching 'netcolor_{net}_' found in {app.Nsource}")
+
         steps.extend(
             [
                 ("Applying police setup", lambda: extra_setup(app.Psource, app.Pdest, police, "policeofficer", app.PoliceNum)),
-                ("Applying net setup", lambda: extra_setup(app.Nsource, app.Ndest, net, "netcolor", "0")),
+                ("Applying net setup", _apply_net_color),
                 ("Applying pitch setup", lambda: extra_setup(app.PitchMowsource, app.PitchMowdest, pitch, "pitchmowpattern", "0")),
             ]
         )
