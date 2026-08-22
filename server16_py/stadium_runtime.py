@@ -325,6 +325,16 @@ class StadiumRuntime:
         # Reset the other slot to its vanilla default rather than emptying it, so it's
         # never left in a broken/missing state (see restore_stadium_inj_files docstring).
         restore_stadium_inj_files(dest, app.exedir / "FSW" / "Stadium", other_id)
+        # Also reset the slot we're about to write into. copy_if_exists() below only
+        # overwrites a file if the new stadium's source actually has it — an
+        # incomplete custom pack (missing e.g. one glare or crowd file) would
+        # otherwise leave whatever was in this slot before (leftover vanilla
+        # content from a "no assignment" match, or a previous custom stadium)
+        # mixed in with the new one, which is a real mechanism for the green/blue
+        # placeholder-texture mismatch. Restoring to a known-clean vanilla
+        # baseline first means any gap in the new pack falls back to vanilla
+        # instead of stale/mismatched leftovers.
+        restore_stadium_inj_files(dest, app.exedir / "FSW" / "Stadium", injid)
         # These must be calculated AFTER stad is resolved
         glare1 = stad / "1"
         glare3 = stad / "3"

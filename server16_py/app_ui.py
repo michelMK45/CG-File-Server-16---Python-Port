@@ -2413,7 +2413,124 @@ class UIMixin:
         self._build_stat(body, 4, 1, "stat.next_behavior", "audio_next", "-")
         self._build_stat(body, 5, 0, "stat.home_goals", "home_goals", "0")
         self._build_stat(body, 5, 1, "stat.away_goals", "away_goals", "0")
-        ttk.Button(card, text=self.tr("button.edit_chants_settings"), command=self.open_audio_settings_editor).pack(fill="x", padx=12, pady=(0, 12))
+        btn_row = tk.Frame(card, bg=self.card)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+        self._fix_chants_audio_btn = ttk.Button(btn_row, text=self.tr("button.fix_chants_audio"), command=self._run_fix_chants_audio)
+        self._fix_chants_audio_btn.pack(side="left", fill="x", expand=True, padx=(0, 6))
+        self._edit_chants_settings_btn = ttk.Button(btn_row, text=self.tr("button.edit_chants_settings"), command=self.open_audio_settings_editor)
+        self._edit_chants_settings_btn.pack(side="left", fill="x", expand=True)
+
+    def _set_chants_fix_buttons_enabled(self, enabled: bool) -> None:
+        state = "normal" if enabled else "disabled"
+        fix_btn = getattr(self, "_fix_chants_audio_btn", None)
+        edit_btn = getattr(self, "_edit_chants_settings_btn", None)
+        if fix_btn:
+            fix_btn.configure(state=state)
+        if edit_btn:
+            edit_btn.configure(state=state)
+
+    def _run_fix_chants_audio(self) -> None:
+        self._set_chants_fix_buttons_enabled(False)
+
+        def _scan() -> None:
+            try:
+                paths = self.chants_runtime.scan_chants_audio_files()
+            except Exception as exc:
+                self.log(f"Scan chants audio failed: {exc}")
+                paths = None
+            self.after(0, lambda: _after_scan(paths))
+
+        def _after_scan(paths: list | None) -> None:
+            self._set_chants_fix_buttons_enabled(True)
+            if paths is None:
+                messagebox.showerror(self.tr("message.chants"), self.tr("message.chants_fix_error"))
+                return
+            if not paths:
+                messagebox.showinfo(self.tr("message.chants"), self.tr("message.chants_fix_none"))
+                return
+            self._open_chants_fix_dialog(paths)
+
+        threading.Thread(target=_scan, daemon=True).start()
+
+    def _open_chants_fix_dialog(self, paths: list) -> None:
+        root_dir = self.exedir / "FSW" / "Chants"
+
+        win = tk.Toplevel(self._window())
+        win.title(self.tr("dialog.chants_fix.title"))
+        win.configure(bg=self.card)
+        win.geometry("520x460")
+        win.transient(self._window())
+        win.grab_set()
+
+        self._dark_label(
+            win, self.tr("dialog.chants_fix.hint", count=len(paths)), bg=self.card, muted=True,
+            wraplength=480, justify="left",
+        ).pack(fill="x", padx=12, pady=(12, 6))
+
+        keep_backup_var = tk.BooleanVar(value=True)
+        ttk.Checkbutton(
+            win,
+            style="Switch.TCheckbutton",
+            text=self.tr("dialog.chants_fix.keep_backup"),
+            variable=keep_backup_var,
+        ).pack(anchor="w", padx=12, pady=(0, 6))
+
+        listbox = self._dark_listbox(win, selectmode="extended", exportselection=False, font=("Consolas", 9))
+        listbox.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        for path in paths:
+            try:
+                label = str(path.relative_to(root_dir))
+            except ValueError:
+                label = str(path)
+            listbox.insert("end", label)
+        listbox.selection_set(0, "end")
+
+        btn_row = tk.Frame(win, bg=self.card)
+        btn_row.pack(fill="x", padx=12, pady=(0, 12))
+
+        def select_all() -> None:
+            listbox.selection_set(0, "end")
+
+        def do_fix() -> None:
+            selection = listbox.curselection()
+            if not selection:
+                return
+            selected_paths = [paths[i] for i in selection]
+            keep_backup = keep_backup_var.get()
+            win.destroy()
+            self._run_fix_chants_audio_confirmed(selected_paths, keep_backup)
+
+        ttk.Button(btn_row, text=self.tr("dialog.chants_fix.select_all"), command=select_all).pack(side="left")
+        ttk.Button(btn_row, text=self.tr("button.fix_chants_audio"), command=do_fix).pack(side="right")
+
+    def _run_fix_chants_audio_confirmed(self, paths: list, keep_backup: bool) -> None:
+        self._set_chants_fix_buttons_enabled(False)
+
+        def _work() -> None:
+            try:
+                counts = self.chants_runtime.fix_chants_audio_files(paths, keep_backup=keep_backup)
+            except Exception as exc:
+                self.log(f"Fix chants audio failed: {exc}")
+                counts = None
+            self.after(0, lambda: _done(counts))
+
+        def _done(counts: dict[str, int] | None) -> None:
+            self._set_chants_fix_buttons_enabled(True)
+            if counts is None:
+                messagebox.showerror(self.tr("message.chants"), self.tr("message.chants_fix_error"))
+                return
+            self.log(f"Fix chants audio: fixed={counts['fixed']} already_clean={counts['already_clean']} errors={counts['errors']}")
+            messagebox.showinfo(
+                self.tr("message.chants"),
+                self.tr(
+                    "message.chants_fix_result",
+                    fixed=counts["fixed"],
+                    clean=counts["already_clean"],
+                    errors=counts["errors"],
+                ),
+            )
+
+        threading.Thread(target=_work, daemon=True).start()
 
     def _build_camera_tab(self) -> None:
         card_host = tk.Frame(self.camera_tab, bg=self.bg)

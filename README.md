@@ -189,6 +189,60 @@ Notes:
 - If no preview image exists for a stadium that *is* actually assigned, the dashboard, `Assign Stadium` window, and loading overlay fall back to a bundled generic stadium image instead of showing nothing. The preview area only stays empty when there's no stadium assigned at all.
 - This structure is intended to make community stadium packs easy to organize and share.
 
+### Chants Audio Files
+
+Per-team chants are assigned via `settings.ini [chantsid]` (edited from the asset settings
+editor) and read from:
+
+```text
+FSW/Chants/<folder>/Support/*.mp3
+FSW/Chants/<folder>/Complaint/*.mp3
+FSW/Chants/<folder>/ClubSong.mp3
+```
+
+- `Support` covers a draw, winning, or losing by 1–2 goals (a different configured volume for
+  each case).
+- `Complaint` only plays when the team is losing by 3 goals or more — it's normal to rarely hear
+  it in a typical match.
+- `ClubSong.mp3` is the goal celebration anthem, held for at least 12s (or the track's own
+  length if longer) before crowd chants resume.
+
+Each `chantsid` entry is a 10-field CSV: `folder, vol_draw, vol_winning, vol_losing1, vol_losing2,
+vol_complaint, vol_goal, silence_probability, silence_max_seconds, away_chant_probability`.
+
+**MP3 compatibility — check this before adding new packs.** Playback goes through Windows' legacy
+MCI (`mciSendStringW`, opened as `type mpegvideo`), not a modern MP3 decoder, and it is far less
+tolerant of unusual file packaging than something like VLC or a phone. A file that plays fine
+everywhere else can still make MCI refuse to open it, and the app has **no visible error for
+this**: the track is silently skipped forever (retried every ~0.5s, always failing) while the
+Chants tab freezes on whatever status was last shown. The only trace is in
+`runtime/server16.log`, as a repeating `Chants monitor error: MCI command failed (277): open "...`
+line.
+
+The confirmed trigger, across two independently failing files: the leading **ID3v2 tag itself**
+— not its size. One failing file had an oversized tag (~76% of file size, a large embedded cover
+image); a second failing file had a perfectly ordinary tag (~0.8% of file size, no obvious defect
+in the audio frames either — verified frame-by-frame end to end with no desync). Both were fixed
+the same way, and isolated testing on the second file confirmed it precisely: stripping only the
+leading ID3v2 tag fixed it, while stripping only the trailing ID3v1 tag (and leaving ID3v2 in
+place) did not. **Tag size is not a reliable predictor** — a small, unremarkable-looking ID3v2 tag
+can still make MCI refuse the file, presumably over some specific frame/encoding inside it that
+this legacy driver's parser doesn't like. If a newly added chant never seems to play and the log
+shows the error above:
+
+1. Click **Fix Chant Audio Files** on the Chants tab (next to Edit Chants Settings). It walks
+   every `.mp3` under `FSW/Chants`, strips any leading ID3v2 tag in place, and keeps a
+   `<name>.original.mp3` backup of anything it touches — safe to run any time, including after
+   adding a new pack, and safe to run repeatedly (already-clean files are left alone).
+2. If you'd rather fix a single file by hand instead: strip its ID3v2 tag entirely (embedded
+   artwork included) with any tag editor (Mp3tag) or
+   `ffmpeg -i in.mp3 -map_metadata -1 -id3v2_version 0 -c copy out.mp3`, then replace the file and
+   try again.
+
+As a rule of thumb for any new pack: run **Fix Chant Audio Files** after adding it, rather than
+only reaching for it once a specific team's chant is confirmed silent — a normal-looking tag is
+not proof the file will open.
+
 ### Stadium Folder And Archive Loading
 
 Stadium assignments are read from `FSW/settings.ini`. A stadium value can point to:

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import sys
 import threading
 import time
@@ -104,6 +105,114 @@ class ChantsRuntime:
             return float(raw)
         except Exception:
             return default
+
+    # Windows' legacy MCI "mpegvideo" driver (the backend MciAudioPlayer uses)
+    # can refuse to open an otherwise perfectly valid MP3 purely because of
+    # ID3v2 tag content -- confirmed live 2026-08-21 on two unrelated failing
+    # tracks, one with an oversized tag (~76% of file size) and one with an
+    # ordinary-looking tag (~0.8%). Tag size is not a reliable predictor;
+    # stripping the tag outright is the only fix that held up in both cases.
+
+    @staticmethod
+    def _id3v2_tag_total(header: bytes) -> int | None:
+        """Given the first 10 bytes of a file, return the total byte length
+        of a leading ID3v2 tag (header + body + optional footer), or None if
+        there's no ID3v2 tag here."""
+        if len(header) < 10 or header[:3] != b"ID3":
+            return None
+        flags = header[5]
+        size = 0
+        for b in header[6:10]:
+            size = (size << 7) | (b & 0x7F)
+        has_footer = bool(flags & 0x10)
+        tag_total = 10 + size + (10 if has_footer else 0)
+        return tag_total if tag_total > 0 else None
+
+    def _strip_leading_id3v2(self, data: bytes) -> bytes | None:
+        """Return `data` with a leading ID3v2 tag removed, or None if there's
+        nothing to strip (no tag, or the bytes after it don't look like a
+        valid MPEG frame, in which case the file is left untouched)."""
+        tag_total = self._id3v2_tag_total(data[:10])
+        if tag_total is None or tag_total >= len(data):
+            return None
+        remainder = data[tag_total:]
+        if len(remainder) < 2 or remainder[0] != 0xFF or (remainder[1] & 0xE0) != 0xE0:
+            return None
+        return remainder
+
+    def _needs_fix(self, path: Path) -> bool:
+        """Lightweight check (a handful of bytes, not the whole file) for
+        whether `path` has a leading ID3v2 tag that _strip_leading_id3v2
+        would actually remove."""
+        try:
+            size = path.stat().st_size
+            with path.open("rb") as handle:
+                header = handle.read(10)
+                tag_total = self._id3v2_tag_total(header)
+                if tag_total is None or tag_total >= size:
+                    return False
+                handle.seek(tag_total)
+                probe = handle.read(2)
+        except Exception:
+            return False
+        return len(probe) == 2 and probe[0] == 0xFF and (probe[1] & 0xE0) == 0xE0
+
+    def scan_chants_audio_files(self) -> list[Path]:
+        """List every MP3 under FSW/Chants that fix_chants_audio_files would
+        actually touch, without loading full file contents -- cheap enough to
+        run before showing the user a confirmation dialog."""
+        root = self.app.exedir / "FSW" / "Chants"
+        if not root.exists():
+            return []
+        return [
+            path
+            for path in sorted(root.rglob("*.mp3"))
+            if not path.name.endswith(".original.mp3") and self._needs_fix(path)
+        ]
+
+    def fix_chants_audio_files(self, paths: list[Path] | None = None, keep_backup: bool = True) -> dict[str, int]:
+        """Strip ID3v2 tags from `paths` (or every MP3 under FSW/Chants when
+        `paths` is None) so MCI stops silently refusing to open them. When
+        `keep_backup` is set, keeps a `<name>.original.mp3` backup of anything
+        it touches, matching the restore-sidecar convention used elsewhere in
+        this codebase; when unset, overwrites in place with no backup."""
+        app = self.app
+        if paths is None:
+            root = app.exedir / "FSW" / "Chants"
+            paths = (
+                [p for p in sorted(root.rglob("*.mp3")) if not p.name.endswith(".original.mp3")]
+                if root.exists()
+                else []
+            )
+        counts = {"fixed": 0, "already_clean": 0, "errors": 0}
+        for path in paths:
+            try:
+                data = path.read_bytes()
+            except Exception as exc:
+                app.log(f"Fix chants audio: failed to read {path}", exc, exc_info=sys.exc_info())
+                counts["errors"] += 1
+                continue
+            try:
+                stripped = self._strip_leading_id3v2(data)
+            except Exception as exc:
+                app.log(f"Fix chants audio: failed to parse {path}", exc, exc_info=sys.exc_info())
+                counts["errors"] += 1
+                continue
+            if stripped is None:
+                counts["already_clean"] += 1
+                continue
+            try:
+                if keep_backup:
+                    backup = path.with_name(path.stem + ".original" + path.suffix)
+                    if not backup.exists():
+                        shutil.copy2(path, backup)
+                path.write_bytes(stripped)
+                counts["fixed"] += 1
+                app.log(f"Fix chants audio: stripped ID3v2 tag from {path}")
+            except Exception as exc:
+                app.log(f"Fix chants audio: failed to rewrite {path}", exc, exc_info=sys.exc_info())
+                counts["errors"] += 1
+        return counts
 
     def _parse_chants_config(self, raw: str) -> list[str]:
         return [part.strip() for part in raw.split(",")] if raw else []
