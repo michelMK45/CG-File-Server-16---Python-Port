@@ -6,7 +6,7 @@ import time
 import threading
 import webbrowser
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from PIL import Image, ImageTk
 
@@ -21,6 +21,7 @@ from .file_tools import (
     stadium_preview_fallback_path,
 )
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
+from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .update_checker import UpdateCheckResult
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
@@ -34,6 +35,24 @@ except Exception:
 # jersey/shorts/crest (list = existing kit .rx3, import = loose PNG); "rx3" by the
 # kit-numbers pickers (list and import are both .rx3); "dds" by the kit-UI thumbnail
 # picker (list and import are both .dds).
+# UI zoom — app_ui.py's zoom popup (opened via the magnifying-glass button in
+# the top bar). Only Tk's own *named* fonts (which every ttk widget in this
+# app implicitly uses — see _configure_theme, none of its style.configure(...)
+# calls set an explicit font) reliably re-render already-displayed widgets
+# when reconfigured; that is not guaranteed for a bare "tk scaling" change on
+# its own. Raw tk widgets in this file all use literal font tuples instead, so
+# they're rescaled individually via _ZOOM_WIDGET_FONTS, captured once after
+# _build_ui() finishes building the static tree.
+# Step size is kept proportional to UI_ZOOM_DEFAULT so the popup's percentage
+# readout still moves in clean 10%-of-default increments now that "100%" no
+# longer means the literal 1.0 multiplier (see settings_store.py).
+UI_ZOOM_STEP = UI_ZOOM_DEFAULT * 0.1
+UI_ZOOM_NAMED_FONTS = (
+    "TkDefaultFont", "TkTextFont", "TkFixedFont", "TkMenuFont",
+    "TkHeadingFont", "TkCaptionFont", "TkSmallCaptionFont",
+    "TkIconFont", "TkTooltipFont",
+)
+
 KITMIX_KEEP_LABEL = "-- keep current --"
 KITSIMPLE_GK_NONE_LABEL = "-- none --"
 KITMIX_IMPORTED_LABEL_PREFIX = "[image] "
@@ -316,6 +335,7 @@ class UIMixin:
 
         top = tk.Frame(root, bg=self.bg, padx=10, pady=10)
         top.pack(fill="x")
+        self._top_bar = top
         self.locate_fifa_button = ttk.Button(top, text=self.tr("button.locate_fifa_exe"), command=self.select_fifa_exe)
         self.locate_fifa_button.pack(side="left", padx=6)
         self.launch_fifa_button = ttk.Button(top, text=self.tr("button.launch_fifa"), command=self.launch_fifa)
@@ -326,6 +346,8 @@ class UIMixin:
         self.assign_movie_button.pack(side="left", padx=6)
         self.exclude_competition_button = ttk.Button(top, text=self.tr("button.exclude_competition"), command=self.exclude_competition)
         self.exclude_competition_button.pack(side="left", padx=6)
+        self.zoom_toggle_button = ttk.Button(top, text="\U0001F50D", width=3, command=self._toggle_zoom_popup)
+        self.zoom_toggle_button.pack(side="right", padx=(10, 6))
         language_host = tk.Frame(top, bg=self.bg)
         language_host.pack(side="right", padx=(10, 6))
         self.language_label = tk.Label(language_host, text=self.tr("label.language"), bg=self.bg, fg=self.muted, font=("Bahnschrift", 9, "bold"))
@@ -458,6 +480,271 @@ class UIMixin:
         self._build_logs_card()
         self._apply_main_localization()
 
+        self._zoom_base_geometry = (1024, 680)
+        self._zoom_base_minsize = (980, 640)
+        self._capture_zoom_bases()
+        self._apply_ui_zoom_fonts()
+        zoom = self.settings.ui_zoom
+        base_w, base_h = self._zoom_base_geometry
+        min_w, min_h = self._zoom_base_minsize
+        top_min_w = self._required_top_bar_width()
+        # Cache the reqwidth normalized back to a 1.0-equivalent base, so later
+        # zoom commits can rescale it with plain multiplication instead of
+        # calling _required_top_bar_width() (and its global update_idletasks())
+        # again — see that method's docstring for why a repeated call is unsafe.
+        self._zoom_base_top_bar_width = top_min_w / zoom if zoom else top_min_w
+        root.geometry(f"{max(round(base_w * zoom), top_min_w)}x{round(base_h * zoom)}")
+        root.minsize(max(round(min_w * zoom), top_min_w), round(min_h * zoom))
+        self._zoom_applied = zoom
+        self._zoom_apply_job = None
+
+    def _required_top_bar_width(self) -> int:
+        """The narrowest the window can get before the top bar's own buttons
+        (locate FIFA .. check for updates) start clipping/going offscreen —
+        used as a floor under both the initial geometry and minsize, so e.g.
+        the Check Update button on the far right is never hidden until the
+        user manually stretches the window wider.
+
+        Only ever safe to call once, during initial _build_ui() — it forces a
+        global `update idletasks` flush, which drains every pending geometry
+        recalculation in the whole app, not just the top bar's. Confirmed
+        live (py-spy dump on a hung process) that calling this again from
+        _commit_ui_zoom(), right after _apply_ui_zoom_fonts() has just
+        changed every widget's font size, can send that flush into a
+        non-terminating <Configure> cascade against a self-referential
+        wraplength-follows-own-width label binding (app_ui.py's hint_label,
+        ~line 3147) — MainThread parked forever inside update_idletasks(),
+        never returning to the Tk mainloop to pump Windows messages, i.e.
+        exactly "Not Responding". Later callers must use
+        _scaled_top_bar_width(zoom) instead, which reuses the value measured
+        here and needs no fresh flush.
+        """
+        top = getattr(self, "_top_bar", None)
+        root = self.ui_root
+        if top is None or root is None:
+            return 0
+        root.update_idletasks()
+        return top.winfo_reqwidth() + 24
+
+    def _scaled_top_bar_width(self, zoom: float) -> int:
+        base = getattr(self, "_zoom_base_top_bar_width", None)
+        if base is None:
+            return self._required_top_bar_width()
+        return round(base * zoom)
+
+    def _capture_zoom_bases(self) -> None:
+        """Record each widget's font size exactly as authored in source
+        (e.g. font=("Bahnschrift", 9, "bold") -> base size 9), so later zoom
+        changes can always recompute sizes as base_size * zoom instead of
+        compounding rounding error onto whatever size is currently displayed.
+        Must run before _apply_ui_zoom_fonts() has ever executed once in this
+        process — every literal font=(...) tuple in _build_ui()'s static tree
+        is a plain hardcoded constant untouched by zoom until that first
+        call, so whatever size is on screen right now IS the raw, zoom==1.0
+        base value; dividing it by anything here would be wrong.
+
+        Only walks the static tree built by _build_ui() (and its sub-builders,
+        all of which run synchronously before this is called) — widgets
+        created later at runtime (list rows, kit thumbnails, dialogs) are not
+        covered here. ttk widgets are unaffected by this gap since none of
+        them set an explicit font (see _configure_theme) — they all inherit
+        from the shared named fonts rescaled in _apply_ui_zoom_fonts, which
+        covers newly created ttk widgets automatically.
+        """
+        self._zoom_widget_fonts: list[tuple[tk.Misc, str, int, str, str]] = []
+
+        def walk(widget: tk.Misc) -> None:
+            try:
+                raw_font = widget.cget("font")
+            except Exception:
+                raw_font = None
+            if raw_font:
+                try:
+                    actual = tkfont.Font(font=raw_font).actual()
+                    base_size = int(actual["size"])
+                    if base_size > 0:
+                        self._zoom_widget_fonts.append(
+                            (widget, actual["family"], base_size, actual["weight"], actual["slant"])
+                        )
+                except Exception:
+                    pass
+            try:
+                children = widget.winfo_children()
+            except Exception:
+                children = []
+            for child in children:
+                walk(child)
+
+        if self.ui_root is not None:
+            walk(self.ui_root)
+
+        # Same "whatever's on screen right now is the zoom==1.0 base" logic as
+        # above. These are Tk's own built-in fonts (every ttk widget in this
+        # app implicitly uses them — see _configure_theme); their size here
+        # is whatever Tk/Windows auto-selected at interpreter startup, before
+        # _apply_ui_zoom_fonts() has ever run, so it's captured as-is too.
+        self._zoom_named_font_bases: dict[str, int] = {}
+        for name in UI_ZOOM_NAMED_FONTS:
+            try:
+                f = tkfont.nametofont(name)
+                base_size = abs(int(f.cget("size")))
+                if base_size > 0:
+                    self._zoom_named_font_bases[name] = base_size
+            except Exception:
+                pass
+
+    def _apply_ui_zoom_fonts(self) -> None:
+        zoom = self.settings.ui_zoom
+        try:
+            self.tk.call("tk", "scaling", self._base_tk_scaling * zoom)
+        except Exception:
+            pass
+        for name, base_size in self._zoom_named_font_bases.items():
+            try:
+                tkfont.nametofont(name).configure(size=round(base_size * zoom))
+            except Exception:
+                pass
+        for widget, family, base_size, weight, slant in self._zoom_widget_fonts:
+            try:
+                if not widget.winfo_exists():
+                    continue
+            except Exception:
+                continue
+            font_spec = [family, round(base_size * zoom)]
+            if weight == "bold":
+                font_spec.append("bold")
+            if slant == "italic":
+                font_spec.append("italic")
+            try:
+                widget.configure(font=tuple(font_spec))
+            except Exception:
+                pass
+
+    def _update_zoom_label(self) -> None:
+        pct = round(self.settings.ui_zoom / UI_ZOOM_DEFAULT * 100)
+        if self.zoom_value_label is not None:
+            self.zoom_value_label.configure(text=f"{pct}%")
+        if self.zoom_out_button is not None:
+            self.zoom_out_button.configure(state="disabled" if self.settings.ui_zoom <= UI_ZOOM_MIN else "normal")
+        if self.zoom_in_button is not None:
+            self.zoom_in_button.configure(state="disabled" if self.settings.ui_zoom >= UI_ZOOM_MAX else "normal")
+
+    def _step_ui_zoom(self, direction: int) -> None:
+        old_zoom = self.settings.ui_zoom
+        new_zoom = round(old_zoom + direction * UI_ZOOM_STEP, 4)
+        new_zoom = max(UI_ZOOM_MIN, min(UI_ZOOM_MAX, new_zoom))
+        if new_zoom == old_zoom:
+            return
+        self.settings.ui_zoom = new_zoom
+        self._update_zoom_label()
+        # Debounced: reconfiguring every literal-font widget in the app plus
+        # a native window resize is expensive enough that clicking +/- fast
+        # (no debounce) queues up one full pass per click and freezes the UI
+        # for several seconds — confirmed live ("Not Responding", ~40s of
+        # accumulated CPU time after a rapid-click burst). Same pattern the
+        # dashboard canvas already uses for its own Configure storms (see
+        # _on_dashboard_configure) — only the LAST zoom level requested
+        # within the debounce window actually gets applied.
+        if getattr(self, "_zoom_apply_job", None) is not None:
+            try:
+                self.after_cancel(self._zoom_apply_job)
+            except Exception:
+                pass
+        self._zoom_apply_job = self.after(200, self._commit_ui_zoom)
+
+    def _commit_ui_zoom(self) -> None:
+        self._zoom_apply_job = None
+        applied_before = getattr(self, "_zoom_applied", self.settings.ui_zoom) or 1.0
+        target = self.settings.ui_zoom
+        self._apply_ui_zoom_fonts()
+        root = self.ui_root
+        if root is not None and root.winfo_exists():
+            ratio = target / applied_before
+            new_w = max(1, round(root.winfo_width() * ratio))
+            new_h = max(1, round(root.winfo_height() * ratio))
+            top_min_w = self._scaled_top_bar_width(target)
+            new_w = max(new_w, top_min_w)
+            root.geometry(f"{new_w}x{new_h}")
+            min_w, min_h = self._zoom_base_minsize
+            root.minsize(max(round(min_w * target), top_min_w), round(min_h * target))
+        self._zoom_applied = target
+        self._update_zoom_label()
+
+    def _toggle_zoom_popup(self) -> None:
+        """Shows/hides the -/percentage/+ zoom controls as a small borderless
+        popup anchored under the magnifying-glass button, instead of taking
+        up permanent space in the top bar."""
+        if self._zoom_popup is not None and self._zoom_popup.winfo_exists():
+            self._close_zoom_popup()
+            return
+        popup = tk.Toplevel(self._window())
+        popup.overrideredirect(True)
+        popup.attributes("-topmost", True)
+        popup.configure(bg=self.panel, highlightthickness=1, highlightbackground="#2a3c59")
+        self._zoom_popup = popup
+
+        row = tk.Frame(popup, bg=self.panel, padx=8, pady=6)
+        row.pack()
+        self.zoom_label = tk.Label(row, text=self.tr("label.zoom"), bg=self.panel, fg=self.muted, font=("Bahnschrift", 9, "bold"))
+        self.zoom_label.pack(side="left", padx=(0, 8))
+        self.zoom_out_button = ttk.Button(row, text="-", width=2, command=lambda: self._step_ui_zoom(-1))
+        self.zoom_out_button.pack(side="left")
+        self.zoom_value_label = tk.Label(row, text="100%", bg=self.panel, fg=self.fg, font=("Consolas", 9), width=5, anchor="center")
+        self.zoom_value_label.pack(side="left", padx=2)
+        self.zoom_in_button = ttk.Button(row, text="+", width=2, command=lambda: self._step_ui_zoom(1))
+        self.zoom_in_button.pack(side="left")
+        self._update_zoom_label()
+
+        # The window's min/max size floor is only recomputed at startup
+        # (_required_top_bar_width, captured once into _zoom_base_top_bar_width
+        # — see its docstring) and then merely rescaled on later commits; a
+        # live commit still resizes the window itself correctly, but some
+        # widgets sized off the window's initial layout don't always settle
+        # to the new zoom cleanly without a fresh start. Flagging that here
+        # instead of trying to fix live re-layout for every such widget.
+        self.zoom_restart_hint_label = tk.Label(
+            popup, text=self.tr("label.zoom_restart_hint"), bg=self.panel, fg=self.muted,
+            font=("Bahnschrift", 8), justify="left", wraplength=170,
+        )
+        self.zoom_restart_hint_label.pack(fill="x", padx=8, pady=(0, 6))
+
+        # Position after_idle rather than via an immediate update_idletasks():
+        # the latter forces Tk to synchronously drain *every* pending idle
+        # task application-wide, not just this popup's — and right after a
+        # zoom commit has just rescaled fonts across the whole widget tree,
+        # that backlog can be large. Confirmed live (py-spy dump on hung
+        # processes, twice) that forcing it here parked the MainThread inside
+        # that single Tcl call for a very long time — "Not Responding" —
+        # because Tk never returns to the mainloop to pump Windows messages
+        # while draining it. after_idle runs once the idle queue empties too,
+        # but one event at a time through the normal mainloop, so pending
+        # work processes incrementally without blocking message pumping.
+        def _position_popup() -> None:
+            if not popup.winfo_exists():
+                return
+            btn = self.zoom_toggle_button
+            x = btn.winfo_rootx() + btn.winfo_width() - popup.winfo_reqwidth()
+            y = btn.winfo_rooty() + btn.winfo_height() + 4
+            popup.geometry(f"+{max(0, x)}+{max(0, y)}")
+            popup.focus_force()
+
+        popup.bind("<FocusOut>", lambda _e: self._close_zoom_popup())
+        popup.bind("<Escape>", lambda _e: self._close_zoom_popup())
+        popup.after_idle(_position_popup)
+
+    def _close_zoom_popup(self) -> None:
+        if self._zoom_popup is not None:
+            try:
+                self._zoom_popup.destroy()
+            except Exception:
+                pass
+            self._zoom_popup = None
+        self.zoom_label = None
+        self.zoom_value_label = None
+        self.zoom_out_button = None
+        self.zoom_in_button = None
+        self.zoom_restart_hint_label = None
+
     def _build_stadium_loading_modal(self) -> None:
         modal = tk.Toplevel(self._window())
         modal.withdraw()
@@ -518,7 +805,8 @@ class UIMixin:
             length=292,
         )
         self.stadium_loading_bar.pack(fill="x", pady=(2, 0))
-        modal.geometry("340x274")
+        zoom = self.settings.ui_zoom
+        modal.geometry(f"{round(340 * zoom)}x{round(274 * zoom)}")
 
     def _show_stadium_loading_modal(self, stadium_name: str, detail: str = "Preparing stadium assets", progress: float = 0.0) -> None:
         if not self.show_stadium_loading_var.get():
@@ -720,7 +1008,8 @@ class UIMixin:
             if self.user32.GetWindowRect(fifa_hwnd, ctypes.byref(rect)):
                 fifa_width = rect.right - rect.left
                 fifa_height = rect.bottom - rect.top
-                modal_w, modal_h = 340, 274
+                zoom = self.settings.ui_zoom
+                modal_w, modal_h = round(340 * zoom), round(274 * zoom)
                 x = rect.left + (fifa_width - modal_w) // 2
                 y = rect.top + 40
                 self.stadium_loading_modal.geometry(f"{modal_w}x{modal_h}+{x}+{y}")
@@ -729,7 +1018,8 @@ class UIMixin:
         window.update_idletasks()
         root_x = window.winfo_rootx()
         root_y = window.winfo_rooty()
-        self.stadium_loading_modal.geometry(f"340x274+{root_x + 24}+{root_y + 24}")
+        zoom = self.settings.ui_zoom
+        self.stadium_loading_modal.geometry(f"{round(340 * zoom)}x{round(274 * zoom)}+{root_x + 24}+{root_y + 24}")
 
     def _card(self, parent: tk.Misc, title_key: str, subtitle_key: str = "") -> tk.Frame:
         card = tk.Frame(parent, bg=self.card, bd=0, highlightthickness=1, highlightbackground="#243654")
@@ -1845,7 +2135,8 @@ class UIMixin:
         win = tk.Toplevel(self._window())
         win.title(self.tr("dialog.kitmix.restore_manager_title"))
         win.configure(bg=self.card)
-        win.geometry("460x420")
+        zoom = self.settings.ui_zoom
+        win.geometry(f"{round(460 * zoom)}x{round(420 * zoom)}")
         win.transient(self._window())
         win.grab_set()
 
@@ -2458,7 +2749,8 @@ class UIMixin:
         win = tk.Toplevel(self._window())
         win.title(self.tr("dialog.chants_fix.title"))
         win.configure(bg=self.card)
-        win.geometry("520x460")
+        zoom = self.settings.ui_zoom
+        win.geometry(f"{round(520 * zoom)}x{round(460 * zoom)}")
         win.transient(self._window())
         win.grab_set()
 
@@ -2907,7 +3199,40 @@ class UIMixin:
                 parent, text=self.tr(text_key), bg=self.card, fg=self.muted,
                 font=("Bahnschrift", 9), anchor="w", justify="left",
             )
-            lbl.bind("<Configure>", lambda e: lbl.configure(wraplength=e.width))
+
+            # Debounced, same "Configure storm" pattern as the dashboard canvas
+            # (_on_dashboard_configure): reacting to every single <Configure>
+            # synchronously — even with a same-value guard — was confirmed
+            # live (py-spy dump, repeatedly) to keep re-firing indefinitely
+            # under the zoom feature, which resizes dozens of interdependent
+            # widgets (including this canvas-embedded scrollable body) in one
+            # go. A same-value guard alone doesn't help when e.width itself
+            # is genuinely oscillating between two neighboring values each
+            # pass (pack-driven rounding while ancestor sizes are still
+            # settling) rather than repeating unchanged — MainThread stuck
+            # applying wraplength forever, never returning to the mainloop to
+            # pump Windows messages ("Not Responding"). Collapsing a burst of
+            # rapid-fire Configure events down to one applied width, 80ms
+            # after they stop arriving, breaks that tight feedback loop
+            # regardless of how many distinct values it was bouncing between.
+            def _apply_hint_wrap(width: int, lbl=lbl) -> None:
+                lbl._wrap_job = None
+                if not lbl.winfo_exists():
+                    return
+                if int(str(lbl.cget("wraplength")) or 0) != width:
+                    lbl.configure(wraplength=width)
+
+            def _on_hint_configure(e, lbl=lbl):
+                width = max(int(e.width), 1)
+                job = getattr(lbl, "_wrap_job", None)
+                if job is not None:
+                    try:
+                        lbl.after_cancel(job)
+                    except Exception:
+                        pass
+                lbl._wrap_job = lbl.after(80, lambda: _apply_hint_wrap(width))
+
+            lbl.bind("<Configure>", _on_hint_configure)
             lbl.pack(fill="x", **pack_opts)
             return lbl
 

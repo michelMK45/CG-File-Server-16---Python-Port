@@ -43,6 +43,8 @@
   "button.comp_id": "ID DA COMP",
   "button.comp_round_id": "ID DA RODADA",
   "label.language": "Idioma",
+  "label.zoom": "Zoom",
+  "label.zoom_restart_hint": "Reinicie o aplicativo para que o zoom se ajuste bem à janela.",
   "tab.dashboard": "Dashboard",
   "tab.kits": "Kits",
   "tab.kits.simple": "Simples",

@@ -40,6 +40,8 @@
   "button.delete_entry": "Eliminar entrada",
   "button.apply_runtime": "Aplicar runtime",
   "label.language": "Idioma",
+  "label.zoom": "Zoom",
+  "label.zoom_restart_hint": "Reinicia la aplicación para que el zoom se adapte bien a la ventana.",
   "tab.kits": "Kits",
   "tab.kits.simple": "Simple",
   "tab.kits.advanced": "Avanzado",

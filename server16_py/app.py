@@ -53,6 +53,20 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.log_path = self.base_dir / "runtime" / "server16.log"
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.settings = SettingsStore(self.base_dir / "runtime" / "settings.json")
+        # main() makes this process per-monitor DPI aware so GetCursorPos/
+        # ScreenToClient return real screen pixels (see main()'s comment). A
+        # side effect: Tk auto-derives its font/widget scaling from the
+        # monitor's *real* DPI once it sees this process is DPI aware,
+        # enlarging fonts/padding — but every geometry("WxH") call in this
+        # app (app_ui.py, dialogs.py, settings_editor.py) is a literal pixel
+        # count that doesn't grow to match, so the window box clips its own
+        # (now bigger) content, hiding buttons at the top/bottom. Pin Tk's
+        # base scaling to the traditional 96-DPI value, independent of the
+        # process's real DPI, and layer the user's saved zoom level (see
+        # app_ui.py's _apply_ui_zoom / the zoom buttons) on top of that fixed
+        # base rather than on whatever the monitor happens to report.
+        self._base_tk_scaling = 96 / 72
+        self.tk.call("tk", "scaling", self._base_tk_scaling * self.settings.ui_zoom)
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
@@ -243,6 +257,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.log_follow_button = None
         self.language_label = None
         self.language_combo = None
+        self.zoom_label = None
+        self.zoom_value_label = None
+        self.zoom_out_button = None
+        self.zoom_in_button = None
+        self.zoom_toggle_button = None
+        self.zoom_restart_hint_label = None
+        self._zoom_popup = None
         self.language_var = tk.StringVar(value=self.settings.language)
         self._log_autofollow = True
         self.ui_root = None

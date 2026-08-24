@@ -26,8 +26,9 @@ class SettingsAreaEditor(tk.Toplevel):
         self.specs = specs
         self.configure(bg=app.bg)
         self.title(title)
-        self.geometry("1120x700")
-        self.minsize(1000, 640)
+        zoom = getattr(getattr(app, "settings", None), "ui_zoom", 1.0)
+        self.geometry(f"{round(1120 * zoom)}x{round(700 * zoom)}")
+        self.minsize(round(1000 * zoom), round(640 * zoom))
         self.transient(owner)
         self.deiconify()
         self.lift()

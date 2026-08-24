@@ -43,6 +43,8 @@
   "button.comp_id": "COMP ID",
   "button.comp_round_id": "COMP ROUND ID",
   "label.language": "Language",
+  "label.zoom": "Zoom",
+  "label.zoom_restart_hint": "Restart the app for the new zoom to fit the window properly.",
   "tab.dashboard": "Dashboard",
   "tab.kits": "Kits",
   "tab.kits.simple": "Simple",

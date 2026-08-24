@@ -76,6 +76,15 @@ class BaseDialog(tk.Toplevel):
             return app.tr(key, **kwargs)
         return key.format(**kwargs) if kwargs else key
 
+    def _set_geometry(self, width: int, height: int, min_width: int, min_height: int) -> None:
+        """Applies the app's current UI zoom (app_ui.py's zoom buttons) to a
+        literal pixel window size, so a zoomed-in dialog doesn't clip its own
+        (now bigger) fonts the same way the main window used to."""
+        settings = getattr(getattr(self, "app", None), "settings", None)
+        zoom = getattr(settings, "ui_zoom", 1.0) if settings is not None else 1.0
+        self.geometry(f"{round(width * zoom)}x{round(height * zoom)}")
+        self.minsize(round(min_width * zoom), round(min_height * zoom))
+
     def close_ok(self, value) -> None:
         self.result = value
         self.destroy()
@@ -128,8 +137,7 @@ class BaseDialog(tk.Toplevel):
 class ScoreboardDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
         super().__init__(master, "dialog.assignment.title.scoreboard")
-        self.geometry("1100x720")
-        self.minsize(900, 620)
+        self._set_geometry(1100, 720, 900, 620)
         self.scope_labels = {key: self.tr(label_key) for key, label_key in SCOREBOARD_SCOPE_OPTIONS}
         self.scope_ids = {v: k for k, v in self.scope_labels.items()}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.scope_labels["0"]))
@@ -336,8 +344,7 @@ class MovieDialog(BaseDialog):
 class StadiumDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
         super().__init__(master, "dialog.assignment.title.stadium")
-        self.geometry("1180x760")
-        self.minsize(1060, 700)
+        self._set_geometry(1180, 760, 1060, 700)
         pitch_values = self._file_stems(self._first_existing(exedir / "FSW" / "Images" / "PitchMowPattern", exedir / "FSW" / "PitchMowPattern"))
         net_values = self._file_stems(self._first_existing(exedir / "FSW" / "Images" / "Nets", exedir / "FSW" / "Nets"))
         self.scope_labels = {key: self.tr(label_key) for key, label_key in STADIUM_SCOPE_OPTIONS}
@@ -789,8 +796,7 @@ class SectionPickerDialog(BaseDialog):
         confirm_key: str,
     ) -> None:
         super().__init__(master, title_key)
-        self.geometry("460x560")
-        self.minsize(400, 420)
+        self._set_geometry(460, 560, 400, 420)
         self.section_vars: dict[str, tk.BooleanVar] = {}
         self._suspend_sync = False
 

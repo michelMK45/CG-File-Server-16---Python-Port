@@ -5,6 +5,19 @@ from pathlib import Path
 
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN
 
+# UI zoom range for app_ui.py's zoom buttons/popup, applied on top of the
+# fixed 96-DPI tk-scaling base (see app.py's __init__ comment on
+# _base_tk_scaling — that base never moves with the real monitor DPI).
+# UI_ZOOM_DEFAULT is what "100%" in the zoom popup actually renders at: the
+# app's original 1024x680/point-size design was judged too small on its own
+# (users found the 96-DPI baseline cramped even before any monitor-DPI
+# concerns), so the *default* is deliberately set above the legacy 1:1 value
+# rather than leaving 100% == the old tiny baseline. MIN/MAX keep the same
+# 0.8x-1.6x range *relative to this new default*, not to the old baseline.
+UI_ZOOM_DEFAULT = 1.15
+UI_ZOOM_MIN = round(UI_ZOOM_DEFAULT * 0.8, 4)
+UI_ZOOM_MAX = round(UI_ZOOM_DEFAULT * 1.6, 4)
+
 
 def _deep_merge(base: dict, override: dict) -> dict:
     """Recursively merge *override* into a copy of *base*.
@@ -33,6 +46,7 @@ class SettingsStore:
         "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "LANGUAGE": "en",
+        "UI_ZOOM": UI_ZOOM_DEFAULT,
         "CUSTOM_KIT_NUMBERS": False,
         # FIFA's own vanilla default (3), not the last CE-tested value (5) — a fresh install
         # should show a familiar baseline rather than an arbitrary number.
@@ -156,6 +170,16 @@ class SettingsStore:
     @auto_apply_substitution_count.setter
     def auto_apply_substitution_count(self, value: bool) -> None:
         self.data["AUTO_APPLY_SUBSTITUTION_COUNT"] = bool(value)
+        self.save()
+
+    @property
+    def ui_zoom(self) -> float:
+        value = float(self.data.get("UI_ZOOM", UI_ZOOM_DEFAULT))
+        return max(UI_ZOOM_MIN, min(UI_ZOOM_MAX, value))
+
+    @ui_zoom.setter
+    def ui_zoom(self, value: float) -> None:
+        self.data["UI_ZOOM"] = max(UI_ZOOM_MIN, min(UI_ZOOM_MAX, float(value)))
         self.save()
 
     @property

@@ -62,6 +62,10 @@ class LocalizationMixin:
             self.check_update_button.configure(text=self._check_update_button_text())
         if self.language_label is not None:
             self.language_label.configure(text=self.tr("label.language"))
+        if self.zoom_label is not None:
+            self.zoom_label.configure(text=self.tr("label.zoom"))
+        if self.zoom_restart_hint_label is not None:
+            self.zoom_restart_hint_label.configure(text=self.tr("label.zoom_restart_hint"))
         if self.language_combo is not None:
             self.language_combo.configure(values=self._language_combo_values())
         if self.banner_title_label is not None:
