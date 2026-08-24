@@ -33,6 +33,7 @@ _MAX_MENU_ITEM_LEN = 80
 _MAX_MENU_ITEMS    = 256  # must match MAX_MENU_ITEMS in the compiled DLL
 _MAX_DASH_ITEMS    = 10
 _MAX_TOASTS        = 6    # must match MAX_TOASTS in the compiled DLL
+_MAX_ICON          = 32   # must match MAX_ICON in the compiled DLL
 
 
 class _ToastEntry(ctypes.Structure):
@@ -41,6 +42,11 @@ class _ToastEntry(ctypes.Structure):
         ("title",   ctypes.c_wchar * _MAX_STR),
         ("body",    ctypes.c_wchar * _MAX_STR),
         ("style",   ctypes.c_long),   # 0 = info (blue), 1 = warning (amber)
+        # Lowercase key naming a file under resources/rmlui/icons/<icon>.png
+        # ("tv", "scoreboard", "movie", "goalpost", ...) — empty (the
+        # default) or a name with no matching file falls back to the app
+        # icon, see ResolveToastIconPath in cgfs16_rmlui.cpp.
+        ("icon",    ctypes.c_wchar * _MAX_ICON),
     ]
 
 
@@ -394,8 +400,13 @@ class D3DOverlayInjector:
             return
         self._shared.image_path = (path or "")[:_MAX_IMG - 1]
 
-    def show_toast(self, title: str, body: str = "", style: int = 0) -> int:
-        """Occupy the first free slot. Returns slot index (0-3) or -1 if all full."""
+    def show_toast(self, title: str, body: str = "", style: int = 0, icon: str = "") -> int:
+        """Occupy the first free slot. Returns slot index (0-3) or -1 if all full.
+
+        `icon` names a file under resources/rmlui/icons/<icon>.png (e.g.
+        "tv", "scoreboard", "movie", "goalpost") — leave empty to use the
+        default app icon, or if the asset type has no dedicated icon.
+        """
         if not self._ready or self._shared is None:
             return -1
         for i in range(_MAX_TOASTS):
@@ -403,6 +414,7 @@ class D3DOverlayInjector:
                 self._shared.toasts[i].title   = title[:_MAX_STR - 1]
                 self._shared.toasts[i].body    = body[:_MAX_STR - 1]
                 self._shared.toasts[i].style   = style
+                self._shared.toasts[i].icon    = (icon or "")[:_MAX_ICON - 1]
                 self._shared.toasts[i].visible = 1
                 return i
         return -1
@@ -645,6 +657,7 @@ class D3DOverlayInjector:
             self._shared.toasts[i].visible = 0
             self._shared.toasts[i].title   = ""
             self._shared.toasts[i].body    = ""
+            self._shared.toasts[i].icon    = ""
         self._shared.gamepad_icon_dir = ""
         self._shared.keyboard_icon_dir = ""
         self._shared.rmlui_content_dir = ""

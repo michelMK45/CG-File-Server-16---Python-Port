@@ -56,6 +56,7 @@ bool RmlOverlay_ToastVisible(int slot);
 bool RmlOverlay_ToastWarning(int slot);
 const wchar_t *RmlOverlay_ToastTitle(int slot);
 const wchar_t *RmlOverlay_ToastBody(int slot);
+const wchar_t *RmlOverlay_ToastIcon(int slot);
 bool RmlOverlay_StadiumPanelVisible();
 int RmlOverlay_ProgressX100();
 const wchar_t *RmlOverlay_StadiumName();
@@ -75,6 +76,25 @@ static Rml::String WideToUtf8(const wchar_t *s) {
     std::string out(len - 1, '\0'); // len includes the null terminator
     WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
     return Rml::String(out);
+}
+
+// Resolves a toast's icon "kind" (ToastEntry::icon, e.g. "tv", "scoreboard")
+// to an absolute path under resources/rmlui/icons/. Actually checks the file
+// exists (GetFileAttributesW) rather than trusting the kind string blindly —
+// an unrecognized/missing kind (or an empty one, the default) falls back to
+// the bundled app icon, same file every toast used before per-asset icons
+// existed. Only called when the kind string changes (see g_toastIconKindLoaded),
+// not every frame, so the extra file-system stat is negligible.
+static Rml::String ResolveToastIconPath(const wchar_t *kind) {
+    const wchar_t *contentDirW = RmlOverlay_ContentDir();
+    if (kind && kind[0]) {
+        wchar_t candidate[MAX_IMG];
+        _snwprintf_s(candidate, MAX_IMG, _TRUNCATE, L"%s\\icons\\%s.png", contentDirW, kind);
+        DWORD attrs = GetFileAttributesW(candidate);
+        if (attrs != INVALID_FILE_ATTRIBUTES && !(attrs & FILE_ATTRIBUTE_DIRECTORY))
+            return WideToUtf8(candidate);
+    }
+    return WideToUtf8(contentDirW) + "\\app_icon.png";
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,7 +1134,71 @@ static Rml::ElementDocument *g_toastDoc = nullptr;
 static Rml::Element         *g_toastSlot[MAX_TOASTS] = {};
 static Rml::Element         *g_toastTitle[MAX_TOASTS] = {};
 static Rml::Element         *g_toastBody[MAX_TOASTS] = {};
+static Rml::Element         *g_toastIcon[MAX_TOASTS] = {};
+// Icon "kind" string (see ToastEntry::icon) last written to each slot's src
+// — only re-resolves/re-sets the attribute when this changes, same reload-
+// on-change pattern as g_stadiumImgPathLoaded below.
+static std::wstring          g_toastIconKindLoaded[MAX_TOASTS];
 static bool                  g_toastSlotShown[MAX_TOASTS] = {};
+// Aggregate of the last SyncToasts call's outAnyToast — lets
+// RmlOverlay_RenderFrame's early-return check (which runs BEFORE SyncToasts
+// each frame) know a close-out fade is still playing even on the exact frame
+// the raw shared-memory visible flag already dropped, when no per-slot
+// close-animation state has been armed yet (that only happens once
+// SyncToasts itself gets to run). Same fix shape as g_menuDocShown in
+// cgfs16_rmlui_menu.cpp for the identical problem on the F12 panel.
+static bool                  g_toastAnyActive = false;
+
+// Toast open/close animation — a manual per-frame tween, same pattern (and
+// same reason) as #panel's own open/close zoom in cgfs16_rmlui_menu.cpp: see
+// g_panelOpenAnimActive's comment there. Slides in from the right + fades,
+// mirrored on the way out. g_toastCloseAnimActive[i] doubles as "this slot
+// is still occupying stack space after Python's visible flag already
+// dropped" — SyncToasts and RmlOverlay_RenderFrame's early-return check both
+// key off it so the close-out actually gets to play instead of being cut off
+// the instant Python hides the slot.
+static bool      g_toastOpenAnimActive[MAX_TOASTS] = {};
+static ULONGLONG g_toastOpenAnimStartTick[MAX_TOASTS] = {};
+static bool      g_toastCloseAnimActive[MAX_TOASTS] = {};
+static ULONGLONG g_toastCloseAnimStartTick[MAX_TOASTS] = {};
+static const float TOAST_OPEN_ANIM_MS  = 220.f;
+static const float TOAST_CLOSE_ANIM_MS = 170.f;
+static const float TOAST_SLIDE_PX      = 28.f;
+
+// Ease-out cubic: fast start, gentle settle — mirrors ApplyPanelOpenAnim.
+static void ApplyToastOpenAnim(Rml::Element *el, int slot) {
+    if (!el || !g_toastOpenAnimActive[slot]) return;
+    float elapsedMs = (float)(GetTickCount64() - g_toastOpenAnimStartTick[slot]);
+    float t = (std::min)(1.f, elapsedMs / TOAST_OPEN_ANIM_MS);
+    if (t >= 1.f) {
+        g_toastOpenAnimActive[slot] = false;
+        el->SetProperty("opacity", "1");
+        el->SetProperty("transform", "none");
+        return;
+    }
+    float eased = 1.f - powf(1.f - t, 3.f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", eased);
+    el->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", TOAST_SLIDE_PX * (1.f - eased));
+    el->SetProperty("transform", buf);
+}
+
+// Ease-in cubic, mirror of ApplyToastOpenAnim. Returns true once finished —
+// caller then stops treating the slot as occupying stack space.
+static bool ApplyToastCloseAnim(Rml::Element *el, int slot) {
+    if (!el) return true;
+    float elapsedMs = (float)(GetTickCount64() - g_toastCloseAnimStartTick[slot]);
+    float t = (std::min)(1.f, elapsedMs / TOAST_CLOSE_ANIM_MS);
+    if (t >= 1.f) return true;
+    float eased = t * t * t;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", 1.f - eased);
+    el->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", TOAST_SLIDE_PX * eased);
+    el->SetProperty("transform", buf);
+    return false;
+}
 
 // Stadium-loading document + cached elements.
 static Rml::ElementDocument *g_stadiumDoc = nullptr;
@@ -1124,6 +1208,57 @@ static Rml::Element         *g_stadiumDetail = nullptr;
 static Rml::Element         *g_stadiumImg = nullptr;
 static Rml::Element         *g_stadiumFill = nullptr;
 static wchar_t                g_stadiumImgPathLoaded[MAX_IMG] = {};
+
+// Stadium panel open/close animation — single-instance version of the toast
+// slide+fade above (there's only ever one stadium panel), animating
+// g_stadiumDoc directly (body IS the document in RML, same as how
+// g_toastDoc's own "left"/"top" are already set directly elsewhere in this
+// file). g_stadiumDocShown mirrors g_menuDocShown in cgfs16_rmlui_menu.cpp:
+// true from the moment the panel opens until the close-out fade actually
+// finishes, so RmlOverlay_RenderFrame's early-return check can tell the
+// close-out is still playing even before SyncStadiumPanel has had a chance
+// to notice the drop and arm g_stadiumCloseAnimActive itself.
+static bool      g_stadiumDocShown = false;
+static bool      g_stadiumOpenAnimActive = false;
+static ULONGLONG g_stadiumOpenAnimStartTick = 0;
+static bool      g_stadiumCloseAnimActive = false;
+static ULONGLONG g_stadiumCloseAnimStartTick = 0;
+static const float STADIUM_OPEN_ANIM_MS  = 220.f;
+static const float STADIUM_CLOSE_ANIM_MS = 170.f;
+static const float STADIUM_SLIDE_PX      = 28.f;
+
+static void ApplyStadiumOpenAnim() {
+    if (!g_stadiumDoc || !g_stadiumOpenAnimActive) return;
+    float elapsedMs = (float)(GetTickCount64() - g_stadiumOpenAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / STADIUM_OPEN_ANIM_MS);
+    if (t >= 1.f) {
+        g_stadiumOpenAnimActive = false;
+        g_stadiumDoc->SetProperty("opacity", "1");
+        g_stadiumDoc->SetProperty("transform", "none");
+        return;
+    }
+    float eased = 1.f - powf(1.f - t, 3.f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", eased);
+    g_stadiumDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", STADIUM_SLIDE_PX * (1.f - eased));
+    g_stadiumDoc->SetProperty("transform", buf);
+}
+
+// Returns true once finished — caller then Hide()s the document.
+static bool ApplyStadiumCloseAnim() {
+    if (!g_stadiumDoc) return true;
+    float elapsedMs = (float)(GetTickCount64() - g_stadiumCloseAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / STADIUM_CLOSE_ANIM_MS);
+    if (t >= 1.f) return true;
+    float eased = t * t * t;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", 1.f - eased);
+    g_stadiumDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", STADIUM_SLIDE_PX * eased);
+    g_stadiumDoc->SetProperty("transform", buf);
+    return false;
+}
 
 static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     if (g_initDone) return true;
@@ -1230,6 +1365,19 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
         return false;
     }
 
+    // Absolute path, set once via SetAttribute — same pattern every other
+    // icon in this DLL uses (gamepad/keyboard hint icons, row thumbnails,
+    // the stadium preview). A plain relative src="app_icon.png" in the RML
+    // markup was tried first and rendered as a blank white square (falls
+    // back to CgfsRmlRenderInterface's m_whiteSRV whenever LoadTexture
+    // returns a null handle — see RenderGeometry) — not worth chasing the
+    // exact relative-path-resolution failure when every other icon in this
+    // file already uses an absolute path successfully. SyncToasts later
+    // swaps this per-toast (see ResolveToastIconPath) once a slot's
+    // ToastEntry::icon names a specific asset icon; this is just the
+    // starting/default pose so a slot never briefly shows no icon at all.
+    Rml::String iconPath = ResolveToastIconPath(L"");
+
     char idBuf[16];
     for (int i = 0; i < MAX_TOASTS; ++i) {
         snprintf(idBuf, sizeof(idBuf), "toast%d", i);
@@ -1237,6 +1385,8 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
         if (g_toastSlot[i]) {
             g_toastTitle[i] = g_toastSlot[i]->QuerySelector(".title");
             g_toastBody[i] = g_toastSlot[i]->QuerySelector(".body");
+            g_toastIcon[i] = g_toastSlot[i]->QuerySelector(".toast-icon");
+            if (g_toastIcon[i]) g_toastIcon[i]->SetAttribute("src", iconPath);
         }
     }
     g_stadiumTitle = g_stadiumDoc->GetElementById("title");
@@ -1263,20 +1413,94 @@ static void SyncToasts(bool stadiumPanelVisible, bool &outAnyToast) {
     for (int i = 0; i < MAX_TOASTS; ++i) {
         if (!g_toastSlot[i]) continue;
         bool visible = RmlOverlay_ToastVisible(i);
-        if (visible) outAnyToast = true;
+
         if (visible != g_toastSlotShown[i]) {
-            g_toastSlot[i]->SetClass("shown", visible);
             g_toastSlotShown[i] = visible;
+            // .active keeps display:block through the close-out fade below —
+            // only cleared once ApplyToastCloseAnim reports done.
+            g_toastSlot[i]->SetClass("active", true);
+            if (visible) {
+                g_toastCloseAnimActive[i] = false; // don't fight an interrupted close
+                g_toastOpenAnimActive[i] = true;
+                g_toastOpenAnimStartTick[i] = GetTickCount64();
+                // ApplyToastOpenAnim below sets the t=0 pose this same frame.
+            } else {
+                g_toastOpenAnimActive[i] = false; // don't fight an interrupted open
+                g_toastCloseAnimActive[i] = true;
+                g_toastCloseAnimStartTick[i] = GetTickCount64();
+            }
         }
+
+        if (g_toastOpenAnimActive[i]) ApplyToastOpenAnim(g_toastSlot[i], i);
+        if (g_toastCloseAnimActive[i] && ApplyToastCloseAnim(g_toastSlot[i], i)) {
+            g_toastCloseAnimActive[i] = false;
+            g_toastSlot[i]->SetClass("active", false);
+        }
+
+        if (visible || g_toastCloseAnimActive[i]) outAnyToast = true;
         if (!visible) continue;
 
         g_toastSlot[i]->SetClass("warning", RmlOverlay_ToastWarning(i));
         if (g_toastTitle[i]) g_toastTitle[i]->SetInnerRML(WideToUtf8(RmlOverlay_ToastTitle(i)));
         if (g_toastBody[i]) g_toastBody[i]->SetInnerRML(WideToUtf8(RmlOverlay_ToastBody(i)));
+
+        const wchar_t *iconKind = RmlOverlay_ToastIcon(i);
+        if (g_toastIcon[i] && g_toastIconKindLoaded[i] != iconKind) {
+            g_toastIconKindLoaded[i] = iconKind;
+            g_toastIcon[i]->SetAttribute("src", ResolveToastIconPath(iconKind));
+        }
     }
+
+    g_toastAnyActive = outAnyToast;
 }
 
-static void SyncStadiumPanel() {
+// Owns the stadium panel's full per-frame lifecycle — position, Show()/
+// Hide(), open/close animation, and (while visible) content — mirroring
+// RmlMenu_Sync's own self-contained visible/not-visible split in
+// cgfs16_rmlui_menu.cpp (see its g_panelCloseAnimActive handling for the
+// same shape of logic applied to the F12 menu's #panel).
+static void SyncStadiumPanel(int vpW, bool visible) {
+    if (!g_stadiumDoc) return;
+
+    if (!visible) {
+        if (g_stadiumCloseAnimActive) {
+            if (ApplyStadiumCloseAnim()) {
+                g_stadiumDoc->Hide();
+                g_stadiumDocShown = false;
+                g_stadiumCloseAnimActive = false;
+            }
+        } else if (g_stadiumDocShown) {
+            // Just transitioned visible -> not visible this frame: kick off
+            // the close-out fade instead of hiding immediately.
+            g_stadiumOpenAnimActive = false; // don't fight an interrupted open
+            g_stadiumCloseAnimActive = true;
+            g_stadiumCloseAnimStartTick = GetTickCount64();
+            ApplyStadiumCloseAnim();
+        }
+        return;
+    }
+
+    if (g_stadiumCloseAnimActive) {
+        // Reopened before a pending close-out finished — cancel it and
+        // re-arm the open animation so the panel reverses smoothly instead
+        // of being left stuck at a partial opacity/offset forever.
+        g_stadiumCloseAnimActive = false;
+        g_stadiumOpenAnimActive = true;
+        g_stadiumOpenAnimStartTick = GetTickCount64();
+    } else if (!g_stadiumDocShown) {
+        g_stadiumOpenAnimActive = true;
+        g_stadiumOpenAnimStartTick = GetTickCount64();
+    }
+    g_stadiumDocShown = true;
+
+    // Right-align: 460px wide panel, 20px margin from the viewport edge.
+    char leftBuf[16];
+    snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 460 - 20);
+    g_stadiumDoc->SetProperty("left", leftBuf);
+    g_stadiumDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+
+    ApplyStadiumOpenAnim();
+
     const wchar_t *panelTitle = RmlOverlay_PanelTitle();
     Rml::String titleText = (panelTitle && panelTitle[0]) ? WideToUtf8(panelTitle) : Rml::String("Loading Stadium");
     if (g_stadiumTitle) g_stadiumTitle->SetInnerRML(titleText);
@@ -1316,17 +1540,25 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
 
     bool stadiumVisible = RmlOverlay_StadiumPanelVisible();
 
-    bool anyToastRaw = false;
+    // OR in g_toastAnyActive (last SyncToasts call's own result) so a toast
+    // that Python already hid but is still mid close-out fade keeps getting
+    // frames instead of vanishing instantly on the frame the raw
+    // shared-memory flag drops — see g_toastAnyActive's own comment for why
+    // per-slot g_toastCloseAnimActive[] alone isn't enough (it doesn't get
+    // armed until SyncToasts itself runs, which is exactly what this check
+    // gates).
+    bool anyToastRaw = g_toastAnyActive;
     for (int i = 0; i < MAX_TOASTS && !anyToastRaw; ++i)
         anyToastRaw = RmlOverlay_ToastVisible(i);
     bool menuVisible = RmlOverlay_MenuVisible();
-    // RmlMenu_DocShown() covers the brief window right after menuVisible
-    // flips to 0 where #panel's close-out zoom animation is still playing —
-    // without it, this early-return would skip RmlMenu_Sync on the very
-    // first closed frame, starving that animation of frames and leaving
-    // #panel permanently Shown() in RmlUi's own bookkeeping (see
-    // RmlMenu_DocShown's header comment for the full failure chain).
-    if (!stadiumVisible && !anyToastRaw && !menuVisible && !RmlMenu_DocShown()) return;
+    // RmlMenu_DocShown()/g_stadiumDocShown cover the brief window right
+    // after menuVisible/stadiumVisible flip to 0 where #panel's / the
+    // stadium panel's own close-out animation is still playing — without
+    // them, this early-return would skip RmlMenu_Sync/SyncStadiumPanel on
+    // the very first closed frame, starving that animation of frames and
+    // leaving the document permanently Shown() in RmlUi's own bookkeeping
+    // (see RmlMenu_DocShown's header comment for the full failure chain).
+    if (!stadiumVisible && !g_stadiumDocShown && !anyToastRaw && !menuVisible && !RmlMenu_DocShown()) return;
 
     DXGI_SWAP_CHAIN_DESC scd = {};
     sc->GetDesc(&scd);
@@ -1350,29 +1582,18 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
 
     bool anyToast = false;
     SyncToasts(stadiumVisible, anyToast);
-    if (stadiumVisible) SyncStadiumPanel();
+    SyncStadiumPanel(vpW, stadiumVisible);
     RmlMenu_Sync(vpW, vpH, scd.OutputWindow);
 
     if (g_toastDoc) {
         // Right-align: 360px wide stack, 20px margin from the viewport edge.
         // Computed here (not RCSS `right:`) to mirror the stadium panel's
-        // proven-correct approach below rather than relying on an untested
-        // property/width interaction.
+        // proven-correct approach (SyncStadiumPanel, above) rather than
+        // relying on an untested property/width interaction.
         char leftBuf[16];
         snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 360 - 20);
         g_toastDoc->SetProperty("left", leftBuf);
         if (anyToast) g_toastDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None); else g_toastDoc->Hide();
-    }
-    if (g_stadiumDoc) {
-        if (stadiumVisible) {
-            // Right-align: 460px wide panel, 20px margin from the viewport edge.
-            char leftBuf[16];
-            snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 460 - 20);
-            g_stadiumDoc->SetProperty("left", leftBuf);
-            g_stadiumDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
-        } else {
-            g_stadiumDoc->Hide();
-        }
     }
 
     g_context->Update();

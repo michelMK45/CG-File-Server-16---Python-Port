@@ -48,12 +48,18 @@
 #define MAX_MENU_ITEMS    256
 #define MAX_DASH_ITEMS    10
 #define MAX_TOASTS        6
+#define MAX_ICON          32
 
 struct ToastEntry {
     volatile LONG visible;       // 0 = hidden, 1 = shown
     wchar_t title[MAX_STR];
     wchar_t body[MAX_STR];
     volatile LONG style;         // 0 = info (blue), 1 = warning (amber)
+    // Lowercase key naming a file under resources/rmlui/icons/<icon>.png
+    // ("tv", "scoreboard", "movie", "goalpost", ...) — empty (the default)
+    // or a name with no matching file falls back to the app icon, see
+    // ResolveToastIconPath in cgfs16_rmlui.cpp.
+    wchar_t icon[MAX_ICON];
 };
 
 struct OverlayShared {
@@ -231,6 +237,9 @@ const wchar_t *RmlOverlay_ToastTitle(int slot) {
 }
 const wchar_t *RmlOverlay_ToastBody(int slot) {
     return (g_data && slot >= 0 && slot < MAX_TOASTS) ? g_data->toasts[slot].body : L"";
+}
+const wchar_t *RmlOverlay_ToastIcon(int slot) {
+    return (g_data && slot >= 0 && slot < MAX_TOASTS) ? g_data->toasts[slot].icon : L"";
 }
 bool RmlOverlay_StadiumPanelVisible() {
     return g_data && InterlockedCompareExchange(&g_data->visible, 0, 0) != 0;

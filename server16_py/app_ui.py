@@ -906,8 +906,12 @@ class UIMixin:
                 inj.set_rmlui_content_dir(str(rml_dir))
         return True
 
-    def _show_toast_notification(self, title: str, body: str = "", style: int = 0) -> int:
-        """Show a compact in-game toast (no progress bar, no image). Returns slot index or -1."""
+    def _show_toast_notification(self, title: str, body: str = "", style: int = 0, icon: str = "") -> int:
+        """Show a compact in-game toast (no progress bar, no image). Returns slot index or -1.
+
+        `icon` names a file under resources/rmlui/icons/<icon>.png — leave
+        empty to use the default app icon.
+        """
         if not self.settings.show_stadium_loading_notification:
             return -1
         if not self._ensure_d3d_overlay_injected(log_errors=False):
@@ -915,7 +919,7 @@ class UIMixin:
         inj = self._d3d_injector
         if inj is None:
             return -1
-        return inj.show_toast(title, body, style)
+        return inj.show_toast(title, body, style, icon)
 
     def _hide_toast_notification(self, slot: int = -1) -> None:
         if self._d3d_injector is not None:

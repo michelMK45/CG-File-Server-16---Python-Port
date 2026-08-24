@@ -13,15 +13,15 @@ class AssetRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
 
-    def _show_asset_toast(self, title: str, body: str, duration_ms: int = 3500) -> None:
+    def _show_asset_toast(self, title: str, body: str, duration_ms: int = 3500, icon: str = "") -> None:
         app = self.app
-        slot = app._show_toast_notification(title, body)
+        slot = app._show_toast_notification(title, body, icon=icon)
         if slot != -1:
             app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
 
-    def _show_warning_toast(self, title: str, body: str, duration_ms: int = 5000) -> None:
+    def _show_warning_toast(self, title: str, body: str, duration_ms: int = 5000, icon: str = "") -> None:
         app = self.app
-        slot = app._show_toast_notification(title, body, style=1)
+        slot = app._show_toast_notification(title, body, style=1, icon=icon)
         if slot != -1:
             app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
 
@@ -125,7 +125,7 @@ class AssetRuntime:
             app._set_display("tvlogo", Path(source).name)
             app.log(f"Applied TV logo source: {source}")
             if source != default_source:
-                self._show_asset_toast(app.tr("notify.tvlogo_loaded"), Path(source).name)
+                self._show_asset_toast(app.tr("notify.tvlogo_loaded"), Path(source).name, icon="tv")
         else:
             app._set_display("tvlogo", app.display_value("tvlogo_module_disable"))
             tvlogo_check = self._resolve_assignment_value(
@@ -137,7 +137,7 @@ class AssetRuntime:
                 fallback=("0", "TVLogo"),
             )
             if tvlogo_check and (app.TVLogo / tvlogo_check).exists():
-                self._show_warning_toast(app.tr("notify.warn.tvlogo_off"), app.tr("notify.warn.assets_skipped"))
+                self._show_warning_toast(app.tr("notify.warn.tvlogo_off"), app.tr("notify.warn.assets_skipped"), icon="tv")
         if app.module_enabled("ScoreBoard"):
             copy(app.exedir / "FSW" / "ScoreBoard", app.Scoredata / "game")
             scoreboard = self._resolve_assignment_value(
@@ -202,7 +202,7 @@ class AssetRuntime:
                 if scoreboard:
                     app._set_display("scoreboard", scoreboard)
                     app.log(f"Applied scoreboard: {scoreboard}")
-                    self._show_asset_toast(app.tr("notify.scoreboard_loaded"), scoreboard)
+                    self._show_asset_toast(app.tr("notify.scoreboard_loaded"), scoreboard, icon="scoreboard")
             else:
                 app.log("No scoreboard assignment found; default scoreboard active")
         else:
@@ -225,7 +225,7 @@ class AssetRuntime:
                             sb_exists = True
                             break
                 if sb_exists:
-                    self._show_warning_toast(app.tr("notify.warn.scoreboard_off"), app.tr("notify.warn.assets_skipped"))
+                    self._show_warning_toast(app.tr("notify.warn.scoreboard_off"), app.tr("notify.warn.assets_skipped"), icon="scoreboard")
         self.update_audio_overview()
 
     def apply_movie_runtime(self) -> None:
@@ -244,7 +244,7 @@ class AssetRuntime:
                 fallback=("0", "movies"),
             )
             if movie_check and (app.Movies / movie_check).exists():
-                self._show_warning_toast(app.tr("notify.warn.movie_off"), app.tr("notify.warn.assets_skipped"))
+                self._show_warning_toast(app.tr("notify.warn.movie_off"), app.tr("notify.warn.assets_skipped"), icon="movie")
             self.update_audio_overview()
             return
         movie = self._resolve_assignment_value(
@@ -274,7 +274,7 @@ class AssetRuntime:
                 app._set_display("audio_current", movie)
                 app._set_display("audio_last_action", app.display_value("movie_prefix", fallback="Movie {name}", name=movie))
                 app.log(f"Applied movie: {movie}")
-                self._show_asset_toast(app.tr("notify.movie_loaded"), movie)
+                self._show_asset_toast(app.tr("notify.movie_loaded"), movie, icon="movie")
             else:
                 app.log(f"Movie directory not found, falling back to default movie: {movie_dir}")
                 movie = ""

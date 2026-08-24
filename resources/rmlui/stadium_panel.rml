@@ -7,10 +7,28 @@ body {
     top: 20px;
     width: 460px;
     height: 140px;
-    background-color: #101828EE;
-    border: 1px #3399FF;
-    border-top: 3px #3399FF;
+    box-sizing: border-box;
+    border-radius: 16px;
+    /* Same two-layer "gradient border" trick as toast.rml: this outer box
+       paints the gradient via `decorator` (horizontal-gradient — the safe,
+       shader-free choice, see menu.rml's #scrim/#panel-accent comments) and
+       2px of padding shows through as a ring around #card's solid fill. */
+    padding: 2px;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    box-shadow: 0px 8px 20px #000000A6;
     font-family: "Segoe UI";
+    /* opacity/transform are driven per-frame from C++
+       (ApplyStadiumOpenAnim/ApplyStadiumCloseAnim in cgfs16_rmlui.cpp), not
+       an RCSS `transition` — see SyncStadiumPanel's own comment for why. */
+    opacity: 0;
+}
+#card {
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background-color: #101828F5;
+    border-radius: 14px;
 }
 #imgbox {
     display: block;
@@ -20,12 +38,14 @@ body {
     width: 110px;
     height: 88px;
     background-color: #0C1420;
+    border-radius: 8px;
+    overflow: hidden;
     text-align: center;
     vertical-align: middle;
 }
 #imgbox img { max-width: 110px; max-height: 88px; }
 #textcol { display: block; position: absolute; left: 136px; top: 14px; width: 312px; }
-#title { display: block; font-size: 17px; color: #3399FF; margin-bottom: 8px; }
+#title { display: block; font-size: 17px; color: #4FACFE; margin-bottom: 8px; }
 #name { display: block; font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 6px; }
 #detail { display: block; font-size: 13px; color: #99BBDD; margin-bottom: 8px; }
 #progress-track {
@@ -36,11 +56,19 @@ body {
     width: 312px;
     height: 10px;
     background-color: #222C3C;
+    border-radius: 5px;
+    overflow: hidden;
 }
-#progress-fill { display: block; height: 10px; width: 0%; background-color: #3399FF; }
+#progress-fill {
+    display: block;
+    height: 10px;
+    width: 0%;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+}
 </style>
 </head>
 <body>
+<div id="card">
 <div id="imgbox"><img id="preview-img" style="display: none;" /></div>
 <div id="textcol">
 <div id="title">Loading Stadium</div>
@@ -48,5 +76,6 @@ body {
 <div id="detail"></div>
 </div>
 <div id="progress-track"><div id="progress-fill"></div></div>
+</div>
 </body>
 </rml>

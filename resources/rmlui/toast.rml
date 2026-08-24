@@ -11,25 +11,71 @@ body {
 .toast {
     display: none;
     width: 360px;
-    height: 80px;
-    margin-bottom: 8px;
-    background-color: #101828EE;
-    border: 1px #3399FF;
-    border-left: 4px #3399FF;
-    padding: 10px 12px;
+    box-sizing: border-box;
+    margin-bottom: 10px;
+    border-radius: 14px;
+    /* 2px of padding is the "gradient border" — a solid `border` can't take
+       a gradient in this RCSS, so this outer box paints the gradient via
+       `decorator` (horizontal-gradient is the safe, shader-free choice —
+       see menu.rml's #scrim/#panel-accent comments for why true
+       linear/radial gradients aren't used anywhere in this renderer) and
+       the padding is exactly what shows through as a ring around
+       .toast-card's own solid fill underneath. */
+    padding: 2px;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    box-shadow: 0px 6px 18px #000000A6;
+    /* opacity/transform are driven per-frame from C++
+       (ApplyToastOpenAnim/ApplyToastCloseAnim in cgfs16_rmlui.cpp), not an
+       RCSS `transition` — same reasoning as #panel's own open/close zoom in
+       cgfs16_rmlui_menu.cpp (see g_panelOpenAnimActive's comment there):
+       RmlUi only ever diffs a transition against the last value
+       Context::Update() actually committed, hidden document or not, so a
+       class-toggle-driven transition across a display:none boundary tweens
+       from a stale prior pose instead of a fresh one. */
+    opacity: 0;
 }
-.toast.shown { display: block; }
-.toast.warning { border-color: #FFAA00; border-left-color: #FFAA00; }
-.toast .title { display: block; font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 4px; }
-.toast .body { display: block; font-size: 13px; color: #99BBDD; }
+/* Stays applied for the whole close-out fade too (see SyncToasts) — only
+   .toast itself (display:none by default) actually removes the slot from
+   the stack's block flow, once the close animation finishes. */
+.toast.active { display: block; }
+.toast.warning { decorator: horizontal-gradient(#FFDD88 #FFAA00); }
+.toast-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 12px;
+    background-color: #101828F5;
+    border-radius: 12px;
+    padding: 12px 14px;
+}
+.toast-icon { display: block; width: 30px; height: 30px; flex-shrink: 0; }
+.toast-text { display: block; flex: 1 1 auto; min-width: 0px; }
+.toast .title {
+    display: block;
+    font-size: 16px;
+    font-weight: bold;
+    color: #FFFFFF;
+    margin-bottom: 3px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.toast .body {
+    display: block;
+    font-size: 13px;
+    color: #99BBDD;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
 </style>
 </head>
 <body id="toast-root">
-<div id="toast0" class="toast"><div class="title"></div><div class="body"></div></div>
-<div id="toast1" class="toast"><div class="title"></div><div class="body"></div></div>
-<div id="toast2" class="toast"><div class="title"></div><div class="body"></div></div>
-<div id="toast3" class="toast"><div class="title"></div><div class="body"></div></div>
-<div id="toast4" class="toast"><div class="title"></div><div class="body"></div></div>
-<div id="toast5" class="toast"><div class="title"></div><div class="body"></div></div>
+<div id="toast0" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
+<div id="toast1" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
+<div id="toast2" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
+<div id="toast3" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
+<div id="toast4" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
+<div id="toast5" class="toast"><div class="toast-card"><img class="toast-icon"/><div class="toast-text"><div class="title"></div><div class="body"></div></div></div></div>
 </body>
 </rml>

@@ -56,8 +56,8 @@ class SettingsMixin:
                 _, payload = event
                 self._finish_stadium_apply(payload)
             elif kind == "toast":
-                _, title, body, duration_ms = event
-                slot = self._show_toast_notification(title, body)
+                _, title, body, duration_ms, icon = event
+                slot = self._show_toast_notification(title, body, icon=icon)
                 if slot != -1:
                     self.after(duration_ms, lambda s=slot: self._hide_toast_notification(s))
             elif kind == "error":
