@@ -71,9 +71,9 @@ class SettingsMixin:
                 self._hide_stadium_loading_modal(delay_ms=5000)
                 self.log(message)
             elif kind == "kit_cycled":
-                _, side, team_id, tourn_id, result, png_path = event
+                _, side, team_id, kittype_code, direction, tourn_id, result, png_path = event
                 self._kit_cycle_task_running = False
-                self._show_kit_hotkey_notification(side, team_id, tourn_id, result, png_path)
+                self._show_kit_hotkey_notification(side, team_id, kittype_code, direction, tourn_id, result, png_path)
             elif kind == "kit_cycle_error":
                 _, side, team_id, message = event
                 self._kit_cycle_task_running = False

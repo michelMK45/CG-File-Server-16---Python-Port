@@ -172,6 +172,29 @@ class _OverlayShared(ctypes.Structure):
         # RmlUi's actual flex-wrap column count at every panel width. Only
         # meaningful while stadium_filter_panel_open is set.
         ("menu_filter_grid_cols", ctypes.c_long),
+        # Kit-cycling carousel notification (F7-F10) — a fully independent
+        # panel/doc from the stadium-loading one above (own visible flag),
+        # unlike the old approach of reusing show()/visible/image_path for
+        # it, which meant a kit-cycle notification had to be skipped outright
+        # whenever a stadium load happened to be in progress. See
+        # show_kit_carousel()/kit_carousel.rml/SyncKitCarousel in
+        # cgfs16_rmlui.cpp.
+        ("kit_carousel_visible",       ctypes.c_long),
+        ("kit_carousel_title",         ctypes.c_wchar * _MAX_STR),
+        ("kit_carousel_detail",        ctypes.c_wchar * _MAX_STR),
+        ("kit_carousel_hint",          ctypes.c_wchar * _MAX_STR),
+        ("kit_carousel_image_prev",    ctypes.c_wchar * _MAX_IMG),
+        ("kit_carousel_image_current", ctypes.c_wchar * _MAX_IMG),
+        ("kit_carousel_image_next",    ctypes.c_wchar * _MAX_IMG),
+        # "Last event wins" signal for a genuine F7-F10 cycle step (mirrors
+        # menu_event_seq's shape) — bumped by show_kit_carousel() every call,
+        # never touched by update_kit_carousel_images()'s background-prefetch
+        # pop-ins, so cgfs16_rmlui.cpp can tell a real cycle (slide the
+        # changed slots in `direction`) apart from a late thumbnail arriving
+        # (crossfade only, no motion). Single-writer (Python only), so a
+        # plain += is fine — no InterlockedIncrement needed on this side.
+        ("kit_carousel_cycle_seq",  ctypes.c_long),
+        ("kit_carousel_direction",  ctypes.c_long),  # -1 (prev) / +1 (next)
     ]
 
 
@@ -431,6 +454,43 @@ class D3DOverlayInjector:
             self._shared.toasts[slot].visible = 0
             self._shared.toasts[slot].style   = 0
 
+    def show_kit_carousel(self, title: str, detail: str, hint: str,
+                          image_prev: str, image_current: str, image_next: str,
+                          direction: int = 0) -> None:
+        """Show the kit-cycling carousel notification (F7-F10) — a dedicated
+        panel/doc, independent of the stadium-loading show()/update()/hide()
+        above, so the two never fight over one shared visible flag.
+
+        `direction` (-1 = prev, +1 = next, 0 = no directional slide, e.g. the
+        very first reveal) drives which way cgfs16_rmlui.cpp slides the
+        changed slots in — see kit_carousel_cycle_seq's field comment."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.kit_carousel_title         = title[:_MAX_STR - 1]
+        self._shared.kit_carousel_detail        = detail[:_MAX_STR - 1]
+        self._shared.kit_carousel_hint          = hint[:_MAX_STR - 1]
+        self._shared.kit_carousel_image_prev    = (image_prev or "")[:_MAX_IMG - 1]
+        self._shared.kit_carousel_image_current = (image_current or "")[:_MAX_IMG - 1]
+        self._shared.kit_carousel_image_next    = (image_next or "")[:_MAX_IMG - 1]
+        self._shared.kit_carousel_direction = int(direction)
+        self._shared.kit_carousel_cycle_seq += 1
+        # Write visible LAST so the DLL sees consistent data
+        self._shared.kit_carousel_visible = 1
+
+    def update_kit_carousel_images(self, image_prev: str, image_current: str, image_next: str) -> None:
+        """Refresh the carousel's thumbnails in place (no re-trigger of the
+        open animation) — used once a prefetched neighbor thumbnail finishes
+        rendering in the background, after the panel is already showing."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.kit_carousel_image_prev    = (image_prev or "")[:_MAX_IMG - 1]
+        self._shared.kit_carousel_image_current = (image_current or "")[:_MAX_IMG - 1]
+        self._shared.kit_carousel_image_next    = (image_next or "")[:_MAX_IMG - 1]
+
+    def hide_kit_carousel(self) -> None:
+        if self._shared is not None:
+            self._shared.kit_carousel_visible = 0
+
     def set_gamepad_icon_dir(self, path: str) -> None:
         """Write the bundled gamepad button-icon directory (call once after inject)."""
         if not self._ready or self._shared is None:
@@ -668,6 +728,15 @@ class D3DOverlayInjector:
         self._shared.menu_event_seq = 0
         self._shared.menu_event_kind = 0
         self._shared.menu_event_index = 0
+        self._shared.kit_carousel_visible = 0
+        self._shared.kit_carousel_title = ""
+        self._shared.kit_carousel_detail = ""
+        self._shared.kit_carousel_hint = ""
+        self._shared.kit_carousel_image_prev = ""
+        self._shared.kit_carousel_image_current = ""
+        self._shared.kit_carousel_image_next = ""
+        self._shared.kit_carousel_cycle_seq = 0
+        self._shared.kit_carousel_direction = 0
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))

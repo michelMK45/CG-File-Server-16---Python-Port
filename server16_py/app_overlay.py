@@ -861,6 +861,8 @@ class OverlayMixin:
             return None
         if self._overlay_tab_names[self._overlay_tab_index] != "stadiums":
             return None
+        if self.overlay_performance_mode_var.get():
+            return None
         cache = self._overlay_stadium_thumb_cache
         thumbs: list[str] = []
         for name in window_items:
@@ -1325,7 +1327,7 @@ class OverlayMixin:
                             break
         elif self._overlay_filter_phase:
             pass
-        elif tab_name == "stadiums" and selected_item:
+        elif tab_name == "stadiums" and selected_item and not self.overlay_performance_mode_var.get():
             try:
                 path = self._resolve_stadium_preview_path_or_default(selected_item)
                 preview_path = str(path) if path else ""
@@ -1665,13 +1667,32 @@ class OverlayMixin:
                 try:
                     fifa_hwnd = int(self._fifa_hwnd or 0)
                     if fifa_hwnd and mouse_x >= 0:
-                        pt = POINT()
-                        pt.x = mouse_x
-                        pt.y = mouse_y
-                        hwnd_at = self.user32.WindowFromPoint(pt)
-                        if hwnd_at:
-                            root = self.user32.GetAncestor(hwnd_at, 2)  # GA_ROOT
-                            over_fifa = (int(root or hwnd_at) == fifa_hwnd)
+                        # Gate on the CLIENT rect only (the actual render
+                        # surface the RmlUi overlay draws into), not the
+                        # whole top-level window. WindowFromPoint+GetAncestor
+                        # used to be used here, but that's true anywhere in
+                        # FIFA's window rect INCLUDING its non-client chrome
+                        # (title bar minimize/maximize/close buttons, resize
+                        # borders) when FIFA isn't running exclusive
+                        # fullscreen — so a click on those buttons while the
+                        # F12 menu was open got swallowed by this hook before
+                        # Windows' own non-client hit-testing ever saw it,
+                        # making them unusable for the whole time the menu
+                        # stayed open. Client-rect-only keeps blocking every
+                        # click that actually lands on the rendered menu/game
+                        # view while letting window-chrome clicks fall
+                        # through untouched.
+                        origin = POINT()
+                        origin.x = 0
+                        origin.y = 0
+                        client_rect = RECT()
+                        if (self.user32.ClientToScreen(fifa_hwnd, ctypes.byref(origin))
+                                and self.user32.GetClientRect(fifa_hwnd, ctypes.byref(client_rect))):
+                            left = origin.x
+                            top = origin.y
+                            right = left + (client_rect.right - client_rect.left)
+                            bottom = top + (client_rect.bottom - client_rect.top)
+                            over_fifa = (left <= mouse_x < right) and (top <= mouse_y < bottom)
                 except Exception:
                     pass
                 if msg == WM_MOUSEWHEEL and over_fifa:
@@ -1895,15 +1916,22 @@ class OverlayMixin:
             return
         title = self.tr("dialog.kitmix.kit_type")
         detail = self.kitmix_kittype_labels.get(kittype_key, kittype_key.capitalize())
-        if self._kit_hotkey_hide_job is not None:
+        if self._kit_type_hide_job is not None:
             try:
-                self.after_cancel(self._kit_hotkey_hide_job)
+                self.after_cancel(self._kit_type_hide_job)
             except Exception:
                 pass
-            self._kit_hotkey_hide_job = None
-        inj.show(title, detail, 100.0, "", panel_title=self.tr("kitsimple.hotkey_panel_title"))
-        self._kit_hotkey_shown_at = time.monotonic()
-        self._kit_hotkey_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
+            self._kit_type_hide_job = None
+        placeholder = kit_ui_placeholder_path()
+        inj.show(title, detail, 100.0, str(placeholder) if placeholder else "", panel_title=self.tr("kitsimple.hotkey_panel_title"))
+        self._kit_type_shown_at = time.monotonic()
+        self._kit_type_hide_job = self.after(4000, self._hide_kit_type_notification)
+
+    def _hide_kit_type_notification(self) -> None:
+        self._kit_type_hide_job = None
+        inj = self._d3d_injector
+        if inj is not None:
+            inj.hide()
 
     def _trigger_kit_cycle(self, side: str, direction: int) -> None:
         if self._kit_cycle_task_running:
@@ -1937,38 +1965,124 @@ class OverlayMixin:
                     self.kit_mixer.restore_kit_type(team_id, live_kittype)
                     tourn_id = None
                     result = {"team_id": team_id, "kittype": kittype_code, "target_kittype": live_kittype, "tourn_id": None, "applied": {}, "gk": None}
-                    live_kitui = self.kit_mixer.live_kitui_path(team_id, live_kittype)
-                    kitui_path = live_kitui if live_kitui.exists() else None
                 else:
                     tourn_id = entry["tourn_id"]
                     result = self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, tourn_id)
-                    kitui_path = entry["kitui_path"]
 
-                # cache_key must vary per (team, kittype, tourn) — the C++ side
-                # only reloads a preview texture when the image_path STRING
-                # changes (DrawOverlay11 caches by path), so reusing one fixed
-                # key across cycles would keep showing the first-ever image.
-                png_path = None
-                if kitui_path is not None:
-                    cache_key = f"{team_id}_{kittype_code}_{tourn_id or 'default'}"
-                    try:
-                        png_path = self.kit_mixer.render_preview(str(kitui_path), "kitui", cache_key=cache_key)
-                    except Exception:
-                        png_path = None
-                if png_path is None:
-                    png_path = kit_ui_placeholder_path()
+                # Cache-first (falls back to a synchronous render on a miss) —
+                # this is the carousel's "current" slot, so it must be correct
+                # and ready by the time this posts to the queue, unlike the
+                # prev/next neighbor thumbnails (see
+                # _resolve_kit_cycle_neighbor_thumb) which are fine showing a
+                # placeholder briefly.
+                png_path = self._kit_cycle_thumb(team_id, kittype_code, entry)
 
-                self._worker_queue.put(("kit_cycled", side, team_id, tourn_id, result, png_path))
+                self._worker_queue.put(("kit_cycled", side, team_id, kittype_code, direction, tourn_id, result, png_path))
             except Exception as exc:
                 self._worker_queue.put(("kit_cycle_error", side, team_id, str(exc)))
 
         threading.Thread(target=worker, daemon=True).start()
         self._schedule_worker_poll()
 
-    def _show_kit_hotkey_notification(self, side: str, team_id: str, tourn_id, result: dict, png_path) -> None:
-        # image_path/visible are shared with the stadium-loading panel
-        # (DrawOverlay11 in cgfs16_overlay.cpp) — skip rather than fight over
-        # it if a stadium load is already using it.
+    def _kit_cycle_cache_key(self, team_id: str, kittype_code: str, entry: dict | None) -> tuple[str | None, str | None]:
+        """Resolves (kitui_source_path, cache_key) for one kit-cycle carousel
+        slot's entry (None = the team's own default/original kit). cache_key
+        is prefixed ("hk_") distinctly from the F12 Kits menu tab's own
+        cache_key scheme, since both share _overlay_kit_preview_cache/
+        _overlay_kit_preview_pending (app.py) — the prefix guarantees the two
+        feature's keys can never collide in that shared dict."""
+        live_kittype = self.kit_mixer.live_kittype_for(kittype_code)
+        if entry is None:
+            live_kitui = self.kit_mixer.live_kitui_path(team_id, live_kittype)
+            kitui_path = live_kitui if live_kitui.exists() else None
+            tourn_id = None
+        else:
+            kitui_path = entry.get("kitui_path")
+            tourn_id = entry["tourn_id"]
+        if kitui_path is None:
+            return None, None
+        return str(kitui_path), f"hk_{team_id}_{kittype_code}_{tourn_id or 'default'}"
+
+    def _kit_cycle_thumb(self, team_id: str, kittype_code: str, entry: dict | None) -> str:
+        """Cache-first preview resolution that falls back to a *synchronous*
+        (blocking) render on a miss — only ever called from a background
+        thread (the kit-cycle worker above), never the Tk main thread, since
+        rendering spawns a 32-bit subprocess (KitMixRuntime.render_preview)."""
+        kitui_path, cache_key = self._kit_cycle_cache_key(team_id, kittype_code, entry)
+        if kitui_path is None:
+            return str(kit_ui_placeholder_path())
+        cached = self._overlay_kit_preview_cache.get(cache_key)
+        if cached:
+            return cached
+        try:
+            png_path = str(self.kit_mixer.render_preview(kitui_path, "kitui", cache_key=cache_key))
+        except Exception:
+            return str(kit_ui_placeholder_path())
+        self._overlay_kit_preview_cache[cache_key] = png_path
+        return png_path
+
+    def _resolve_kit_cycle_neighbor_thumb(self, team_id: str, kittype_code: str, entry: dict | None) -> str:
+        """Cache-first preview resolution for a carousel prev/next slot —
+        never blocks: a cache miss returns the generic kit-ui placeholder
+        immediately and kicks a background render that populates the cache
+        and, only if the carousel is still showing this exact thumbnail by
+        the time it finishes, pushes a live image refresh. Same
+        cache/pending/placeholder-then-async shape as the F12 Kits menu tab's
+        own _resolve_kits_menu_preview."""
+        kitui_path, cache_key = self._kit_cycle_cache_key(team_id, kittype_code, entry)
+        if kitui_path is None:
+            return str(kit_ui_placeholder_path())
+        cached = self._overlay_kit_preview_cache.get(cache_key)
+        if cached:
+            return cached
+
+        fallback = str(kit_ui_placeholder_path())
+        if cache_key not in self._overlay_kit_preview_pending:
+            self._overlay_kit_preview_pending.add(cache_key)
+
+            def worker() -> None:
+                try:
+                    png_path = str(self.kit_mixer.render_preview(kitui_path, "kitui", cache_key=cache_key))
+                except Exception:
+                    png_path = None
+                self._overlay_kit_preview_pending.discard(cache_key)
+                if not png_path:
+                    return
+                self._overlay_kit_preview_cache[cache_key] = png_path
+                if cache_key in (self._kit_carousel_ctx or ()):
+                    self._push_kit_carousel_refresh()
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        return fallback
+
+    def _push_kit_carousel_refresh(self) -> None:
+        """Re-sends all 3 carousel slots from whatever's in the preview cache
+        right now — called once a background-prefetched neighbor thumbnail
+        finishes, to pop it into the already-showing panel without replaying
+        the open animation (see D3DOverlayInjector.update_kit_carousel_images)."""
+        ctx = self._kit_carousel_ctx
+        if ctx is None:
+            return
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        fallback = str(kit_ui_placeholder_path())
+        prev_key, current_key, next_key = ctx
+        try:
+            inj.update_kit_carousel_images(
+                self._overlay_kit_preview_cache.get(prev_key, fallback),
+                self._overlay_kit_preview_cache.get(current_key, fallback),
+                self._overlay_kit_preview_cache.get(next_key, fallback),
+            )
+        except Exception:
+            pass
+
+    def _show_kit_hotkey_notification(self, side: str, team_id: str, kittype_code: str, direction: int, tourn_id, result: dict, png_path) -> None:
+        # Kit-cycle notifications have their own panel/doc now (see
+        # show_kit_carousel), independent of the stadium-loading one — but
+        # still skipped while a stadium load is running so the two never show
+        # at once (they're not designed to stack, see CLAUDE.md §2.3).
         if self._stadium_task_running:
             self.log(f"Kit hotkey: applied but skipped overlay notification (stadium loading in progress) team={team_id} tourn={tourn_id}")
             return
@@ -1982,23 +2096,41 @@ class OverlayMixin:
         gk_result = result.get("gk")
         if gk_result:
             detail = f"{detail}  (GK: {gk_result['tourn_id']})"
-        if self._kit_hotkey_hide_job is not None:
+
+        # Recompute the same options list _trigger_kit_cycle used (cheap local
+        # dir scan, no subprocess) to find the prev/next entries either side
+        # of the index that worker landed on.
+        key = (team_id, kittype_code)
+        options: list[dict | None] = [None] + self.kit_mixer.list_kit_sets(team_id, kittype_code)
+        idx = self._kit_cycle_index.get(key, 0) % len(options)
+        prev_entry = options[(idx - 1) % len(options)]
+        next_entry = options[(idx + 1) % len(options)]
+
+        prev_thumb = self._resolve_kit_cycle_neighbor_thumb(team_id, kittype_code, prev_entry)
+        next_thumb = self._resolve_kit_cycle_neighbor_thumb(team_id, kittype_code, next_entry)
+        _, current_key = self._kit_cycle_cache_key(team_id, kittype_code, options[idx])
+        _, prev_key = self._kit_cycle_cache_key(team_id, kittype_code, prev_entry)
+        _, next_key = self._kit_cycle_cache_key(team_id, kittype_code, next_entry)
+        self._kit_carousel_ctx = (prev_key, current_key, next_key)
+
+        hint = self.tr("kitsimple.hotkey_hint")
+
+        if self._kit_carousel_hide_job is not None:
             try:
-                self.after_cancel(self._kit_hotkey_hide_job)
+                self.after_cancel(self._kit_carousel_hide_job)
             except Exception:
                 pass
-            self._kit_hotkey_hide_job = None
-        inj.show(title, detail, 100.0, str(png_path) if png_path else "", panel_title=self.tr("kitsimple.hotkey_panel_title"))
-        self._kit_hotkey_shown_at = time.monotonic()
-        self._kit_hotkey_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
+            self._kit_carousel_hide_job = None
+        inj.show_kit_carousel(title, detail, hint, prev_thumb, str(png_path) if png_path else "", next_thumb, direction=direction)
+        self._kit_carousel_shown_at = time.monotonic()
+        self._kit_carousel_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
 
     def _hide_kit_hotkey_notification(self) -> None:
-        self._kit_hotkey_hide_job = None
-        if self._stadium_task_running:
-            return
+        self._kit_carousel_hide_job = None
+        self._kit_carousel_ctx = None
         inj = self._d3d_injector
         if inj is not None:
-            inj.hide()
+            inj.hide_kit_carousel()
 
     def _best_effort_neutralize_game_keys(self) -> None:
         """Release common UI keys so FIFA is less likely to consume held inputs while menu is open."""

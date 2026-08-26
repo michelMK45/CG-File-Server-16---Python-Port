@@ -45,6 +45,7 @@ class SettingsStore:
         "SHOW_OVERLAY": True,
         "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
+        "OVERLAY_PERFORMANCE_MODE": False,
         "LANGUAGE": "en",
         "UI_ZOOM": UI_ZOOM_DEFAULT,
         "CUSTOM_KIT_NUMBERS": False,
@@ -142,6 +143,15 @@ class SettingsStore:
     @keep_open_on_game_close.setter
     def keep_open_on_game_close(self, value: bool) -> None:
         self.data["KEEP_OPEN_ON_GAME_CLOSE"] = bool(value)
+        self.save()
+
+    @property
+    def overlay_performance_mode(self) -> bool:
+        return bool(self.data.get("OVERLAY_PERFORMANCE_MODE", False))
+
+    @overlay_performance_mode.setter
+    def overlay_performance_mode(self, value: bool) -> None:
+        self.data["OVERLAY_PERFORMANCE_MODE"] = bool(value)
         self.save()
 
     @property

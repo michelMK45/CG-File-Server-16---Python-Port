@@ -212,6 +212,28 @@ struct OverlayShared {
     // Sending the real, current count back removes the need for either side
     // to guess. Only meaningful while stadium_filter_panel_open is set.
     volatile LONG menu_filter_grid_cols;
+    // Kit-cycling carousel notification (F7-F10) — a fully independent
+    // panel/doc from the stadium-loading one above (own visible flag), unlike
+    // the old approach of reusing `visible`/`image_path`/etc. for it, which
+    // meant a kit-cycle notification had to be skipped outright whenever a
+    // stadium load happened to be in progress. See kit_carousel.rml /
+    // SyncKitCarousel in cgfs16_rmlui.cpp.
+    volatile LONG kit_carousel_visible;
+    wchar_t kit_carousel_title[MAX_STR];   // e.g. "Home: Real Madrid"
+    wchar_t kit_carousel_detail[MAX_STR];  // e.g. "Kit: 42" / "Default kit"
+    wchar_t kit_carousel_hint[MAX_STR];    // localized control legend
+    wchar_t kit_carousel_image_prev[MAX_IMG];
+    wchar_t kit_carousel_image_current[MAX_IMG];
+    wchar_t kit_carousel_image_next[MAX_IMG];
+    // "Last event wins" signal for a genuine F7-F10 cycle step (same shape as
+    // menu_event_seq above) — incremented by show_kit_carousel() every time,
+    // never touched by update_kit_carousel_images()'s background-prefetch
+    // pop-ins. SyncKitCarousel diffs this against the last seq it saw to
+    // decide whether THIS frame's slot content changes should slide in
+    // (a real cycle, direction -1/+1) or just crossfade in place (a
+    // prefetched thumbnail arriving late).
+    volatile LONG kit_carousel_cycle_seq;
+    volatile LONG kit_carousel_direction;
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -252,6 +274,21 @@ const wchar_t *RmlOverlay_DetailText()  { return g_data ? g_data->detail_text  :
 const wchar_t *RmlOverlay_ImagePath()   { return g_data ? g_data->image_path   : L""; }
 const wchar_t *RmlOverlay_PanelTitle()  { return g_data ? g_data->panel_title  : L""; }
 const wchar_t *RmlOverlay_ContentDir()  { return g_data ? g_data->rmlui_content_dir : L""; }
+bool RmlOverlay_KitCarouselVisible() {
+    return g_data && InterlockedCompareExchange(&g_data->kit_carousel_visible, 0, 0) != 0;
+}
+const wchar_t *RmlOverlay_KitCarouselTitle()   { return g_data ? g_data->kit_carousel_title   : L""; }
+const wchar_t *RmlOverlay_KitCarouselDetail()  { return g_data ? g_data->kit_carousel_detail  : L""; }
+const wchar_t *RmlOverlay_KitCarouselHint()    { return g_data ? g_data->kit_carousel_hint    : L""; }
+const wchar_t *RmlOverlay_KitCarouselImagePrev()    { return g_data ? g_data->kit_carousel_image_prev    : L""; }
+const wchar_t *RmlOverlay_KitCarouselImageCurrent() { return g_data ? g_data->kit_carousel_image_current : L""; }
+const wchar_t *RmlOverlay_KitCarouselImageNext()    { return g_data ? g_data->kit_carousel_image_next    : L""; }
+int RmlOverlay_KitCarouselCycleSeq() {
+    return g_data ? (int)InterlockedCompareExchange(&g_data->kit_carousel_cycle_seq, 0, 0) : 0;
+}
+int RmlOverlay_KitCarouselDirection() {
+    return g_data ? (int)InterlockedCompareExchange(&g_data->kit_carousel_direction, 0, 0) : 0;
+}
 
 // ---------------------------------------------------------------------------
 // Narrow accessors for cgfs16_rmlui_menu.cpp (Phase 2 of the migration — the

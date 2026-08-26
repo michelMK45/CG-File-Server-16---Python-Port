@@ -2548,7 +2548,7 @@ class UIMixin:
     def _build_modules_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.modules.title", "card.modules.subtitle")
         card.grid(row=row, column=0, sticky="ew")
-        card.configure(height=290)
+        card.configure(height=316)
         card.grid_propagate(False)
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
@@ -2607,7 +2607,16 @@ class UIMixin:
             variable=self.keep_open_var,
             command=self._toggle_keep_open,
         )
-        keep_open_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        keep_open_switch.pack(anchor="w", padx=12, pady=(0, 4))
+
+        performance_mode_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.performance_mode"),
+            variable=self.overlay_performance_mode_var,
+            command=self._toggle_overlay_performance_mode,
+        )
+        performance_mode_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
     def _toggle_discord_rpc(self) -> None:
         new_state = self.module_vars["DiscordRPC"].get()
@@ -2653,6 +2662,16 @@ class UIMixin:
     def _toggle_keep_open(self) -> None:
         self.settings.keep_open_on_game_close = self.keep_open_var.get()
         self.settings.save()
+
+    def _toggle_overlay_performance_mode(self) -> None:
+        self.settings.overlay_performance_mode = self.overlay_performance_mode_var.get()
+        self.settings.save()
+        # Drop any cached row thumbnail paths / hero preview so a mid-session
+        # toggle doesn't leave stale image state once previews are re-enabled.
+        self._overlay_stadium_thumb_cache.clear()
+        if self._d3d_menu_visible:
+            self._refresh_d3d_window()
+            self._update_d3d_preview_image()
 
     def _toggle_custom_kit_numbers(self) -> None:
         from .file_tools import general_lua_is_foreign, set_kit_number_scheme

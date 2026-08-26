@@ -72,6 +72,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
+        self.overlay_performance_mode_var = tk.BooleanVar(value=self.settings.overlay_performance_mode)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
@@ -144,8 +145,19 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._kit_hotkey_ready_at = 0.0
         self._kit_cycle_index: dict[tuple[str, str], int] = {}
         self._kit_cycle_task_running = False
-        self._kit_hotkey_hide_job = None
-        self._kit_hotkey_shown_at = 0.0
+        # F7-F10 (kit-cycle carousel) and F11 (kit-type change) notifications
+        # now render as two independent, stackable panels (see CLAUDE.md's
+        # kit-cycling carousel section) — each needs its own hide-timer job
+        # so showing one doesn't cancel/steal the other's pending auto-hide.
+        self._kit_carousel_hide_job = None
+        self._kit_carousel_shown_at = 0.0
+        self._kit_type_hide_job = None
+        self._kit_type_shown_at = 0.0
+        # (team_id, kittype_code, index) the kit-cycling carousel notification
+        # is currently showing — a prefetched prev/next thumbnail only pushes
+        # a live image update (see _kit_cycle_thumb in app_overlay.py) if this
+        # still matches by the time it finishes rendering in the background.
+        self._kit_carousel_ctx: tuple[str, str, int] | None = None
         # Last-seen menu_event_seq, so _handle_rmlui_menu_event only reacts to
         # a NEW click/scroll event rather than replaying the same one every
         # 80ms tick (see cgfs16_rmlui_menu.cpp's MenuEventListener).
@@ -409,6 +421,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.user32.GetCursorPos.restype = wintypes.BOOL
         self.user32.ScreenToClient.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
         self.user32.ScreenToClient.restype = wintypes.BOOL
+        self.user32.ClientToScreen.argtypes = [wintypes.HWND, ctypes.POINTER(POINT)]
+        self.user32.ClientToScreen.restype = wintypes.BOOL
         self.user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
         self.user32.GetClientRect.restype = wintypes.BOOL
         self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
@@ -446,10 +460,6 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.user32.CallNextHookEx.restype = wintypes.LPARAM
         self.user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
         self.user32.UnhookWindowsHookEx.restype = wintypes.BOOL
-        self.user32.WindowFromPoint.argtypes = [POINT]
-        self.user32.WindowFromPoint.restype = wintypes.HWND
-        self.user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
-        self.user32.GetAncestor.restype = wintypes.HWND
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
         self.kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
         self.kernel32.GetModuleHandleW.restype = wintypes.HMODULE

@@ -65,6 +65,15 @@ const wchar_t *RmlOverlay_ImagePath();
 const wchar_t *RmlOverlay_PanelTitle();
 const wchar_t *RmlOverlay_ContentDir();
 bool RmlOverlay_MenuVisible();
+bool RmlOverlay_KitCarouselVisible();
+const wchar_t *RmlOverlay_KitCarouselTitle();
+const wchar_t *RmlOverlay_KitCarouselDetail();
+const wchar_t *RmlOverlay_KitCarouselHint();
+const wchar_t *RmlOverlay_KitCarouselImagePrev();
+const wchar_t *RmlOverlay_KitCarouselImageCurrent();
+const wchar_t *RmlOverlay_KitCarouselImageNext();
+int RmlOverlay_KitCarouselCycleSeq();
+int RmlOverlay_KitCarouselDirection();
 
 // ---------------------------------------------------------------------------
 // wchar_t -> UTF-8 helper (shared struct strings are wide; Rml::String is UTF-8)
@@ -112,6 +121,7 @@ static Rml::String ResolveToastIconPath(const wchar_t *kind) {
 // ---------------------------------------------------------------------------
 static const char kToastDocFile[] = "toast.rml";
 static const char kStadiumDocFile[] = "stadium_panel.rml";
+static const char kKitCarouselDocFile[] = "kit_carousel.rml";
 
 // ---------------------------------------------------------------------------
 // D3D11 shader — origin: Phase 0 POC, unchanged. Vertex layout matches
@@ -1227,6 +1237,103 @@ static const float STADIUM_OPEN_ANIM_MS  = 220.f;
 static const float STADIUM_CLOSE_ANIM_MS = 170.f;
 static const float STADIUM_SLIDE_PX      = 28.f;
 
+// Kit-cycling carousel document + cached elements — own doc/flags, not a
+// reuse of the stadium panel's (see kit_carousel_visible's field comment in
+// cgfs16_overlay.cpp for why). Open/close animation mirrors the stadium
+// panel's exactly (same timings/slide distance) for visual consistency
+// between the two right-hand-side notification panels.
+static Rml::ElementDocument *g_kitCarouselDoc = nullptr;
+static Rml::Element         *g_kcTitle  = nullptr;
+static Rml::Element         *g_kcDetail = nullptr;
+static Rml::Element         *g_kcHint   = nullptr;
+static Rml::Element         *g_kcImgPrev    = nullptr;
+static Rml::Element         *g_kcImgCurrent = nullptr;
+static Rml::Element         *g_kcImgNext    = nullptr;
+static wchar_t                g_kcImgPrevPathLoaded[MAX_IMG]    = {};
+static wchar_t                g_kcImgCurrentPathLoaded[MAX_IMG] = {};
+static wchar_t                g_kcImgNextPathLoaded[MAX_IMG]    = {};
+
+static bool      g_kitCarouselDocShown = false;
+static bool      g_kcOpenAnimActive = false;
+static ULONGLONG g_kcOpenAnimStartTick = 0;
+static bool      g_kcCloseAnimActive = false;
+static ULONGLONG g_kcCloseAnimStartTick = 0;
+
+// Per-slot crossfade + slide, so cycling (F7-F10) reads as a real transition
+// instead of an instant texture pop — RCSS `transition` can't do this (it
+// only ever animates a genuine stylesheet-definition change, e.g. a class
+// toggle or :hover; a plain SetAttribute("src", ...) is neither — see
+// #tab-glider's comment in menu.rml for the same lesson learned there), so
+// this is a manual per-frame tween, same shape as ApplyStadiumOpenAnim/
+// ApplyToastOpenAnim above, just scoped to one <img> instead of a whole doc.
+// The slide start offset is 0 for a background-prefetch pop-in (see
+// kit_carousel_cycle_seq's field comment) — those still crossfade, just
+// without the directional motion, since they aren't a user-initiated step.
+enum { KC_SLOT_PREV = 0, KC_SLOT_CURRENT = 1, KC_SLOT_NEXT = 2, KC_SLOT_COUNT = 3 };
+static bool      g_kcFadeActive[KC_SLOT_COUNT] = {};
+static ULONGLONG g_kcFadeStartTick[KC_SLOT_COUNT] = {};
+static float     g_kcFadeStartOffsetPx[KC_SLOT_COUNT] = {};
+static const float KC_SLOT_FADE_MS = 220.f;
+static const float KC_SLOT_SLIDE_PX = 26.f;
+// Last kit_carousel_cycle_seq value SyncKitCarousel has already reacted to —
+// see its own comment for why this (not visible/g_kitCarouselDocShown) is
+// what distinguishes a fresh cycle step from a background thumbnail pop-in.
+static int g_kcLastSeenCycleSeq = 0;
+
+static void ApplyKitCarouselSlotFade(Rml::Element *img, int slot) {
+    if (!img || !g_kcFadeActive[slot]) return;
+    float elapsedMs = (float)(GetTickCount64() - g_kcFadeStartTick[slot]);
+    float t = (std::min)(1.f, elapsedMs / KC_SLOT_FADE_MS);
+    if (t >= 1.f) {
+        g_kcFadeActive[slot] = false;
+        img->SetProperty("opacity", "1");
+        img->SetProperty("transform", "none");
+        return;
+    }
+    // ease-out, matching every other fade in this file (ApplyToastOpenAnim etc.)
+    float eased = 1.f - powf(1.f - t, 3.f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", eased);
+    img->SetProperty("opacity", buf);
+    if (g_kcFadeStartOffsetPx[slot] != 0.f) {
+        snprintf(buf, sizeof(buf), "translateY(%.2fpx)", g_kcFadeStartOffsetPx[slot] * (1.f - eased));
+        img->SetProperty("transform", buf);
+    }
+}
+
+static void ApplyKitCarouselOpenAnim() {
+    if (!g_kitCarouselDoc || !g_kcOpenAnimActive) return;
+    float elapsedMs = (float)(GetTickCount64() - g_kcOpenAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / STADIUM_OPEN_ANIM_MS);
+    if (t >= 1.f) {
+        g_kcOpenAnimActive = false;
+        g_kitCarouselDoc->SetProperty("opacity", "1");
+        g_kitCarouselDoc->SetProperty("transform", "none");
+        return;
+    }
+    float eased = 1.f - powf(1.f - t, 3.f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", eased);
+    g_kitCarouselDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", STADIUM_SLIDE_PX * (1.f - eased));
+    g_kitCarouselDoc->SetProperty("transform", buf);
+}
+
+// Returns true once finished — caller then Hide()s the document.
+static bool ApplyKitCarouselCloseAnim() {
+    if (!g_kitCarouselDoc) return true;
+    float elapsedMs = (float)(GetTickCount64() - g_kcCloseAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / STADIUM_CLOSE_ANIM_MS);
+    if (t >= 1.f) return true;
+    float eased = t * t * t;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", 1.f - eased);
+    g_kitCarouselDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "translateX(%.2fpx)", STADIUM_SLIDE_PX * eased);
+    g_kitCarouselDoc->SetProperty("transform", buf);
+    return false;
+}
+
 static void ApplyStadiumOpenAnim() {
     if (!g_stadiumDoc || !g_stadiumOpenAnimActive) return;
     float elapsedMs = (float)(GetTickCount64() - g_stadiumOpenAnimStartTick);
@@ -1346,6 +1453,7 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     Rml::String contentDir = WideToUtf8(contentDirW);
     Rml::String toastPath = contentDir + "\\" + kToastDocFile;
     Rml::String stadiumPath = contentDir + "\\" + kStadiumDocFile;
+    Rml::String kitCarouselPath = contentDir + "\\" + kKitCarouselDocFile;
 
     // Load the (still dev-gated, Phase 2 WIP) menu document FIRST so it
     // renders below the toast/stadium docs, preserving the existing
@@ -1358,9 +1466,11 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
 
     g_toastDoc = g_context->LoadDocument(toastPath);
     g_stadiumDoc = g_context->LoadDocument(stadiumPath);
-    if (!g_toastDoc || !g_stadiumDoc) {
-        Log("[RmlOverlay] LoadDocument failed (toast='%s' -> %p, stadium='%s' -> %p)",
-            toastPath.c_str(), (void*)g_toastDoc, stadiumPath.c_str(), (void*)g_stadiumDoc);
+    g_kitCarouselDoc = g_context->LoadDocument(kitCarouselPath);
+    if (!g_toastDoc || !g_stadiumDoc || !g_kitCarouselDoc) {
+        Log("[RmlOverlay] LoadDocument failed (toast='%s' -> %p, stadium='%s' -> %p, kit_carousel='%s' -> %p)",
+            toastPath.c_str(), (void*)g_toastDoc, stadiumPath.c_str(), (void*)g_stadiumDoc,
+            kitCarouselPath.c_str(), (void*)g_kitCarouselDoc);
         g_initFailed = true;
         return false;
     }
@@ -1395,20 +1505,30 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     g_stadiumImg = g_stadiumDoc->GetElementById("preview-img");
     g_stadiumFill = g_stadiumDoc->GetElementById("progress-fill");
 
-    // Both documents start hidden; RmlOverlay_RenderFrame shows/hides them
-    // per frame based on the shared-memory visibility flags.
+    g_kcTitle  = g_kitCarouselDoc->GetElementById("title");
+    g_kcDetail = g_kitCarouselDoc->GetElementById("detail");
+    g_kcHint   = g_kitCarouselDoc->GetElementById("hint");
+    g_kcImgPrev    = g_kitCarouselDoc->GetElementById("img-prev");
+    g_kcImgCurrent = g_kitCarouselDoc->GetElementById("img-current");
+    g_kcImgNext    = g_kitCarouselDoc->GetElementById("img-next");
+
+    // All three documents start hidden; RmlOverlay_RenderFrame shows/hides
+    // them per frame based on the shared-memory visibility flags.
 
     Log("[RmlOverlay] Init ok");
     g_initDone = true;
     return true;
 }
 
-static void SyncToasts(bool stadiumPanelVisible, bool &outAnyToast) {
+static void SyncToasts(int topPx, bool &outAnyToast) {
     outAnyToast = false;
 
-    // Shift the whole stack down below the stadium panel when it's also
-    // showing, same as the old renderer (kStadOverlayH=140 + a small gap).
-    g_toastDoc->SetProperty("top", stadiumPanelVisible ? "168px" : "20px");
+    // topPx already accounts for whichever right-hand-side panel(s) are
+    // stacked above the toast stack — see the shared stacking-cursor comment
+    // in RmlOverlay_RenderFrame.
+    char topBuf[16];
+    snprintf(topBuf, sizeof(topBuf), "%dpx", topPx);
+    g_toastDoc->SetProperty("top", topBuf);
 
     for (int i = 0; i < MAX_TOASTS; ++i) {
         if (!g_toastSlot[i]) continue;
@@ -1459,7 +1579,7 @@ static void SyncToasts(bool stadiumPanelVisible, bool &outAnyToast) {
 // RmlMenu_Sync's own self-contained visible/not-visible split in
 // cgfs16_rmlui_menu.cpp (see its g_panelCloseAnimActive handling for the
 // same shape of logic applied to the F12 menu's #panel).
-static void SyncStadiumPanel(int vpW, bool visible) {
+static void SyncStadiumPanel(int vpW, int topPx, bool visible) {
     if (!g_stadiumDoc) return;
 
     if (!visible) {
@@ -1494,9 +1614,16 @@ static void SyncStadiumPanel(int vpW, bool visible) {
     g_stadiumDocShown = true;
 
     // Right-align: 460px wide panel, 20px margin from the viewport edge.
+    // Always the top slot in the right-hand-side stacking order (stadium/F11
+    // panel -> kit carousel -> toasts, see RmlOverlay_RenderFrame) — nothing
+    // ever renders above it, so its own top is the fixed base, not topPx-
+    // derived like the panels below it.
     char leftBuf[16];
     snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 460 - 20);
     g_stadiumDoc->SetProperty("left", leftBuf);
+    char topBuf[16];
+    snprintf(topBuf, sizeof(topBuf), "%dpx", topPx);
+    g_stadiumDoc->SetProperty("top", topBuf);
     g_stadiumDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
 
     ApplyStadiumOpenAnim();
@@ -1535,10 +1662,127 @@ static void SyncStadiumPanel(int vpW, bool visible) {
     }
 }
 
+// Sets one carousel slot's <img> src, only touching RmlUi (and triggering its
+// texture load) when the path actually changed this frame — same
+// reload-on-change guard as SyncStadiumPanel's single image above, just
+// applied three times (prev/current/next). An empty path hides the slot's
+// <img> outright rather than leaving a broken/blank image box. Also arms
+// that slot's crossfade+slide (ApplyKitCarouselSlotFade) so the new image
+// eases in instead of popping — this fires for every content change, both a
+// cycle (F7-F10) landing new prev/current/next entries (slideOffsetPx != 0,
+// see SyncKitCarousel's freshCycle handling) and a prefetched neighbor
+// thumbnail popping in from the placeholder once it finishes rendering
+// (slideOffsetPx == 0 — crossfade only, no motion, since that's not a
+// user-initiated step).
+static void SyncKitCarouselSlot(Rml::Element *img, wchar_t *pathLoaded, const wchar_t *path, int slot, float slideOffsetPx) {
+    if (wcscmp(path, pathLoaded) == 0) return;
+    wcscpy_s(pathLoaded, MAX_IMG, path);
+    if (!img) return;
+    if (path[0]) {
+        img->SetAttribute("src", WideToUtf8(path));
+        img->SetProperty("display", "block");
+        // Arm the fade+slide-in — t=0 pose (opacity 0, translateY(slideOffsetPx))
+        // set this same frame, eased to (1, translateY(0)) over subsequent
+        // frames by ApplyKitCarouselSlotFade.
+        g_kcFadeActive[slot] = true;
+        g_kcFadeStartTick[slot] = GetTickCount64();
+        g_kcFadeStartOffsetPx[slot] = slideOffsetPx;
+        img->SetProperty("opacity", "0");
+        if (slideOffsetPx != 0.f) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), "translateY(%.2fpx)", slideOffsetPx);
+            img->SetProperty("transform", buf);
+        } else {
+            img->SetProperty("transform", "none");
+        }
+    } else {
+        g_kcFadeActive[slot] = false;
+        img->SetProperty("display", "none");
+    }
+}
+
+// Owns the kit-cycling carousel's full per-frame lifecycle — mirrors
+// SyncStadiumPanel almost exactly (same open/close animation shape, same
+// right-align math), just against its own doc/elements/flags.
+static void SyncKitCarousel(int vpW, int topPx, bool visible) {
+    if (!g_kitCarouselDoc) return;
+
+    if (!visible) {
+        if (g_kcCloseAnimActive) {
+            if (ApplyKitCarouselCloseAnim()) {
+                g_kitCarouselDoc->Hide();
+                g_kitCarouselDocShown = false;
+                g_kcCloseAnimActive = false;
+            }
+        } else if (g_kitCarouselDocShown) {
+            g_kcOpenAnimActive = false; // don't fight an interrupted open
+            g_kcCloseAnimActive = true;
+            g_kcCloseAnimStartTick = GetTickCount64();
+            ApplyKitCarouselCloseAnim();
+        }
+        return;
+    }
+
+    if (g_kcCloseAnimActive) {
+        // Reopened before a pending close-out finished — cancel it and
+        // re-arm the open animation so the panel reverses smoothly instead
+        // of being left stuck at a partial opacity/offset forever.
+        g_kcCloseAnimActive = false;
+        g_kcOpenAnimActive = true;
+        g_kcOpenAnimStartTick = GetTickCount64();
+    } else if (!g_kitCarouselDocShown) {
+        g_kcOpenAnimActive = true;
+        g_kcOpenAnimStartTick = GetTickCount64();
+    }
+    g_kitCarouselDocShown = true;
+
+    // Right-align: 480px wide panel, 20px margin from the viewport edge.
+    // topPx stacks this below the stadium/F11 panel when that's also
+    // showing — see the shared stacking-cursor comment in
+    // RmlOverlay_RenderFrame.
+    char leftBuf[16];
+    snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 480 - 20);
+    g_kitCarouselDoc->SetProperty("left", leftBuf);
+    char topBuf[16];
+    snprintf(topBuf, sizeof(topBuf), "%dpx", topPx);
+    g_kitCarouselDoc->SetProperty("top", topBuf);
+    g_kitCarouselDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+
+    ApplyKitCarouselOpenAnim();
+
+    if (g_kcTitle)  g_kcTitle->SetInnerRML(WideToUtf8(RmlOverlay_KitCarouselTitle()));
+    if (g_kcDetail) g_kcDetail->SetInnerRML(WideToUtf8(RmlOverlay_KitCarouselDetail()));
+    if (g_kcHint)   g_kcHint->SetInnerRML(WideToUtf8(RmlOverlay_KitCarouselHint()));
+
+    // A fresh F7-F10 cycle (show_kit_carousel bumped the seq since last
+    // frame) slides whichever slots changed in the direction of travel —
+    // +1 ("next") moves the whole strip up, so new content enters from
+    // below (positive Y, easing to 0); -1 ("prev") mirrors that from above.
+    // Anything else (first reveal, or a background-prefetch pop-in via
+    // update_kit_carousel_images, which never touches the seq) just
+    // crossfades in place — see SyncKitCarouselSlot.
+    int cycleSeq = RmlOverlay_KitCarouselCycleSeq();
+    float slideOffsetPx = 0.f;
+    if (cycleSeq != g_kcLastSeenCycleSeq) {
+        g_kcLastSeenCycleSeq = cycleSeq;
+        int direction = RmlOverlay_KitCarouselDirection();
+        if (direction != 0) slideOffsetPx = (float)direction * KC_SLOT_SLIDE_PX;
+    }
+
+    SyncKitCarouselSlot(g_kcImgPrev,    g_kcImgPrevPathLoaded,    RmlOverlay_KitCarouselImagePrev(),    KC_SLOT_PREV,    slideOffsetPx);
+    SyncKitCarouselSlot(g_kcImgCurrent, g_kcImgCurrentPathLoaded, RmlOverlay_KitCarouselImageCurrent(), KC_SLOT_CURRENT, slideOffsetPx);
+    SyncKitCarouselSlot(g_kcImgNext,    g_kcImgNextPathLoaded,    RmlOverlay_KitCarouselImageNext(),    KC_SLOT_NEXT,    slideOffsetPx);
+
+    ApplyKitCarouselSlotFade(g_kcImgPrev, KC_SLOT_PREV);
+    ApplyKitCarouselSlotFade(g_kcImgCurrent, KC_SLOT_CURRENT);
+    ApplyKitCarouselSlotFade(g_kcImgNext, KC_SLOT_NEXT);
+}
+
 void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceContext *ctx) {
     if (!sc || !dev || !ctx) return;
 
     bool stadiumVisible = RmlOverlay_StadiumPanelVisible();
+    bool kitCarouselVisible = RmlOverlay_KitCarouselVisible();
 
     // OR in g_toastAnyActive (last SyncToasts call's own result) so a toast
     // that Python already hid but is still mid close-out fade keeps getting
@@ -1558,7 +1802,8 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
     // the very first closed frame, starving that animation of frames and
     // leaving the document permanently Shown() in RmlUi's own bookkeeping
     // (see RmlMenu_DocShown's header comment for the full failure chain).
-    if (!stadiumVisible && !g_stadiumDocShown && !anyToastRaw && !menuVisible && !RmlMenu_DocShown()) return;
+    if (!stadiumVisible && !g_stadiumDocShown && !kitCarouselVisible && !g_kitCarouselDocShown &&
+        !anyToastRaw && !menuVisible && !RmlMenu_DocShown()) return;
 
     DXGI_SWAP_CHAIN_DESC scd = {};
     sc->GetDesc(&scd);
@@ -1567,6 +1812,26 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
     if (vpW <= 0 || vpH <= 0) return;
 
     if (!EnsureInit(dev, vpW, vpH)) return;
+
+    // Right-hand-side stacking cursor: stadium/F11 panel (top) -> kit
+    // carousel -> toasts, each one only actually occupying a slot (and
+    // pushing the next tier down) while it's visible or still mid close-out
+    // fade — same "stack like asset/stadium loading toasts already do"
+    // relative to the stadium panel, just generalized to a 3rd tier now that
+    // the kit carousel is its own doc/flag instead of reusing the stadium
+    // panel's. Computed from last frame's *Shown state (which SyncStadiumPanel/
+    // SyncKitCarousel below are about to update for *this* frame) — one
+    // frame of lag on a brand-new transition is imperceptible at 60fps and
+    // avoids a chicken-and-egg dependency between this cursor and the Sync
+    // calls that use it.
+    bool stadiumShown = stadiumVisible || g_stadiumDocShown;
+    bool kitCarouselShown = kitCarouselVisible || g_kitCarouselDocShown;
+    int stackTop = 20;
+    int stadiumTop = stackTop;
+    if (stadiumShown) stackTop += 140 + 8;
+    int kitCarouselTop = stackTop;
+    if (kitCarouselShown) stackTop += 280 + 8;
+    int toastsTop = stackTop;
 
     // BeginFrame goes here, before ANY element/attribute mutation below — not
     // just before Update() as a prior version of this function assumed.
@@ -1581,8 +1846,9 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
         g_context->SetDimensions(Rml::Vector2i(vpW, vpH));
 
     bool anyToast = false;
-    SyncToasts(stadiumVisible, anyToast);
-    SyncStadiumPanel(vpW, stadiumVisible);
+    SyncToasts(toastsTop, anyToast);
+    SyncStadiumPanel(vpW, stadiumTop, stadiumVisible);
+    SyncKitCarousel(vpW, kitCarouselTop, kitCarouselVisible);
     RmlMenu_Sync(vpW, vpH, scd.OutputWindow);
 
     if (g_toastDoc) {

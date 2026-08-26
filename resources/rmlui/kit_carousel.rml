@@ -1,0 +1,88 @@
+<rml>
+<head>
+<style>
+body {
+    display: block;
+    position: absolute;
+    top: 20px;
+    width: 480px;
+    height: 280px;
+    box-sizing: border-box;
+    border-radius: 16px;
+    /* Same two-layer "gradient border" trick as stadium_panel.rml/toast.rml —
+       this outer box paints the gradient via `decorator` and 2px of padding
+       shows through as a ring around #card's solid fill. */
+    padding: 2px;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    box-shadow: 0px 8px 20px #000000A6;
+    font-family: "Segoe UI";
+    /* opacity/transform are driven per-frame from C++ (ApplyKitCarouselOpenAnim/
+       ApplyKitCarouselCloseAnim in cgfs16_rmlui.cpp), not an RCSS `transition` —
+       same reasoning as stadium_panel.rml's own #panel comment. */
+    opacity: 0;
+}
+#card {
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background-color: #101828F5;
+    border-radius: 14px;
+}
+#textcol { display: block; position: absolute; left: 18px; top: 18px; width: 250px; }
+#title  { display: block; font-size: 17px; color: #4FACFE; margin-bottom: 8px; }
+#detail { display: block; font-size: 15px; font-weight: bold; color: #FFFFFF; }
+#hint {
+    display: block;
+    position: absolute;
+    left: 18px;
+    bottom: 16px;
+    width: 250px;
+    font-size: 12px;
+    color: #6E88AC;
+}
+/* Vertical 3-slot carousel: the currently-selected kit sits centered and at
+   full opacity; the previous/next kit in the cycle order sit above/below it,
+   smaller and faded — fixed slot geometry/opacity baked into RCSS here (same
+   "fixed slots, dynamic content" pattern toast.rml uses for its 6 toast
+   slots). cgfs16_rmlui.cpp swaps each slot's <img src> on a cycle/prefetch,
+   and separately (ApplyKitCarouselSlotFade) animates that <img>'s OWN
+   opacity/transform (0->1 fade, translateY slide-in) on top of the parent
+   .slot's fixed opacity/position below — the two compose (RmlUi/CSS opacity
+   nests multiplicatively), so prev/next still end up dimmed once their fade
+   finishes. .slot's `overflow: hidden` deliberately clips the <img> mid-slide,
+   so a sliding-in image looks like it's entering the slot's window rather
+   than floating outside it. */
+#carousel { display: block; position: absolute; right: 20px; top: 0px; width: 150px; height: 100%; }
+.slot {
+    display: block;
+    position: absolute;
+    left: 0px;
+    width: 150px;
+    background-color: #0C1420;
+    border-radius: 8px;
+    overflow: hidden;
+    text-align: center;
+    vertical-align: middle;
+}
+.slot img { max-width: 100%; max-height: 100%; opacity: 1; transform: none; }
+#slot-prev    { top: 16px;  height: 60px;  opacity: 0.32; }
+#slot-current { top: 88px;  height: 104px; opacity: 1; }
+#slot-next    { top: 204px; height: 60px;  opacity: 0.32; }
+</style>
+</head>
+<body>
+<div id="card">
+<div id="textcol">
+<div id="title">Home: Team</div>
+<div id="detail"></div>
+</div>
+<div id="hint"></div>
+<div id="carousel">
+<div id="slot-prev" class="slot"><img id="img-prev" style="display: none;" /></div>
+<div id="slot-current" class="slot"><img id="img-current" style="display: none;" /></div>
+<div id="slot-next" class="slot"><img id="img-next" style="display: none;" /></div>
+</div>
+</div>
+</body>
+</rml>
