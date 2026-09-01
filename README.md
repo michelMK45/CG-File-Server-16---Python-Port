@@ -58,7 +58,7 @@ Raise FIFA 16's hardcoded 3-substitution-per-match limit to anywhere from 1–9 
 
 ### Chants & Audio
 
-Assign per-team/tournament chants and anthems under `FSW/Chants`, played back through the app's own audio engine during matches, including held goal-song playback that doesn't overlap the regular chants loop.
+Assign per-team/tournament chants and anthems under `FSW/Chants`, played back through the app's own audio engine during matches, including held goal-song playback that doesn't overlap the regular chants loop, plus an optional per-team entrance anthem (`Entrance.mp3`) played during the pre-kickoff walkout — see [Chants Audio Files](#chants-audio-files) below.
 
 ### Discord Rich Presence
 
@@ -198,6 +198,7 @@ editor) and read from:
 FSW/Chants/<folder>/Support/*.mp3
 FSW/Chants/<folder>/Complaint/*.mp3
 FSW/Chants/<folder>/ClubSong.mp3
+FSW/Chants/<folder>/Entrance.mp3
 ```
 
 - `Support` covers a draw, winning, or losing by 1–2 goals (a different configured volume for
@@ -206,9 +207,34 @@ FSW/Chants/<folder>/ClubSong.mp3
   it in a typical match.
 - `ClubSong.mp3` is the goal celebration anthem, held for at least 12s (or the track's own
   length if longer) before crowd chants resume.
+- `Entrance.mp3` (optional) plays for the **home** team only, timed to FIFA's pre-kickoff 3D
+  player walkout — see [Team Entrance](#team-entrance) below for the full trigger/fade-out
+  behavior. Only used when the `TeamEntrance` module is enabled.
 
-Each `chantsid` entry is a 10-field CSV: `folder, vol_draw, vol_winning, vol_losing1, vol_losing2,
-vol_complaint, vol_goal, silence_probability, silence_max_seconds, away_chant_probability`.
+Each `chantsid` entry is a CSV: `folder, vol_draw, vol_winning, vol_losing1, vol_losing2,
+vol_complaint, vol_goal, silence_probability, silence_max_seconds, away_chant_probability,
+entrance_volume, entrance_delay_seconds`. The last two fields are optional — omitting them (the
+older 10-field format) falls back to entrance volume `0.16` and delay `7.0`s.
+
+### Team Entrance
+
+Plays the home team's `Entrance.mp3` during FIFA's pre-kickoff 3D player walkout, using its own
+independent audio player so it never fights with the regular chants loop. The sequence:
+
+1. FIFA enters its competition `TV/bumper` intro — the entrance track is armed but not played yet
+   (playing over FIFA's own bumper audio would overlap).
+2. The first page transition after the bumper ends (the walkout itself) starts a background wait
+   for FIFA's match memory, then the configured delay (default 7s — tune this if the anthem starts
+   too early/late for a given competition's intro length), then plays `Entrance.mp3` at the
+   configured volume.
+3. Regular `Support` chants are held back during this whole window — a static "match started" flag
+   during the walkout must not be mistaken for real play.
+4. Sustained match-clock movement (the actual kickoff) fades the entrance track out and releases
+   normal crowd audio.
+
+If a team has no `Entrance.mp3` or no `[chantsid]` mapping, the feature silently skips that team
+without affecting anything else. Enable/disable it from the Modules card (`TeamEntrance`), and
+tune volume/delay from the same chants settings editor used for the rest of `[chantsid]`.
 
 **MP3 compatibility — check this before adding new packs.** Playback goes through Windows' legacy
 MCI (`mciSendStringW`, opened as `type mpegvideo`), not a modern MP3 decoder, and it is far less

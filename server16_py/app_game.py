@@ -104,6 +104,28 @@ class GameMixin:
         if page_name == self.lastpagename:
             return
         self.lastpagename = page_name
+        # Kept deliberately lightweight (real transitions only, thanks to the
+        # dedupe above) — this is the trail needed to diagnose why a given
+        # page path did or didn't arm/start Team Entrance (see CLAUDE.md §7,
+        # "entrance anthem does not restart when the match is restarted").
+        self.log(f"Page transition: {page_name!r} (entrance_armed={self._entrance_armed} matchstarted={self.matchstarted})")
+        if self._page_blocks_team_entrance(page_name):
+            # `self.matchstarted` is normally only flipped False by
+            # ChantsRuntime's own poll loop, after 3 consecutive 0.5s-spaced
+            # memory reads report the match not running -- up to ~1.5s of
+            # lag behind the page transition that actually caused it. A
+            # Restart chosen quickly after opening the pause menu can reach
+            # a fresh blank/walkout page before that lag clears, so the
+            # blank-page arm fallback below (guarded by `not
+            # self.matchstarted`) can silently skip re-arming Team Entrance
+            # for the restarted match -- leaving the *previous* attempt's
+            # worker as the only one that ever ran, with nothing to replace
+            # or stop it (reported live 2026-08-30, still unconfirmed by a
+            # captured Restart log -- see CLAUDE.md §7 Part 7). Reaching a
+            # pause/setup menu page is itself proof the match isn't
+            # currently live, so reflect that immediately instead of
+            # waiting on Chants' independently-clocked poll to catch up.
+            self.matchstarted = False
         if page_name == "game/screens/playNow/KickOffHub":
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None
@@ -127,10 +149,64 @@ class GameMixin:
         if "training/SkillGame" in page_name:
             self.skillgamechange = True
             return
+
+        # TV/bumper is FIFA's competition intro.  The club entrance anthem
+        # belongs to the following 3D walkout presentation, so only start it
+        # on the first page transition *after* the bumper has gone away.
+        entrance_just_started = False
+        if self._entrance_armed and "TV/bumper" not in page_name:
+            self._entrance_armed = False
+            if self._page_blocks_team_entrance(page_name):
+                # The blank-page fallback below arms Team Entrance on *any*
+                # blank page while matchstarted/skillgamechange are both
+                # False -- including a blank page reached mid-Abandon, since
+                # FIFA's own started/ran_time flags can read stale/reset
+                # values while bouncing through the pause menu (see
+                # CLAUDE.md §7). Confirmed live 2026-08-29/30
+                # (runtime/server16.log): that false arm gets "consumed" by
+                # whatever page comes next -- sometimes FluxHub reasserting
+                # itself, sometimes landing on playNow/SelectTeam -- and
+                # without this guard that next transition was treated as a
+                # genuine new match, restarting the anthem from scratch
+                # audibly inside the menu. A page that is itself a pause
+                # menu or playNow setup menu can never be the real walkout,
+                # so just drop the arm here instead of starting.
+                self.log(f"Team entrance disarmed: next page was a menu ({page_name!r})")
+            else:
+                entrance_just_started = self._start_team_entrance()
+
         if not page_name.strip() and not self.matchstarted and not self.skillgamechange:
+            if not entrance_just_started:
+                # Mirror Chants' own restart resilience: this blank-page
+                # transition is Chants' second, independent trigger besides
+                # TV/bumper (see just below) for exactly this reason — FIFA's
+                # "Restart Match" (chosen mid-match from the pause menu)
+                # does not reliably re-show the TV/bumper competition intro
+                # the way a fresh match from the main menu does, so
+                # TV/bumper-only arming left Team Entrance silently unarmed
+                # for a restarted match while Chants kept working via this
+                # same fallback (reported live 2026-08-28). Arming here is
+                # safe for the ordinary first-match case too: the very next
+                # transition is normally "TV/bumper" itself, which the check
+                # above ignores (it contains the substring "TV/bumper"), so
+                # entrance still only actually starts once the bumper ends —
+                # `entrance_just_started` above only prevents re-arming a
+                # worker that this same call just handed off to a thread.
+                self._entrance_sequence += 1
+                self._entrance_armed = True
+                self._entrance_pre_match_guard = True
             self._start_chants_runtime()
             return
         if "TV/bumper" in page_name or "skillGames/SkillGa" in page_name:
+            if "TV/bumper" in page_name:
+                # Arm here, but do not play over FIFA's competition bumper.
+                self._entrance_sequence += 1
+                self._entrance_armed = True
+                # FIFA exposes the match as "running" during parts of the 3D
+                # intro.  Hold Support chants until actual clock movement
+                # confirms kick-off.
+                self._entrance_pre_match_guard = True
+                self._start_chants_runtime()
             if not self.bumperpagechange and not self.skillgamechange:
                 self.pagechange = False
                 self.bumperpagechange = True
@@ -209,6 +285,19 @@ class GameMixin:
         if self._kickoff_retry_remaining > 0:
             self._kickoff_retry_remaining -= 1
             self._schedule_kickoff_retry()
+
+    @staticmethod
+    def _page_blocks_team_entrance(page_name: str) -> bool:
+        """True for a pause menu or playNow setup menu -- never the walkout.
+
+        Same page-name vocabulary already used by TeamEntranceRuntime's own
+        loop ("playnow") and by the Discord presence pause detection
+        ("fluxhub"/"stadiumpan") to recognize these pages. Used to stop the
+        blank-page arm fallback from being consumed as "the walkout started"
+        when the very next transition is actually just menu/pause churn.
+        """
+        lowered = (page_name or "").lower()
+        return any(token in lowered for token in ("playnow", "fluxhub", "stadiumpan"))
 
     def _page_can_have_match_context(self, page_name: str) -> bool:
         if not page_name:

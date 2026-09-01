@@ -272,6 +272,50 @@ class ChantsRuntime:
         app._set_display_async("audio_source", "-")
         app._set_display_async("audio_next", "Waiting for kickoff")
 
+    def _resolve_pending_entrance_arm(self) -> None:
+        """Consume a still-armed Team Entrance the moment a match is
+        confirmed live again, instead of waiting on a page-name transition
+        that may never come.
+
+        `_handle_page_transition` (app_game.py) normally consumes an armed
+        Team Entrance on whatever DIFFERENT page name shows up next. That
+        only works if a different page name actually arrives. Confirmed
+        live 2026-08-30 (runtime/server16.log, 13:22:27-13:23:01): FIFA can
+        keep reporting the exact same blank page name for 30+ seconds while
+        the player simply sits in the pause menu deciding -- so a fixed
+        timeout can't safely distinguish "genuinely stuck, nothing else is
+        coming" from "still mid-pause, a menu transition is coming eventually".
+        A follow-up capture (13:23:36-13:23:57) showed a mid-match Restart
+        can *also* resume gameplay while still reading that exact same blank
+        page it paused on, with no further transition at all for the rest of
+        the session -- so `_handle_page_transition` never got a second
+        chance to consume the arm either.
+
+        `app.matchstarted` flipping back to True here (this method is only
+        called on that exact transition, see chants_runtime_loop) is itself
+        proof a real match -- the same one resumed, or a freshly restarted
+        one -- is live again, independent of whether the page name ever
+        changes. That makes it a reliable, event-driven point to resolve
+        whatever arm is still pending, using the page name that's current
+        right now. See CLAUDE.md §7 Part 8 before changing this.
+        """
+        app = self.app
+        if not getattr(app, "_entrance_armed", False):
+            return
+        page_name = getattr(app, "lastpagename", "") or ""
+        if "TV/bumper" in page_name:
+            # Bumper hasn't ended yet -- its own eventual transition to a
+            # different page name is a reliable, distinctly-named event, so
+            # leave it to _handle_page_transition rather than risk starting
+            # over FIFA's own competition intro audio.
+            return
+        app._entrance_armed = False
+        if app._page_blocks_team_entrance(page_name):
+            app.log(f"Team entrance disarmed (match resumed on a menu page): {page_name!r}")
+            return
+        app.log(f"Team entrance armed via match-resumed signal (no further page transition): {page_name!r}")
+        app._start_team_entrance()
+
     def fade_player(self, player: MciAudioPlayer, start: float, end: float, duration_ms: int) -> None:
         steps = 20
         if duration_ms <= 0:
@@ -412,6 +456,9 @@ class ChantsRuntime:
         cooldown_until = 0.0
         next_chant_after = 0.0
         non_running_reads = 0
+        pre_match_last_time: int | None = None
+        pre_match_last_real: float | None = None
+        pre_match_speed_hits = 0
         chants_memory = Memory()
         while not app._chants_stop.is_set():
             try:
@@ -447,6 +494,9 @@ class ChantsRuntime:
 
                 if not app._is_game_running_with(chants_memory):
                     non_running_reads += 1
+                    pre_match_last_time = None
+                    pre_match_last_real = None
+                    pre_match_speed_hits = 0
                     if non_running_reads >= 3:
                         app.matchstarted = False
                         # Only pause if not already paused by a sub-function
@@ -461,7 +511,50 @@ class ChantsRuntime:
                     continue
 
                 non_running_reads = 0
+                was_matchstarted = app.matchstarted
                 app.matchstarted = True
+                if not was_matchstarted:
+                    self._resolve_pending_entrance_arm()
+
+                # The FIFA "game started" flag becomes true during the 3D
+                # walkout, before actual kick-off.  Do not let a Support track
+                # cover the entrance anthem or the league presentation.  Real
+                # play is confirmed by sustained match-clock movement.
+                if getattr(app, "_entrance_pre_match_guard", False):
+                    now = time.time()
+                    try:
+                        game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+                    except Exception:
+                        game_time = None
+                    if game_time is not None and pre_match_last_time is not None and pre_match_last_real is not None:
+                        real_delta = max(0.001, now - pre_match_last_real)
+                        timer_delta = abs(game_time - pre_match_last_time)
+                        speed = timer_delta / real_delta
+                        if timer_delta >= 1 and speed >= 6.0:
+                            pre_match_speed_hits += 1
+                        else:
+                            pre_match_speed_hits = 0
+                        if pre_match_speed_hits >= 3:
+                            app._entrance_pre_match_guard = False
+                            next_chant_after = time.time() + 1.0
+                            app.log(f"Pre-match Support guard released at clock speed={speed:.1f}")
+                    pre_match_last_time = game_time
+                    pre_match_last_real = now
+                    if getattr(app, "_entrance_pre_match_guard", False):
+                        app._set_display_async("audio_crowd_mode", "Waiting for kick-off")
+                        app._set_display_async("audio_next", "Support chants after actual kick-off")
+                        time.sleep(0.2)
+                        continue
+
+                # The entrance anthem owns the pre-kickoff audio window.  If
+                # FIFA starts its clock while the anthem is fading, hold the
+                # regular crowd loop briefly so the two MCI players do not
+                # overlap at full volume.
+                if getattr(app, "_entrance_active", False):
+                    app._set_display_async("audio_crowd_mode", "Waiting for entrance")
+                    app._set_display_async("audio_next", "Crowd audio after entrance")
+                    time.sleep(0.2)
+                    continue
 
                 # Resume paused player when game resumes
                 if app._chants_paused and app._chants_player is not None and app._chants_player.is_paused():

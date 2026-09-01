@@ -118,7 +118,13 @@ class SettingsMixin:
         return paths[0]
 
     def _load_module_states(self) -> None:
-        module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong"]
+        if self.settings_ini.read("TeamEntrance", "Modules") not in {"0", "1"}:
+            # Existing installations predate this module. Enable it by default
+            # without creating settings.ini before FIFA has been linked.
+            if self.fifaEXE != "default" or self.settings_ini.path.exists():
+                self.settings_ini.write("TeamEntrance", "1", "Modules")
+                self.settings_ini.save()
+        module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong"]
         self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
         previous_rpc_state = self._discord_rpc_enabled
         discord_ini_value = self.settings_ini.read("DiscordRPC", "Modules")

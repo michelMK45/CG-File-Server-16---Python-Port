@@ -75,6 +75,8 @@ class SettingsSectionFrame(tk.Frame):
         "silence_prob": "0.15",
         "silence_max": "8.0",
         "away_prob": "0.35",
+        "entrance_volume": "0.16",
+        "entrance_delay": "7.0",
     }
 
     def __init__(self, parent: tk.Misc, app, spec: SectionSpec) -> None:
@@ -282,6 +284,8 @@ class SettingsSectionFrame(tk.Frame):
         self.silence_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_prob"])
         self.silence_max_var = tk.StringVar(value=self.CHANTS_DEFAULTS["silence_max"])
         self.away_prob_var = tk.StringVar(value=self.CHANTS_DEFAULTS["away_prob"])
+        self.entrance_volume_var = tk.StringVar(value=self.CHANTS_DEFAULTS["entrance_volume"])
+        self.entrance_delay_var = tk.StringVar(value=self.CHANTS_DEFAULTS["entrance_delay"])
 
         self.body.grid_columnconfigure(0, weight=0)
         self.body.grid_columnconfigure(1, weight=0)
@@ -300,6 +304,8 @@ class SettingsSectionFrame(tk.Frame):
         self._add_chants_field_row(self.body, 7, self.tr("dialog.editor.field.prob_silence"), self.silence_prob_var)
         self._add_chants_field_row(self.body, 8, self.tr("dialog.editor.field.max_silence"), self.silence_max_var, to=30.0, resolution=0.5)
         self._add_chants_field_row(self.body, 9, self.tr("dialog.editor.field.prob_away_crowd"), self.away_prob_var)
+        self._add_chants_field_row(self.body, 10, self.tr("dialog.editor.field.vol_entrance"), self.entrance_volume_var)
+        self._add_chants_field_row(self.body, 11, self.tr("dialog.editor.field.entrance_delay"), self.entrance_delay_var, to=45.0, resolution=0.5)
 
     def _add_chants_field_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, from_: float = 0.0, to: float = 1.0, resolution: float = 0.01) -> tk.Entry:
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
@@ -525,6 +531,8 @@ class SettingsSectionFrame(tk.Frame):
             self.silence_prob_var.set(self.CHANTS_DEFAULTS["silence_prob"])
             self.silence_max_var.set(self.CHANTS_DEFAULTS["silence_max"])
             self.away_prob_var.set(self.CHANTS_DEFAULTS["away_prob"])
+            self.entrance_volume_var.set(self.CHANTS_DEFAULTS["entrance_volume"])
+            self.entrance_delay_var.set(self.CHANTS_DEFAULTS["entrance_delay"])
         elif self.spec.kind == "exclude":
             self.exclude_var.set("excluded from stadium server")
         self.status_var.set(self.tr("dialog.editor.new_ready"))
@@ -587,7 +595,8 @@ class SettingsSectionFrame(tk.Frame):
         parts = [part.strip() for part in value.split(",")]
         # Backward compatibility:
         # old format (7): folder,default,winning,lose1,lose2,lose3,goal
-        # new format (10): folder,default,winning,lose1,lose2,lose3,goal,silence_prob,silence_max,away_prob
+        # current format (12): folder,default,winning,lose1,lose2,lose3,goal,
+        # silence_prob,silence_max,away_prob,entrance_volume,entrance_delay
         if len(parts) >= 7:
             folder = parts[0]
             default = parts[1] if len(parts) > 1 else ""
@@ -599,11 +608,17 @@ class SettingsSectionFrame(tk.Frame):
             silence_prob = parts[7] if len(parts) > 7 else ""
             silence_max = parts[8] if len(parts) > 8 else ""
             away_prob = parts[9] if len(parts) > 9 else ""
+            entrance_volume = parts[10] if len(parts) > 10 else ""
+            entrance_delay = parts[11] if len(parts) > 11 else ""
         else:
             # Very old/invalid payload: keep best effort with defaults.
-            while len(parts) < 10:
+            while len(parts) < 12:
                 parts.append("")
-            folder, default, winning, lose1, lose2, lose3, goal, silence_prob, silence_max, away_prob = parts[:10]
+            (
+                folder, default, winning, lose1, lose2, lose3, goal,
+                silence_prob, silence_max, away_prob, entrance_volume,
+                entrance_delay,
+            ) = parts[:12]
         self.chants_folder_var.set(folder or self.CHANTS_DEFAULTS["folder"])
         self.default_var.set(default or self.CHANTS_DEFAULTS["default"])
         self.winning_var.set(winning or self.CHANTS_DEFAULTS["winning"])
@@ -614,6 +629,8 @@ class SettingsSectionFrame(tk.Frame):
         self.silence_prob_var.set(silence_prob or self.CHANTS_DEFAULTS["silence_prob"])
         self.silence_max_var.set(silence_max or self.CHANTS_DEFAULTS["silence_max"])
         self.away_prob_var.set(away_prob or self.CHANTS_DEFAULTS["away_prob"])
+        self.entrance_volume_var.set(entrance_volume or self.CHANTS_DEFAULTS["entrance_volume"])
+        self.entrance_delay_var.set(entrance_delay or self.CHANTS_DEFAULTS["entrance_delay"])
 
     def _compose_value(self) -> str:
         if self.spec.kind == "simple":
@@ -647,6 +664,8 @@ class SettingsSectionFrame(tk.Frame):
                     self.silence_prob_var.get().strip(),
                     self.silence_max_var.get().strip(),
                     self.away_prob_var.get().strip(),
+                    self.entrance_volume_var.get().strip(),
+                    self.entrance_delay_var.get().strip(),
                 ]
             )
         if self.spec.kind == "exclude":

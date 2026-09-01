@@ -16,6 +16,7 @@ from .db_patcher import restore_stadium_names
 from .assignment_runtime import AssignmentRuntime
 from .camera_runtime import CameraPreset, CameraRuntime
 from .chants_runtime import ChantsRuntime, MciAudioPlayer
+from .entrance_runtime import TeamEntranceRuntime
 from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
@@ -114,6 +115,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._attached_once = False
         self._logs_visible = False
         self._kickoff_generation = 0
+        self._entrance_sequence = 0
         self._overlay_f12_down = False
         self._overlay_up_down = False
         self._overlay_down_down = False
@@ -374,11 +376,15 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._last_chants_score_snapshot: tuple[int, int] | None = None
         self._chants_resume_after = 0.0
         self._chants_rng = random.Random()
+        self._entrance_active = False
+        self._entrance_armed = False
+        self._entrance_pre_match_guard = False
         self._last_live_score = (0, 0)
         self._last_live_update = ""
         self.assets_runtime = AssetRuntime(self)
         self.stadium_runtime = StadiumRuntime(self)
         self.chants_runtime = ChantsRuntime(self)
+        self.entrance_runtime = TeamEntranceRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
         self.kit_mixer = KitMixRuntime(self)
@@ -618,7 +624,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def _start_chants_runtime(self) -> None:
         self.chants_runtime.start_chants_runtime()
 
+    def _start_team_entrance(self) -> bool:
+        return self.entrance_runtime.start_for_match()
+
     def _reset_chants_state(self) -> None:
+        self.entrance_runtime.reset()
         self.chants_runtime.reset_chants_state()
 
     def _fade_player(self, player: MciAudioPlayer, start: float, end: float, duration_ms: int) -> None:

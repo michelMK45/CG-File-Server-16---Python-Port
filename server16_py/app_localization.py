@@ -138,6 +138,7 @@ class LocalizationMixin:
             "Autorun": "module.autorun",
             "StadiumNet": "module.stadiumnet",
             "Chants": "module.chants",
+            "TeamEntrance": "module.team_entrance",
             "DiscordRPC": "module.discord_rpc",
         }
         for name, check in self.module_checks.items():

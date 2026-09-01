@@ -2554,7 +2554,7 @@ class UIMixin:
         modules.pack(fill="x", padx=12, pady=(6, 12))
         module_names = [
             "Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun",
-            "StadiumNet", "Chants", "StadiumName", "AwayChants", "AwayClubSong",
+            "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong",
             "DiscordRPC",
         ]
         for idx, name in enumerate(module_names):
