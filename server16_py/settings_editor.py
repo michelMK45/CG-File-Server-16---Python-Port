@@ -738,6 +738,10 @@ def asset_specs() -> list[SectionSpec]:
         SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD"),
         SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD"),
         SectionSpec("kitsid", "dialog.editor.choice.kits_ids", kind="simple", directory="FSW\\Kits"),
+        SectionSpec("ball", "dialog.editor.choice.competition_balls", kind="simple", directory="FSW\\balls"),
+        SectionSpec("referee", "dialog.editor.choice.competition_referees", kind="simple", directory="FSW\\referee"),
+        SectionSpec("wipe", "dialog.editor.choice.competition_wipes", kind="simple", directory="FSW\\wipe"),
+        SectionSpec("adboard", "dialog.editor.choice.competition_adboards", kind="simple", directory="FSW\\adboards"),
     ]
 
 

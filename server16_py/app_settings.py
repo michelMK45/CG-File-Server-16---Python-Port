@@ -108,6 +108,8 @@ class SettingsMixin:
                 _shutil.copy2(str(src_ini), str(self.settings_ini.path))
         self._load_module_states()
         self._update_audio_overview()
+        if self.fifaEXE != "default":
+            self.assets_runtime.cleanup_startup_adboard_files()
         if load_team_database:
             self._load_team_database()
 
@@ -124,7 +126,7 @@ class SettingsMixin:
             if self.fifaEXE != "default" or self.settings_ini.path.exists():
                 self.settings_ini.write("TeamEntrance", "1", "Modules")
                 self.settings_ini.save()
-        module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong"]
+        module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong", "Ball", "Adboard", "Referee", "Wipe"]
         self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
         previous_rpc_state = self._discord_rpc_enabled
         discord_ini_value = self.settings_ini.read("DiscordRPC", "Modules")
