@@ -74,6 +74,14 @@ const wchar_t *RmlOverlay_KitCarouselImageCurrent();
 const wchar_t *RmlOverlay_KitCarouselImageNext();
 int RmlOverlay_KitCarouselCycleSeq();
 int RmlOverlay_KitCarouselDirection();
+// Movies-tab live video preview (OverlayVideoShared, cgfs16_overlay.cpp) —
+// OVERLAY_VIDEO_W/H must match the same constants there and in
+// cgfs16_rmlui_menu.cpp/d3d_injector.py.
+#define OVERLAY_VIDEO_W 560
+#define OVERLAY_VIDEO_H 315
+bool RmlOverlay_VideoPlaying();
+long RmlOverlay_VideoFrameSeq();
+const unsigned char *RmlOverlay_VideoPixels();
 
 // ---------------------------------------------------------------------------
 // wchar_t -> UTF-8 helper (shared struct strings are wide; Rml::String is UTF-8)
@@ -85,6 +93,25 @@ static Rml::String WideToUtf8(const wchar_t *s) {
     std::string out(len - 1, '\0'); // len includes the null terminator
     WideCharToMultiByte(CP_UTF8, 0, s, -1, out.data(), len, nullptr, nullptr);
     return Rml::String(out);
+}
+
+// ---------------------------------------------------------------------------
+// Movies-tab live video hero rect — set once per frame by RmlMenu_Sync
+// (cgfs16_rmlui_menu.cpp), which is the only place that has access to
+// #hero-img-wrap's actual RmlUi element/layout (this file only ever deals
+// with the toast/stadium-panel documents directly); read by
+// RmlOverlay_RenderFrame below, after Context::Render() has finished for the
+// frame, to know where to draw the manually-updated video quad. Plain
+// globals rather than a shared struct/header: this is a same-DLL, same-
+// thread (the Present hook) hop within a single frame, not a cross-process
+// boundary — no locking needed, same reasoning as every other intra-DLL
+// "narrow accessor" in this file.
+// ---------------------------------------------------------------------------
+static bool  g_videoHeroVisible = false;
+static float g_videoHeroX = 0.f, g_videoHeroY = 0.f, g_videoHeroW = 0.f, g_videoHeroH = 0.f;
+void RmlOverlay_SetVideoHeroRect(bool visible, float x, float y, float w, float h) {
+    g_videoHeroVisible = visible;
+    g_videoHeroX = x; g_videoHeroY = y; g_videoHeroW = w; g_videoHeroH = h;
 }
 
 // Resolves a toast's icon "kind" (ToastEntry::icon, e.g. "tv", "scoreboard")
@@ -533,6 +560,110 @@ public:
         delete t;
     }
 
+    // ── Movies tab live video hero (see OverlayVideoShared's header comment
+    // in cgfs16_overlay.cpp) ─────────────────────────────────────────────
+    // RmlUi's own LoadTexture/GenerateTexture pair only ever produces a
+    // D3D11_USAGE_IMMUTABLE texture, created once per source and never
+    // updated in place — fine for a file path or a one-shot glyph atlas, but
+    // a decoded video frame arrives from Python ~15-30x/second, far too
+    // often to recreate a whole texture object for. EnsureVideoTexture
+    // creates a real D3D11_USAGE_DYNAMIC texture ONCE per (w,h) and wraps it
+    // in the SAME TextureData type LoadTexture/GenerateTexture already use,
+    // so the resulting handle can still be drawn through the existing,
+    // already-proven CompileGeometry/RenderGeometry/ReleaseGeometry path
+    // (see DrawVideoQuad) and freed through the existing ReleaseTexture
+    // above — only the texture's own creation and per-frame content update
+    // are genuinely new code here.
+    bool EnsureVideoTexture(int w, int h) {
+        if (!m_dev) return false;
+        if (m_videoTexData && m_videoW == w && m_videoH == h) return true;
+        ReleaseVideoTexture();
+        D3D11_TEXTURE2D_DESC td = {};
+        td.Width = (UINT)w;
+        td.Height = (UINT)h;
+        td.MipLevels = 1;
+        td.ArraySize = 1;
+        td.Format = DXGI_FORMAT_B8G8R8A8_UNORM;  // matches the BGRA bytes Python decodes via ff_opts out_fmt="bgra"
+        td.SampleDesc.Count = 1;
+        td.Usage = D3D11_USAGE_DYNAMIC;
+        td.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+        td.CPUAccessFlags = D3D11_CPU_ACCESS_WRITE;
+        auto *t = new TextureData();
+        HRESULT hrTex = m_dev->CreateTexture2D(&td, nullptr, &t->tex);
+        if (FAILED(hrTex)) {
+            Log("[MovieHero] EnsureVideoTexture: CreateTexture2D failed hr=0x%08X (%dx%d)", (unsigned)hrTex, w, h);
+            delete t;
+            return false;
+        }
+        HRESULT hrSrv = m_dev->CreateShaderResourceView(t->tex, nullptr, &t->srv);
+        if (FAILED(hrSrv)) {
+            Log("[MovieHero] EnsureVideoTexture: CreateShaderResourceView failed hr=0x%08X", (unsigned)hrSrv);
+            t->tex->Release();
+            delete t;
+            return false;
+        }
+        m_videoTexData = t;
+        m_videoW = w;
+        m_videoH = h;
+        Log("[MovieHero] EnsureVideoTexture: created %dx%d dynamic BGRA texture", w, h);
+        return true;
+    }
+
+    // `bgra` must be exactly m_videoW*m_videoH*4 bytes, tightly packed,
+    // top-down — the caller (RmlOverlay_RenderFrame) reads it straight out
+    // of OverlayVideoShared's fixed-size pixel buffer, which is already
+    // exactly that size.
+    void UpdateVideoTexture(const unsigned char *bgra) {
+        if (!m_ctx || !m_videoTexData || !m_videoTexData->tex || !bgra) return;
+        D3D11_MAPPED_SUBRESOURCE ms = {};
+        if (FAILED(m_ctx->Map(m_videoTexData->tex, 0, D3D11_MAP_WRITE_DISCARD, 0, &ms))) return;
+        const size_t srcPitch = (size_t)m_videoW * 4;
+        auto *dst = (unsigned char*)ms.pData;
+        if (ms.RowPitch == srcPitch) {
+            memcpy(dst, bgra, srcPitch * (size_t)m_videoH);
+        } else {
+            for (int y = 0; y < m_videoH; y++)
+                memcpy(dst + (size_t)y * ms.RowPitch, bgra + (size_t)y * srcPitch, srcPitch);
+        }
+        m_ctx->Unmap(m_videoTexData->tex, 0);
+    }
+
+    // x/y/w/h are absolute screen pixels (same space GetAbsoluteOffset()/
+    // RenderGeometry's ViewportSize already use) — RmlMenu_Sync computes a
+    // letterboxed-to-fit rect within #hero-img-wrap before calling
+    // RmlOverlay_SetVideoHeroRect, mirroring what #preview-img's own
+    // max-width/max-height:100% + centered flex layout does for the static
+    // image case.
+    void DrawVideoQuad(float x, float y, float w, float h) {
+        if (!m_ctx || !m_videoTexData) return;
+        Rml::Mesh mesh;
+        Rml::MeshUtilities::GenerateQuad(mesh, Rml::Vector2f(x, y), Rml::Vector2f(w, h),
+            Rml::ColourbPremultiplied(255, 255, 255, 255), Rml::Vector2f(0.f, 0.f), Rml::Vector2f(1.f, 1.f));
+        Rml::CompiledGeometryHandle geom = CompileGeometry(mesh.vertices, mesh.indices);
+        if (!geom) return;
+        // Reset any CSS `transform` AND scissor clip left over from the last
+        // element Context::Render() drew this frame — RenderGeometry() below
+        // applies whatever SetTransform()/EnableScissorRegion() last set
+        // (m_scissorEnabled picks m_rsScissorOn vs m_rsScissorOff), and this
+        // quad isn't part of the document tree so nothing else resets either
+        // one on its behalf. Without this, a clipped element (e.g. inside a
+        // rounded-corner container elsewhere in the panel) being the last
+        // thing rendered this frame could leave scissor on with a small rect
+        // that then clips the video quad too.
+        SetTransform(nullptr);
+        EnableScissorRegion(false);
+        EnableClipMask(false);  // defensive — see EndFrame()'s own comment on why this should already be false
+        RenderGeometry(geom, Rml::Vector2f(0.f, 0.f), reinterpret_cast<Rml::TextureHandle>(m_videoTexData));
+        ReleaseGeometry(geom);
+    }
+
+    void ReleaseVideoTexture() {
+        if (!m_videoTexData) return;
+        ReleaseTexture(reinterpret_cast<Rml::TextureHandle>(m_videoTexData));
+        m_videoTexData = nullptr;
+        m_videoW = m_videoH = 0;
+    }
+
     void EnableScissorRegion(bool enable) override { m_scissorEnabled = enable; }
 
     void SetScissorRegion(Rml::Rectanglei region) override {
@@ -974,6 +1105,10 @@ private:
     ID3D11DeviceContext *m_ctx = nullptr;
     float m_vpW = 0.f, m_vpH = 0.f;
     bool m_scissorEnabled = false;
+    // Movies tab live video hero — see EnsureVideoTexture/UpdateVideoTexture/
+    // DrawVideoQuad/ReleaseVideoTexture above.
+    TextureData *m_videoTexData = nullptr;
+    int m_videoW = 0, m_videoH = 0;
     // Current CSS `transform` matrix (RenderInterface::SetTransform), reset
     // to identity between elements that don't have one — RmlUi calls
     // SetTransform(nullptr) itself for that case (see ElementStyle.cpp),
@@ -1923,6 +2058,34 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
     ctx->RSSetScissorRects(1, &fullRect);
 
     g_context->Render();
+
+    // ── Movies tab live video hero (see OverlayVideoShared's header comment
+    // in cgfs16_overlay.cpp) — drawn AFTER Context::Render() so it always
+    // ends up on top of #hero-img-wrap's own translucent background, the
+    // same visual result the static WIC-loaded preview image already gets
+    // in every other tab (fully opaque within its own footprint; the
+    // translucent bg only shows through the letterboxed edges RmlMenu_Sync's
+    // rect math leaves around it). g_videoHeroVisible/X/Y/W/H were set a few
+    // lines up by RmlMenu_Sync, before Context::Update()/Render() ran.
+    {
+        static bool s_videoWasPlaying = false;
+        bool videoPlaying = RmlOverlay_VideoPlaying();
+        if (g_videoHeroVisible && videoPlaying && g_renderIf->EnsureVideoTexture(OVERLAY_VIDEO_W, OVERLAY_VIDEO_H)) {
+            static long s_lastVideoSeq = -1;
+            if (!s_videoWasPlaying) s_lastVideoSeq = -1;  // force an upload on the first frame of a fresh playback
+            long seq = RmlOverlay_VideoFrameSeq();
+            if (seq != s_lastVideoSeq) {
+                const unsigned char *px = RmlOverlay_VideoPixels();
+                if (px) g_renderIf->UpdateVideoTexture(px);
+                s_lastVideoSeq = seq;
+            }
+            g_renderIf->DrawVideoQuad(g_videoHeroX, g_videoHeroY, g_videoHeroW, g_videoHeroH);
+        } else if (!videoPlaying) {
+            g_renderIf->ReleaseVideoTexture();
+        }
+        s_videoWasPlaying = videoPlaying;
+    }
+
     g_renderIf->EndFrame();
 
     // ── Restore D3D11 state ──────────────────────────────────────────────

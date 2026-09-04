@@ -10,6 +10,7 @@ from PIL import Image, ImageTk
 
 from .file_tools import (
     discover_stadium_names,
+    resolve_asset_thumbnail_path,
     resolve_stadium_preview_path,
     stadium_country_code,
     stadium_country_counts,
@@ -251,20 +252,7 @@ class ScoreboardDialog(BaseDialog):
             self._update_preview_for("scoreboard", self._scoreboard_source / val)
 
     def _update_preview_for(self, key: str, folder: Path) -> None:
-        image_path = None
-        if folder.exists() and folder.is_dir():
-            thumbnail_dir = folder / "render" / "thumbnail"
-            if thumbnail_dir.exists():
-                for ext in (".png", ".jpg", ".jpeg"):
-                    candidate = thumbnail_dir / f"{key}{ext}"
-                    if candidate.exists():
-                        image_path = candidate
-                        break
-                if image_path is None:
-                    for candidate in sorted(thumbnail_dir.iterdir()):
-                        if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
-                            image_path = candidate
-                            break
+        image_path = resolve_asset_thumbnail_path(folder, key)
         self._update_preview_sb(key, image_path, f"No preview for {folder.name}")
 
     def _build_preview_sb(self, parent: tk.Misc, row: int, title: str, key: str, image_size: tuple[int, int] = (340, 180)) -> None:

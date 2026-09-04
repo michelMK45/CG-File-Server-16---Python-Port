@@ -62,6 +62,17 @@ bool RmlOverlay_MenuActivateDown();
 bool RmlOverlay_StadiumFilterHintVisible();
 bool RmlOverlay_StadiumFilterPanelOpen();
 bool RmlOverlay_MenuItemChecked(int index);
+// Movies tab live video preview — see OverlayVideoShared's header comment in
+// cgfs16_overlay.cpp. RmlOverlay_VideoPlaying() decides whether #hero-fade
+// should be hidden (see below); RmlOverlay_SetVideoHeroRect (defined in
+// cgfs16_rmlui.cpp, next to the code that actually draws the quad) is how
+// this file hands over WHERE to draw it, computed from #hero-img-wrap's own
+// RmlUi layout, which only this file has access to.
+bool RmlOverlay_VideoPlaying();
+void RmlOverlay_SetVideoHeroRect(bool visible, float x, float y, float w, float h);
+const wchar_t *RmlOverlay_VideoMuteIconPath();
+#define OVERLAY_VIDEO_W 560
+#define OVERLAY_VIDEO_H 315
 
 #define MAX_MENU_ITEMS    256
 #define MAX_DASH_ITEMS    10
@@ -88,6 +99,13 @@ bool RmlOverlay_MenuItemChecked(int index);
 // Tab index of the Stadiums tab (see menu.rml's #tab1) — the only tab whose
 // rows get a thumbnail image + taller row height (Phase 3 visual redesign).
 #define TAB_STADIUMS      1
+// Remaining tab indices, named where showSplit (below) needs to test them —
+// must stay in sync with app.py's _overlay_tab_names ordering:
+// ["scoreboards", "stadiums", "movies", "tvlogos", "kits"].
+#define TAB_SCOREBOARDS   0
+#define TAB_MOVIES        2
+#define TAB_TVLOGOS       3
+#define TAB_KITS          4
 
 // Zoom+fade in/out played each time the menu opens/closes (#panel only —
 // see the RmlMenu_Sync call site and ApplyPanelOpenAnim/ApplyPanelCloseAnim
@@ -198,9 +216,9 @@ static bool ApplyPanelCloseAnim(Rml::Element *el) {
 // truth for these tables today) gets deleted at cutover, at which point only
 // this copy remains.
 // ---------------------------------------------------------------------------
-enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_Y, GP_ICON_COUNT };
+enum GpIcon { GP_DPAD = 0, GP_RS, GP_LB, GP_RB, GP_A, GP_B, GP_X, GP_Y, GP_ICON_COUNT };
 static const wchar_t * const kGpIconFiles[GP_ICON_COUNT] = {
-    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png", L"y.png",
+    L"dpad.png", L"rs.png", L"lb.png", L"rb.png", L"a.png", L"b.png", L"x.png", L"y.png",
 };
 struct HintDef { int icons[2]; const wchar_t *description; };
 // Tab (LB+RB) and Select (A) live beside the tab strip / hero button / row
@@ -263,6 +281,15 @@ static Rml::Element *g_scrollThumb = nullptr;
 static Rml::Element *g_splitPreview = nullptr;
 static Rml::Element *g_previewImg = nullptr;
 static wchar_t        g_previewPathLoaded[MAX_IMG] = {};
+// Movies tab live video hero — g_heroImgWrap's own absolute layout rect is
+// where RmlMenu_Sync computes the letterboxed video quad position/size to
+// hand to RmlOverlay_SetVideoHeroRect (cgfs16_rmlui.cpp); g_heroFade (the
+// title-legibility gradient normally overlaid on a static preview image, see
+// menu.rml's #hero-fade) is hidden while a video is actively playing, since
+// the quad is drawn AFTER Context::Render() and would otherwise sit on top
+// of it with nothing left to fade.
+static Rml::Element *g_heroImgWrap = nullptr;
+static Rml::Element *g_heroFade = nullptr;
 // Hero panel enrichment (Phase 3): title mirrors the selected item's own row
 // text (no separate data source exists for a "tag"/description beyond the
 // item name — see the Phase 3 plan notes on this gap, deliberately not
@@ -274,6 +301,17 @@ static Rml::Element *g_heroBtn = nullptr;
 static Rml::Element *g_heroBtnIcon = nullptr;
 static wchar_t        g_heroBtnIconLoaded[MAX_IMG] = {};
 static std::wstring  g_heroTitleTextLoaded;
+// Movies tab mute toggle beside #hero-btn (see menu.rml's #hero-mute-btn) —
+// g_heroMuteIcon is the mute.png/unmute.png state icon (full path handed
+// over by Python, RmlOverlay_VideoMuteIconPath(), reload-on-change cached
+// the same way g_previewImg's imgPath is); g_heroMuteGpIcon is the small
+// gamepad-X hint badge beside it, shown only in gamepad mode (dir+filename
+// composed via SetIconSrcCached, same as g_heroBtnIcon's A/Enter swap).
+static Rml::Element *g_heroMuteBtn = nullptr;
+static Rml::Element *g_heroMuteIcon = nullptr;
+static wchar_t        g_heroMuteIconPathLoaded[MAX_IMG] = {};
+static Rml::Element *g_heroMuteGpIcon = nullptr;
+static wchar_t        g_heroMuteGpIconLoaded[MAX_IMG] = {};
 // .hero-highlight mirrors real mouse :hover while in gamepad mode (there's
 // no meaningful mouse position to actually hover it with a controller —
 // the real cursor is just wherever it was last left resting on screen), so
@@ -284,10 +322,10 @@ static std::wstring  g_heroTitleTextLoaded;
 // SetClass calls, same pattern as g_tabActiveCache/g_tabOnGliderCache.
 static bool g_heroHighlightCache = false;
 static bool g_heroPressedCache = false;
-// Floating "press A/Enter" icon for tabs with no hero button (Scoreboards/
-// Movies/TV Logos) — attached to whichever row is hovered (mouse) or,
-// failing that, the keyboard/gamepad-selected row. See its handling in
-// RmlMenu_Sync's row loop.
+// Floating "press A/Enter" icon for tabs with no hero button (Movies is the
+// only one left, see showSplit) — attached to whichever row is hovered
+// (mouse) or, failing that, the keyboard/gamepad-selected row. See its
+// handling in RmlMenu_Sync's row loop.
 static Rml::Element *g_rowActionHint = nullptr;
 static wchar_t        g_rowActionHintIconLoaded[MAX_IMG] = {};
 // L/R (gamepad) or Left/Right (keyboard) tab-switch hints, flanking the tab
@@ -598,9 +636,16 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     g_scrollThumb = g_menuDoc->GetElementById("scrollbar-thumb");
     g_splitPreview = g_menuDoc->GetElementById("split-preview");
     g_previewImg = g_menuDoc->GetElementById("preview-img");
+    g_heroImgWrap = g_menuDoc->GetElementById("hero-img-wrap");
+    g_heroFade = g_menuDoc->GetElementById("hero-fade");
     g_heroTitle = g_menuDoc->GetElementById("hero-title");
     g_heroBtn = g_menuDoc->GetElementById("hero-btn");
     if (g_heroBtn) g_heroBtnIcon = g_heroBtn->QuerySelector(".hero-btn-icon");
+    g_heroMuteBtn = g_menuDoc->GetElementById("hero-mute-btn");
+    if (g_heroMuteBtn) {
+        g_heroMuteIcon = g_heroMuteBtn->QuerySelector(".hero-mute-icon");
+        g_heroMuteGpIcon = g_heroMuteBtn->QuerySelector(".hero-mute-gp-icon");
+    }
     g_dashboard = g_menuDoc->GetElementById("dashboard");
     g_dashScore = g_menuDoc->GetElementById("dash-score");
     g_homeCrest = g_menuDoc->GetElementById("home-crest");
@@ -639,7 +684,8 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     bool ok = g_panel && g_panelAccent && g_brandTitle && g_resizeGrip && g_tabStrip && g_tabGlider && g_contentBg &&
               g_listArea && g_dashboard && g_dashScore && g_dashScoreText && g_dashTimeText &&
               g_scrollTrack && g_scrollThumb &&
-              g_splitPreview && g_previewImg && g_heroTitle && g_heroBtn && g_heroBtnIcon &&
+              g_splitPreview && g_previewImg && g_heroImgWrap && g_heroFade && g_heroTitle && g_heroBtn && g_heroBtnIcon &&
+              g_heroMuteBtn && g_heroMuteIcon && g_heroMuteGpIcon &&
               g_hintKeyRow && g_hintGpRow && g_hintCloseKey && g_hintCloseGp &&
               g_rowActionHint && g_tabHintL && g_tabHintR && g_loadingSpinner;
     if (!ok) {
@@ -672,6 +718,8 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     // Phase 3: hero panel's "Select" button — activates the already-selected
     // item on a single click (see EVK_HERO_ACTIVATE).
     g_heroBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+    // Movies tab mute toggle beside it (see EVK_MUTE_TOGGLE).
+    g_heroMuteBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
     // "Close" hint item — same close/back action as Esc/B, now also
     // clickable (see EVK_CLOSE_CLICK). Only one of the two rows is ever
     // visible at once (see the input_mode guard in ProcessEvent below), but
@@ -691,7 +739,7 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
 
 // menu_event_kind values — must match d3d_injector.py's get_menu_event() /
 // app_overlay.py's _handle_rmlui_menu_event() docstrings exactly.
-enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5, EVK_FILTER_TOGGLE = 6, EVK_FILTER_CLEAR = 7 };
+enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5, EVK_FILTER_TOGGLE = 6, EVK_FILTER_CLEAR = 7, EVK_MUTE_TOGGLE = 8 };
 
 // Converts a relative position along the scrollbar track [0, 1] into an
 // absolute scroll target, using the same maxScrollTotal = totalCount -
@@ -711,6 +759,10 @@ void MenuEventListener::ProcessEvent(Rml::Event &event) {
     if (event == Rml::EventId::Click) {
         if (cur == g_heroBtn) {
             RmlOverlay_PushMenuEvent(EVK_HERO_ACTIVATE, 0);
+            return;
+        }
+        if (cur == g_heroMuteBtn) {
+            RmlOverlay_PushMenuEvent(EVK_MUTE_TOGGLE, 0);
             return;
         }
         if (cur == g_filterBtn) {
@@ -885,7 +937,8 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     // is derived from. Squeezing the grid into ~60% of the panel's width
     // (the split-preview share) left far less room than a popover this size
     // reasonably wants — full width lets the grid actually use the space.
-    bool showSplit = (activeTab == 1 || activeTab == 4) && !filterPanelOpen;
+    bool showSplit = (activeTab == TAB_SCOREBOARDS || activeTab == TAB_STADIUMS || activeTab == TAB_MOVIES ||
+                       activeTab == TAB_TVLOGOS || activeTab == TAB_KITS) && !filterPanelOpen;
     // Computed once here (not down at the bottom hint bar anymore) since the
     // tab-strip hints, hero-btn icon, and row-action hint all need it too.
     bool gamepadMode = RmlOverlay_InputMode() != 0;
@@ -1296,10 +1349,11 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         }
     }
 
-    // ── Row action hint (A/Enter) — the split-preview tabs (Stadiums/Kits)
-    // get this inside their hero button instead (see showSplit below);
-    // every other tab attaches it to whichever row is hovered, falling back
-    // to the selected row when nothing is (see the tracking above the loop).
+    // ── Row action hint (A/Enter) — the split-preview tabs (Scoreboards/
+    // Stadiums/TV Logos/Kits) get this inside their hero button instead (see
+    // showSplit below); every other tab (just Movies) attaches it to
+    // whichever row is hovered, falling back to the selected row when
+    // nothing is (see the tracking above the loop).
     // Explicitly excluded from the Stadiums filter grid (filterPanelOpen):
     // this positioning is Y-only (targetLocalY, one row's vertical slot) and
     // anchors X to the fixed right edge of the list area — correct for a
@@ -1363,7 +1417,7 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         SetVisible(g_scrollThumb, false);
     }
 
-    // ── Split preview / hero panel (stadiums/kits tabs)
+    // ── Split preview / hero panel (scoreboards/stadiums/tvlogos/kits tabs)
     SetVisible(g_splitPreview, showSplit && !loading, "flex");
     if (showSplit) {
         SetRectPx(g_splitPreview, lPrevX, lPrevY, prevSideW, prevSideH);
@@ -1387,6 +1441,71 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         if (g_heroTitleTextLoaded != heroText) {
             g_heroTitleTextLoaded = heroText;
             if (g_heroTitle) g_heroTitle->SetInnerRML(WideToUtf8(heroText));
+        }
+        // Movies tab live video hero — see OverlayVideoShared's header
+        // comment in cgfs16_overlay.cpp for the whole pipeline. While
+        // Python is actively streaming frames (movie_preview_runtime.py
+        // leaves image_path empty for this case, so the block above already
+        // hides #preview-img for us), hide #hero-fade too — its title-
+        // legibility gradient would otherwise render UNDER the video quad
+        // (drawn after Context::Render(), see RmlOverlay_RenderFrame) with
+        // nothing left to fade — and hand the actual draw target rect over
+        // to cgfs16_rmlui.cpp, letterboxed to fit #hero-img-wrap the same
+        // way #preview-img's own max-width/max-height:100% + centered flex
+        // layout would for a static image.
+        bool movieHeroActive = (activeTab == TAB_MOVIES) && RmlOverlay_VideoPlaying();
+        if (g_heroFade) g_heroFade->SetProperty("display", movieHeroActive ? "none" : "block");
+        // Mute toggle — only meaningful (and only shown) while a video is
+        // genuinely playing; muting a placeholder icon makes no sense. Icon
+        // src is a full path Python already resolved to mute.png/unmute.png
+        // (RmlOverlay_VideoMuteIconPath — same "Python resolves, C++ just
+        // binds src" convention #preview-img's own imgPath block above
+        // uses), reload-on-change cached the same way.
+        SetVisible(g_heroMuteBtn, movieHeroActive, "flex");
+        if (movieHeroActive) {
+            const wchar_t *muteIconPath = RmlOverlay_VideoMuteIconPath();
+            if (wcscmp(muteIconPath, g_heroMuteIconPathLoaded) != 0) {
+                wcscpy_s(g_heroMuteIconPathLoaded, muteIconPath);
+                if (g_heroMuteIcon) {
+                    if (muteIconPath[0]) {
+                        g_heroMuteIcon->SetAttribute("src", WideToUtf8(muteIconPath));
+                        g_heroMuteIcon->SetProperty("display", "block");
+                    } else {
+                        g_heroMuteIcon->SetProperty("display", "none");
+                    }
+                }
+            }
+            // Gamepad-X hint badge beside it — hidden in keyboard/mouse mode
+            // (click is self-explanatory there), same role .hero-btn-icon
+            // plays for the Select button, just as a second icon instead of
+            // swapping the one icon in place (this button has no text label
+            // to sit next to).
+            if (g_heroMuteGpIcon) {
+                if (gamepadMode) {
+                    SetIconSrcCached(g_heroMuteGpIcon, g_heroMuteGpIconLoaded, MAX_IMG, gpDir, kGpIconFiles[GP_X]);
+                    g_heroMuteGpIcon->SetProperty("display", "block");
+                } else {
+                    g_heroMuteGpIcon->SetProperty("display", "none");
+                }
+            }
+        }
+        if (movieHeroActive && g_heroImgWrap) {
+            Rml::Vector2f wrapPos = g_heroImgWrap->GetAbsoluteOffset();
+            Rml::Vector2f wrapSize = g_heroImgWrap->GetBox().GetSize();
+            if (wrapSize.x > 0.f && wrapSize.y > 0.f) {
+                float wrapAspect = wrapSize.x / wrapSize.y;
+                const float videoAspect = (float)OVERLAY_VIDEO_W / (float)OVERLAY_VIDEO_H;
+                float qw, qh;
+                if (videoAspect > wrapAspect) { qw = wrapSize.x; qh = qw / videoAspect; }
+                else                          { qh = wrapSize.y; qw = qh * videoAspect; }
+                float qx = wrapPos.x + (wrapSize.x - qw) / 2.f;
+                float qy = wrapPos.y + (wrapSize.y - qh) / 2.f;
+                RmlOverlay_SetVideoHeroRect(true, qx, qy, qw, qh);
+            } else {
+                RmlOverlay_SetVideoHeroRect(false, 0.f, 0.f, 0.f, 0.f);
+            }
+        } else {
+            RmlOverlay_SetVideoHeroRect(false, 0.f, 0.f, 0.f, 0.f);
         }
         // Select (A/Enter) hint, inline next to the "Select" label — the row
         // action hint (above) is deliberately skipped for these tabs instead.

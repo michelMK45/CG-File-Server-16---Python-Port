@@ -470,13 +470,25 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* Wraps #hero-btn + #hero-mute-btn side by side — #hero-btn used to be the
+   direct flex-column child of #split-preview (stretched full-width by the
+   column's default align-items:stretch); now that a second, Movies-only
+   button sits beside it, this row takes that slot instead and #hero-btn
+   gets flex:1 1 auto (below) to keep filling the remaining width exactly
+   like before whenever #hero-mute-btn is hidden (every non-Movies tab). */
+#hero-actions-row {
+    display: flex;
+    flex-direction: row;
+    column-gap: 8px;
+    flex-shrink: 0;
+}
 #hero-btn {
     display: flex;
     flex-direction: row;
     align-items: center;
     justify-content: center;
     column-gap: 8px;
-    flex-shrink: 0;
+    flex: 1 1 auto;
     /* Sketch's --grad-green, exact stops. */
     decorator: horizontal-gradient(#11998E #38EF7D);
     border-radius: 6px;
@@ -517,9 +529,52 @@ body {
     text-transform: uppercase;
     color: #08150FFF;
 }
-/* Floating "press A/Enter" icon for tabs with no hero button (Scoreboards/
-   Movies/TV Logos) — RmlMenu_Sync positions it over whichever row is
-   hovered (mouse) or, failing that, the keyboard/gamepad-selected row. */
+/* Movies tab only (see cgfs16_rmlui_menu.cpp's movieHeroActive) — mutes/
+   unmutes the live video's audio, gamepad X per its own field comment in
+   RmlMenu_Sync. display:none by default (like #filter-btn below), shown via
+   SetVisible only while a video is actually playing — muting a placeholder
+   icon makes no sense. Deliberately icon-only (no text label, unlike
+   #hero-btn) to stay compact beside it. */
+#hero-mute-btn {
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    column-gap: 6px;
+    flex-shrink: 0;
+    background-color: #1B2333FF;
+    border: 1px #3A4A66FF;
+    border-radius: 6px;
+    padding: 10px 14px;
+    transition: transform 0.15s cubic-out, background-color 0.15s;
+}
+#hero-mute-btn:hover, #hero-mute-btn.hero-mute-highlight {
+    background-color: #26334AFF;
+    border: 1px #4FACFEFF;
+    transform: scale(1.03);
+}
+#hero-mute-btn:active, #hero-mute-btn.hero-mute-pressed {
+    transform: scale(0.92);
+}
+.hero-mute-icon {
+    display: block;
+    width: 24px;
+    height: 24px;
+}
+/* Small gamepad-X badge beside the mute/unmute state icon — hidden in
+   keyboard/mouse mode (click is self-explanatory there), shown in gamepad
+   mode as the "how to activate" hint, same role .hero-btn-icon plays
+   inline with the "Select" label. */
+.hero-mute-gp-icon {
+    display: none;
+    width: 20px;
+    height: 20px;
+}
+/* Floating "press A/Enter" icon for tabs with no hero button (Movies is the
+   only one left — Scoreboards/TV Logos got their own split-preview hero
+   panel alongside Stadiums/Kits, see cgfs16_rmlui_menu.cpp's showSplit) —
+   RmlMenu_Sync positions it over whichever row is hovered (mouse) or,
+   failing that, the keyboard/gamepad-selected row. */
 #row-action-hint {
     display: none;
     position: absolute;
@@ -906,7 +961,10 @@ body {
 <div id="split-preview">
 <div id="hero-img-wrap"><img id="preview-img"/><div id="hero-fade"></div></div>
 <div id="hero-title"></div>
+<div id="hero-actions-row">
 <div id="hero-btn"><img class="hero-btn-icon"/><div class="hero-btn-label">Select</div></div>
+<div id="hero-mute-btn"><img class="hero-mute-icon"/><img class="hero-mute-gp-icon"/></div>
+</div>
 </div>
 <div id="dashboard">
 <div id="dash-text-col">

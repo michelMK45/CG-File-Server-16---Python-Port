@@ -22,6 +22,7 @@ from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .kit_mixer import KitMixRuntime
 from .memory_access import Memory
+from .movie_preview_runtime import MoviePreviewRuntime
 from .localization import LocalizationManager
 from .offsets import Offsets
 from .settings_editor import SettingsAreaEditor
@@ -385,6 +386,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.stadium_runtime = StadiumRuntime(self)
         self.chants_runtime = ChantsRuntime(self)
         self.entrance_runtime = TeamEntranceRuntime(self)
+        self.movie_preview_runtime = MoviePreviewRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
         self.kit_mixer = KitMixRuntime(self)
@@ -736,6 +738,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             pass
         try:
             restore_stadium_names(self)
+        except Exception:
+            pass
+        try:
+            self.movie_preview_runtime.stop()
         except Exception:
             pass
         try:

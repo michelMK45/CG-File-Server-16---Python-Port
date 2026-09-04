@@ -240,6 +240,48 @@ static HANDLE        g_hMap  = NULL;
 static OverlayShared *g_data = NULL;
 
 // ---------------------------------------------------------------------------
+// Movies-tab live video preview — a SECOND, separate named mapping from
+// OverlayShared above (MUST match _OverlayVideoShared in d3d_injector.py).
+// One decoded frame (~690KB of raw BGRA) is far too large/frequent a payload
+// to fold into OverlayShared's small string/scalar fields — this buffer is
+// only ever touched by movie_preview_runtime.py (writer) and
+// cgfs16_rmlui.cpp's EnsureVideoTexture/UpdateVideoTexture (reader, drawn as
+// a manually-updated D3D11 texture — RmlUi's own LoadTexture/GenerateTexture
+// only ever produce a texture ONCE per source, unsuitable for a frame that
+// changes ~15-30x/second; see cgfs16_rmlui.cpp's header comment on
+// EnsureVideoTexture for the full reasoning).
+// ---------------------------------------------------------------------------
+#define VIDEO_SHMEM_NAME  L"Local\\CGFS16_OverlayVideo_v1"
+#define OVERLAY_VIDEO_W   560
+#define OVERLAY_VIDEO_H   315
+
+struct OverlayVideoShared {
+    volatile LONG frame_seq;  // 0 = no frame written yet; bumped by Python on every write_video_frame() call
+    volatile LONG playing;    // 1 while Python's decode loop is actively feeding the currently-selected movie
+    // Absolute path to the bundled mute.png/unmute.png icon matching the
+    // current mute state — resolved by Python (rmlui_icon_path()), same
+    // "Python resolves the full path, C++ just binds it to an <img> src"
+    // convention image_path/home_crest_path/away_crest_path already use
+    // (OverlayShared, above). Empty = hide #hero-mute-btn's icon.
+    wchar_t mute_icon_path[MAX_IMG];
+    unsigned char pixels[OVERLAY_VIDEO_W * OVERLAY_VIDEO_H * 4];  // BGRA, tightly packed, top-down
+};
+
+static HANDLE             g_hVideoMap  = NULL;
+static OverlayVideoShared *g_videoData = NULL;
+
+bool RmlOverlay_VideoPlaying() {
+    return g_videoData && InterlockedCompareExchange(&g_videoData->playing, 0, 0) != 0;
+}
+const wchar_t *RmlOverlay_VideoMuteIconPath() { return g_videoData ? g_videoData->mute_icon_path : L""; }
+long RmlOverlay_VideoFrameSeq() {
+    return g_videoData ? InterlockedCompareExchange(&g_videoData->frame_seq, 0, 0) : 0;
+}
+const unsigned char *RmlOverlay_VideoPixels() {
+    return g_videoData ? g_videoData->pixels : nullptr;
+}
+
+// ---------------------------------------------------------------------------
 // Narrow accessors into OverlayShared for cgfs16_rmlui.cpp (the toast +
 // stadium-loading-panel RmlUi renderer, Phase 1 of the migration) — kept as
 // plain scalar/pointer getters rather than sharing OverlayShared's full type
@@ -913,6 +955,21 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
         Log("[DllMain] shmem hMap=%p data=%p visible=%d (struct=%zu bytes)",
             g_hMap,g_data,g_data?(int)g_data->visible:-1, sizeof(OverlayShared));
 
+        g_hVideoMap=CreateFileMappingW(INVALID_HANDLE_VALUE,nullptr,
+            PAGE_READWRITE,0,sizeof(OverlayVideoShared),VIDEO_SHMEM_NAME);
+        DWORD videoShmemErr=GetLastError();
+        if (g_hVideoMap) {
+            g_videoData=reinterpret_cast<OverlayVideoShared*>(
+                MapViewOfFile(g_hVideoMap,FILE_MAP_ALL_ACCESS,0,0,sizeof(OverlayVideoShared)));
+            if (!g_videoData)
+                Log("[DllMain] Video MapViewOfFile failed err=%lu (shmem size mismatch? expected %zu bytes)",
+                    GetLastError(), sizeof(OverlayVideoShared));
+        } else {
+            Log("[DllMain] Video CreateFileMappingW failed err=%lu", videoShmemErr);
+        }
+        Log("[DllMain] video shmem hMap=%p data=%p (struct=%zu bytes)",
+            g_hVideoMap, g_videoData, sizeof(OverlayVideoShared));
+
         HANDLE ht=CreateThread(nullptr,0,HookThread,nullptr,0,nullptr);
         if (ht) CloseHandle(ht);
 
@@ -925,6 +982,7 @@ BOOL WINAPI DllMain(HINSTANCE hInst, DWORD reason, LPVOID reserved) {
         // Null g_data first so any concurrent HookedPresent/HookedXInput call
         // becomes a safe no-op.
         g_data = nullptr;
+        g_videoData = nullptr;
     }
     return TRUE;
 }

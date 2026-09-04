@@ -46,6 +46,7 @@ class SettingsStore:
         "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "OVERLAY_PERFORMANCE_MODE": False,
+        "MOVIE_PREVIEW_MUTED": False,
         "LANGUAGE": "en",
         "UI_ZOOM": UI_ZOOM_DEFAULT,
         "CUSTOM_KIT_NUMBERS": False,
@@ -152,6 +153,15 @@ class SettingsStore:
     @overlay_performance_mode.setter
     def overlay_performance_mode(self, value: bool) -> None:
         self.data["OVERLAY_PERFORMANCE_MODE"] = bool(value)
+        self.save()
+
+    @property
+    def movie_preview_muted(self) -> bool:
+        return bool(self.data.get("MOVIE_PREVIEW_MUTED", False))
+
+    @movie_preview_muted.setter
+    def movie_preview_muted(self, value: bool) -> None:
+        self.data["MOVIE_PREVIEW_MUTED"] = bool(value)
         self.save()
 
     @property

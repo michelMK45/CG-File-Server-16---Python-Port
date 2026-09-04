@@ -199,6 +199,33 @@ class _OverlayShared(ctypes.Structure):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Movies-tab live video preview — a SECOND, separate named mapping from
+# OverlayShared above (MUST match OverlayVideoShared in cgfs16_overlay.cpp).
+# One decoded frame (~690KB of raw BGRA) is far too large/frequent a payload
+# to fold into OverlayShared's small string/scalar fields, so it gets its own
+# dedicated mapping — only movie_preview_runtime.py ever touches this one.
+# ─────────────────────────────────────────────────────────────────────────────
+_VIDEO_SHMEM_NAME = "Local\\CGFS16_OverlayVideo_v1"
+_VIDEO_W = 560   # must match OVERLAY_VIDEO_W in cgfs16_overlay.cpp/cgfs16_rmlui_menu.cpp
+_VIDEO_H = 315   # must match OVERLAY_VIDEO_H in cgfs16_overlay.cpp/cgfs16_rmlui_menu.cpp
+_VIDEO_FRAME_BYTES = _VIDEO_W * _VIDEO_H * 4  # BGRA, tightly packed, top-down
+
+
+class _OverlayVideoShared(ctypes.Structure):
+    _fields_ = [
+        ("frame_seq", ctypes.c_long),  # 0 = no frame yet; bumped on every write_video_frame() call
+        ("playing",   ctypes.c_long),  # 1 while a decode loop is actively feeding a movie
+        # Absolute path to the bundled mute.png/unmute.png icon matching the
+        # runtime's current mute state (see MoviePreviewRuntime.is_muted) —
+        # resolved by Python (rmlui_icon_path()), same "Python resolves the
+        # full path, C++ just binds it to an <img> src" convention image_path/
+        # home_crest_path/away_crest_path already use. Empty = hide the icon.
+        ("mute_icon_path", ctypes.c_wchar * _MAX_IMG),
+        ("pixels",    ctypes.c_ubyte * _VIDEO_FRAME_BYTES),
+    ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Win32 constants & kernel32 setup
 # ─────────────────────────────────────────────────────────────────────────────
 _PROCESS_CREATE_THREAD    = 0x0002
@@ -283,8 +310,12 @@ class D3DOverlayInjector:
         self._injected_pid = 0
         self._lock         = threading.Lock()
         self._ready        = False
+        self._hmap_video: int = 0
+        self._shared_video_ptr = 0
+        self._shared_video: _OverlayVideoShared | None = None
 
         self._open_shared_memory()
+        self._open_video_shared_memory()
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -422,6 +453,36 @@ class D3DOverlayInjector:
         if not self._ready or self._shared is None:
             return
         self._shared.image_path = (path or "")[:_MAX_IMG - 1]
+
+    def write_video_frame(self, bgra: bytes) -> None:
+        """Streams one decoded Movies-tab preview frame (see
+        movie_preview_runtime.py) into the video shared-memory buffer for
+        the D3D overlay to draw as a live D3D11 texture. `bgra` must be
+        exactly _VIDEO_W*_VIDEO_H*4 bytes (BGRA, tightly packed, top-down);
+        a mismatched length is silently ignored rather than raising, matching
+        this module's existing tolerance for preview-path problems never
+        interrupting the app."""
+        if self._shared_video is None or len(bgra) != _VIDEO_FRAME_BYTES:
+            return
+        ctypes.memmove(self._shared_video.pixels, bgra, _VIDEO_FRAME_BYTES)
+        self._shared_video.frame_seq = (self._shared_video.frame_seq + 1) & 0x7FFFFFFF
+
+    def set_video_playing(self, playing: bool) -> None:
+        """Tells the DLL whether to draw the video quad at all — see
+        RmlOverlay_VideoPlaying() in cgfs16_overlay.cpp. False also hides
+        whatever frame is currently in the buffer (the overlay falls back to
+        the static movie.png placeholder instead)."""
+        if self._shared_video is None:
+            return
+        self._shared_video.playing = 1 if playing else 0
+
+    def set_video_mute_icon(self, path: str) -> None:
+        """Absolute path to the mute.png/unmute.png icon matching the current
+        mute state — see the #hero-mute-btn handling in
+        cgfs16_rmlui_menu.cpp. Empty string hides the button entirely."""
+        if self._shared_video is None:
+            return
+        self._shared_video.mute_icon_path = (path or "")[:_MAX_IMG - 1]
 
     def show_toast(self, title: str, body: str = "", style: int = 0, icon: str = "") -> int:
         """Occupy the first free slot. Returns slot index (0-3) or -1 if all full.
@@ -638,7 +699,7 @@ class D3DOverlayInjector:
         """Return (seq, kind, index) from the DLL's "last event wins"
         click/scroll signal — see MenuEventListener in cgfs16_rmlui_menu.cpp.
         kind: 0=none, 1=tab_click, 2=item_click, 3=scroll_to, 4=hero_activate,
-        5=close_click, 6=filter_toggle, 7=filter_clear. Callers should compare seq against their own
+        5=close_click, 6=filter_toggle, 7=filter_clear, 8=mute_toggle. Callers should compare seq against their own
         last-seen value and only act when it changed (a single slot, not a
         queue)."""
         if not self._ready or self._shared is None:
@@ -666,9 +727,46 @@ class D3DOverlayInjector:
             except Exception:
                 pass
             self._hmap = 0
+        if self._shared_video_ptr:
+            try:
+                _k32.UnmapViewOfFile(self._shared_video_ptr)
+            except Exception:
+                pass
+            self._shared_video_ptr = 0
+            self._shared_video     = None
+        if self._hmap_video:
+            try:
+                _k32.CloseHandle(self._hmap_video)
+            except Exception:
+                pass
+            self._hmap_video = 0
         self._ready = False
 
     # ── Private ───────────────────────────────────────────────────────────────
+
+    def _open_video_shared_memory(self) -> None:
+        hmap = _k32.CreateFileMappingW(
+            _INVALID_HANDLE_VALUE, None, _PAGE_READWRITE,
+            0, ctypes.sizeof(_OverlayVideoShared),
+            _VIDEO_SHMEM_NAME)
+        if not hmap:
+            log.error("D3DOverlay: video CreateFileMappingW failed (err=%d)",
+                      ctypes.get_last_error())
+            return
+        ptr = _k32.MapViewOfFile(
+            hmap, _FILE_MAP_ALL_ACCESS, 0, 0,
+            ctypes.sizeof(_OverlayVideoShared))
+        if not ptr:
+            log.error("D3DOverlay: video MapViewOfFile failed (err=%d)",
+                      ctypes.get_last_error())
+            _k32.CloseHandle(hmap)
+            return
+        self._hmap_video       = hmap
+        self._shared_video_ptr = ptr
+        self._shared_video     = _OverlayVideoShared.from_address(ptr)
+        self._shared_video.frame_seq = 0
+        self._shared_video.playing   = 0
+        self._shared_video.mute_icon_path = ""
 
     def _open_shared_memory(self) -> None:
         hmap = _k32.CreateFileMappingW(

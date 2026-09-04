@@ -24,16 +24,20 @@ from .win32_types import (
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_QUIT,
     XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_BACK,
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
-    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_Y, XINPUT_SUCCESS,
+    XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y, XINPUT_SUCCESS,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
 )
 from .file_tools import (
     discover_stadium_names,
     kit_ui_placeholder_path,
+    resolve_asset_thumbnail_path,
+    resolve_movie_preview_path,
+    rmlui_icon_path,
     stadium_country_code,
     stadium_country_counts,
 )
+from .movie_preview_runtime import player_available as movie_player_available
 from .kit_mixer import KIT_TYPES
 
 # Stadiums country filter bubble grid — fallback column count only, used
@@ -180,6 +184,7 @@ class OverlayMixin:
         right_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
         a_down = bool(gamepad_buttons & XINPUT_GAMEPAD_A)
         b_down = bool(gamepad_buttons & XINPUT_GAMEPAD_B)
+        x_down = bool(gamepad_buttons & XINPUT_GAMEPAD_X)
         y_down = bool(gamepad_buttons & XINPUT_GAMEPAD_Y)
 
         # Which hint bar to show (see set_input_mode()): whichever device
@@ -241,6 +246,7 @@ class OverlayMixin:
         key_enter_edge = key_enter_down and not getattr(self, "_overlay_enter_down", False)
         a_edge = a_down and not bool(prev_buttons & XINPUT_GAMEPAD_A)
         b_edge = b_down and not bool(prev_buttons & XINPUT_GAMEPAD_B)
+        x_edge = x_down and not bool(prev_buttons & XINPUT_GAMEPAD_X)
         y_edge = y_down and not bool(prev_buttons & XINPUT_GAMEPAD_Y)
         y_up_edge = (not y_down) and bool(prev_buttons & XINPUT_GAMEPAD_Y)
         start_hold_toggle = False
@@ -370,6 +376,16 @@ class OverlayMixin:
         if not y_down:
             self._overlay_gp_y_pressed_at = 0.0
             self._overlay_gp_y_hold_latched = False
+
+        # X: Movies-tab mute toggle (#hero-mute-btn's gamepad hint, see
+        # menu.rml's .hero-mute-gp-icon) — a single tap, no hold gesture
+        # needed unlike Y above, so a plain edge-on-press check is enough.
+        # Gated to the Movies tab so a stray X press elsewhere doesn't
+        # silently flip a mute state nothing on screen reflects.
+        if (self._d3d_menu_visible and x_edge and now >= self._overlay_toggle_ready_at
+                and self._overlay_tab_names[self._overlay_tab_index] == "movies"):
+            self._toggle_movie_mute()
+            self._overlay_toggle_ready_at = now + 0.22
 
         # Tab switch: same initial-delay-then-repeat feel as list navigation
         # below (hold L/R or Left/Right to keep cycling tabs, not just one
@@ -615,6 +631,15 @@ class OverlayMixin:
                 self._update_menu_content()
 
     def _publish_overlay_menu_state(self) -> None:
+        if not self._d3d_menu_visible:
+            # The menu can close from several different code paths (F12,
+            # Escape, gamepad Back-hold, timeout...) — all of them funnel
+            # through here, so this is the one place that reliably catches
+            # every one of them for stopping a live Movies-tab preview too.
+            try:
+                self.movie_preview_runtime.stop()
+            except Exception:
+                pass
         if self._d3d_injector is None:
             return
         try:
@@ -1298,6 +1323,12 @@ class OverlayMixin:
         preview_path = ""
         phase = self._overlay_wizard_phase
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
+        if tab_name != "movies" or not selected_item:
+            # Any selection/tab change away from Movies (or an empty
+            # Movies list) must stop the live video decode loop (see
+            # movie_preview_runtime.py) — cheap/no-op if nothing is
+            # currently playing.
+            self.movie_preview_runtime.stop()
         if phase == "kittype" and selected_item:
             # Reuses the already-converted crest PNGs app_ui.py maintains for
             # the dashboard panel (self._home_crest_png/_away_crest_png,
@@ -1335,10 +1366,85 @@ class OverlayMixin:
                 pass
         elif tab_name == "kits" and selected_item:
             preview_path = self._resolve_kits_menu_preview()
+        elif tab_name == "scoreboards" and selected_item and not self.overlay_performance_mode_var.get():
+            preview_path = self._resolve_scoreboard_or_tvlogo_preview("scoreboard", "scoreboard", getattr(self, "ScoreBoard", None), selected_item)
+        elif tab_name == "tvlogos" and selected_item and not self.overlay_performance_mode_var.get():
+            preview_path = self._resolve_scoreboard_or_tvlogo_preview("tvlogo", "tv", getattr(self, "TVLogo", None), selected_item)
+        elif tab_name == "movies" and selected_item:
+            preview_path = self._resolve_movies_menu_preview(selected_item)
         try:
             inj.set_preview_image(preview_path)
         except Exception:
             pass
+
+    def _resolve_movies_menu_preview(self, selected_item: str) -> str:
+        """Starts/keeps the highlighted Movies-tab item's real video playing
+        via movie_preview_runtime (see its module docstring for the full
+        pipeline) and returns "" so #preview-img stays hidden while it plays
+        — cgfs16_rmlui_menu.cpp draws the actual frame as a manual D3D11
+        quad instead, see TAB_MOVIES/RmlOverlay_SetVideoHeroRect. Stops
+        playback and returns the bundled movie.png placeholder path when
+        there's nothing playable: no ffpyplayer install, performance mode
+        (video decode is far heavier than a static thumbnail — unlike the
+        Stadiums/ScoreBoard/TVLogo branches above, this still shows a
+        placeholder rather than going blank, since a static bundled icon
+        costs nothing extra to show), or no bootflowoutro.vp8 in the pack."""
+        root = getattr(self, "Movies", None)
+        movie_path = None
+        if root and not self.overlay_performance_mode_var.get() and movie_player_available():
+            try:
+                movie_path = resolve_movie_preview_path(Path(root) / selected_item)
+            except Exception as exc:
+                self.log(f"Movie preview resolve failed for {selected_item!r}", exc, exc_info=sys.exc_info())
+                movie_path = None
+        if movie_path is not None:
+            self.movie_preview_runtime.start_for_item(movie_path)
+            self._push_movie_mute_icon()
+            return ""
+        self.movie_preview_runtime.stop()
+        self._push_movie_mute_icon()
+        fallback = rmlui_icon_path("movie")
+        return str(fallback) if fallback else ""
+
+    def _push_movie_mute_icon(self) -> None:
+        """Writes the mute.png/unmute.png path matching the runtime's current
+        mute state into shared memory — cgfs16_rmlui_menu.cpp only actually
+        shows #hero-mute-btn while a video is playing (movieHeroActive), so
+        it's harmless to push this unconditionally even when nothing is
+        currently playing."""
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        icon = rmlui_icon_path("mute" if self.movie_preview_runtime.is_muted else "unmute")
+        try:
+            inj.set_video_mute_icon(str(icon) if icon else "")
+        except Exception:
+            pass
+
+    def _toggle_movie_mute(self) -> None:
+        """Mouse click on #hero-mute-btn (EVK_MUTE_TOGGLE) or gamepad X while
+        on the Movies tab — see _sync_d3d_menu_input's x_edge handling."""
+        self.movie_preview_runtime.toggle_mute()
+        self._push_movie_mute_icon()
+
+    def _resolve_scoreboard_or_tvlogo_preview(self, thumb_key: str, icon_name: str, root, selected_item: str) -> str:
+        """Preview path for the currently-highlighted ScoreBoard/TVLogo menu
+        entry: the pack's own `render/thumbnail/<thumb_key>.*` image (same
+        convention/helper the Setup tab's assignment dialog already uses,
+        see dialogs.py's _update_preview_for), or the bundled generic
+        rmlui/icons/<icon_name>.png icon when the pack has none of its own —
+        never blank, unlike the stadiums/kits branches above which can leave
+        preview_path empty for a genuinely unassigned/disabled slot."""
+        if not root or not selected_item:
+            return ""
+        try:
+            path = resolve_asset_thumbnail_path(Path(root) / selected_item, thumb_key)
+        except Exception:
+            path = None
+        if path is not None:
+            return str(path)
+        fallback = rmlui_icon_path(icon_name)
+        return str(fallback) if fallback else ""
 
     def _kits_menu_preview_source(self, sel_index: int | None = None) -> tuple[Path | None, str | None]:
         """Resolves (kitui_source_path, cache_key) for a kits-menu list entry
@@ -1616,6 +1722,9 @@ class OverlayMixin:
         elif kind == 7:  # filter_clear — a mouse click on the Stadiums
             # "Clear" button; same action as holding gamepad Y for 0.6s.
             self._clear_stadium_filter()
+        elif kind == 8:  # mute_toggle — a mouse click on the Movies tab's
+            # #hero-mute-btn; same toggle the gamepad X button fires.
+            self._toggle_movie_mute()
 
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)

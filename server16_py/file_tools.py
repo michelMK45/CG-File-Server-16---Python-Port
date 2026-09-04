@@ -128,6 +128,49 @@ def kit_ui_placeholder_path() -> Path | None:
     return _bundled_resource_path("kit-ui-placeholder.png")
 
 
+def rmlui_icon_path(name: str) -> Path | None:
+    """Bundled resources/rmlui/icons/<name>.png — the same small icon set
+    already used for toast notifications (see D3DOverlayInjector.show_toast's
+    `icon` param). Also doubles as the generic placeholder for tabs (e.g.
+    ScoreBoard/TVLogo) whose assets have no dedicated preview thumbnail of
+    their own, the same fallback role stadium_preview_fallback_path()/
+    kit_ui_placeholder_path() play for stadiums/kits."""
+    return _bundled_resource_path(f"rmlui/icons/{name}.png")
+
+
+def resolve_asset_thumbnail_path(folder: str | Path, key: str) -> Path | None:
+    """Looks for a `<folder>/render/thumbnail/<key>.{png,jpg,jpeg}` preview
+    image, falling back to the first image file in that thumbnail dir — the
+    convention ScoreBoard/TVLogo asset packs use for their own thumbnails
+    (originally implemented in dialogs.py's AssignmentDialog for the Setup
+    preview panel; extracted here so the D3D overlay's menu preview can reuse
+    the exact same lookup)."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return None
+    thumbnail_dir = folder / "render" / "thumbnail"
+    if not thumbnail_dir.is_dir():
+        return None
+    for ext in (".png", ".jpg", ".jpeg"):
+        candidate = thumbnail_dir / f"{key}{ext}"
+        if candidate.is_file():
+            return candidate
+    for candidate in sorted(thumbnail_dir.iterdir()):
+        if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+            return candidate
+    return None
+
+
+def resolve_movie_preview_path(folder: str | Path) -> Path | None:
+    """The .vp8 file a Movies-tab asset folder carries, at the fixed
+    filename this codebase has always used for it (asset_runtime.py's
+    copy_if_exists() calls, dialogs.py's MovieDialog, settings_editor.py's
+    Movies/TeamMovies/DerbyMatch tabs) — None if the folder or the file
+    inside it doesn't exist."""
+    candidate = Path(folder) / "bootflowoutro.vp8"
+    return candidate if candidate.is_file() else None
+
+
 def resolve_stadium_preview_path(stadium_gbd: str | Path, stadium_name: str) -> Path | None:
     stadium_name = (stadium_name or "").strip()
     if not stadium_name or stadium_name in {"-", "None", "Stadium Module Disable"}:
