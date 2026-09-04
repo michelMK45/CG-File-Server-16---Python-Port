@@ -6,20 +6,20 @@ from .localization import LANGUAGE_LABELS, SUPPORTED_LANGUAGES
 class LocalizationMixin:
     """Language switching and text translation — part of Server16App via multiple inheritance."""
 
-    def tr(self, key: str, **kwargs) -> str:
-        return self.localization.translate(key, **kwargs)
+    def tr(self, translation_key: str, **kwargs) -> str:
+        return self.localization.translate(translation_key, **kwargs)
 
-    def display_value(self, key: str, fallback: str | None = None, **kwargs) -> str:
-        text = self.tr(f"display.{key}", **kwargs)
-        if text == f"display.{key}" and fallback is not None:
+    def display_value(self, value_key: str, fallback: str | None = None, **kwargs) -> str:
+        text = self.tr(f"display.{value_key}", **kwargs)
+        if text == f"display.{value_key}" and fallback is not None:
             return fallback.format(**kwargs) if kwargs else fallback
         return text
 
-    def progress_text(self, key: str, **kwargs) -> str:
-        return self.tr(f"progress.{key}", **kwargs)
+    def progress_text(self, progress_key: str, **kwargs) -> str:
+        return self.tr(f"progress.{progress_key}", **kwargs)
 
-    def status_text(self, key: str, **kwargs) -> str:
-        return self.tr(f"status.{key}", **kwargs)
+    def status_text(self, status_key: str, **kwargs) -> str:
+        return self.tr(f"status.{status_key}", **kwargs)
 
     def _language_combo_values(self) -> list[str]:
         return [f"{code.upper()} - {LANGUAGE_LABELS[code]}" for code in SUPPORTED_LANGUAGES]

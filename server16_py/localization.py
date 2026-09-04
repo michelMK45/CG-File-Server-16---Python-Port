@@ -30,10 +30,10 @@ class LocalizationManager:
         self._load_catalog(normalized)
         return normalized
 
-    def translate(self, key: str, **kwargs) -> str:
-        text = self._catalogs.get(self.language, {}).get(key)
+    def translate(self, translation_key: str, **kwargs) -> str:
+        text = self._catalogs.get(self.language, {}).get(translation_key)
         if text is None:
-            text = self._catalogs.get("en", {}).get(key, key)
+            text = self._catalogs.get("en", {}).get(translation_key, translation_key)
         if kwargs:
             try:
                 return text.format(**kwargs)

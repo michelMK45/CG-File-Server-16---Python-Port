@@ -15,6 +15,7 @@ from .file_tools import (
     stadium_country_counts,
     stadium_preview_fallback_path,
 )
+from .video_preview import MoviePreviewPanel
 
 
 SCOREBOARD_SCOPE_OPTIONS = (
@@ -37,18 +38,6 @@ STADIUM_SCOPE_OPTIONS = (
     ("2", "dialog.scope.multiple_home_team"),
     ("3", "dialog.scope.multiple_specific_round"),
     ("4", "dialog.scope.multiple_full_tournament"),
-)
-
-POLICE_PATTERN_OPTIONS = (
-    ("1", "dialog.police.english"),
-    ("2", "dialog.police.french"),
-    ("3", "dialog.police.italian"),
-    ("4", "dialog.police.german"),
-    ("6", "dialog.police.mexican"),
-    ("7", "dialog.police.asiatic"),
-    ("8", "dialog.police.african_traits"),
-    ("9", "dialog.police.caucasic_traits"),
-    ("10", "dialog.police.arabic_traits"),
 )
 
 
@@ -279,13 +268,23 @@ class ScoreboardDialog(BaseDialog):
         self._update_preview_sb(key, image_path, f"No preview for {folder.name}")
 
     def _build_preview_sb(self, parent: tk.Misc, row: int, title: str, key: str, image_size: tuple[int, int] = (340, 180)) -> None:
-        frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        # tk.Label's -width/-height are character/line counts while showing
+        # text (the "No preview" placeholder) but stop reserving enough room
+        # once an image is configured on the same label, clipping it -- same
+        # bug already fixed for the stadium preview in settings_editor.py's
+        # _build_stadium_preview_box. Fix: give the wrapping frame a fixed
+        # pixel height and grid_propagate(False) it, then let the preview
+        # label fill that cell via sticky="nsew" instead of its own width/height.
+        box_height = image_size[1] + 46
+        frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654", height=box_height)
         frame.grid(row=row, column=0, sticky="ew", pady=(0, 10))
+        frame.grid_propagate(False)
         frame.grid_columnconfigure(0, weight=1)
-        self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).pack(anchor="w", padx=10, pady=(8, 4))
+        frame.grid_rowconfigure(1, weight=1)
+        self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", padx=10, pady=(8, 4))
         preview = tk.Label(frame, text="No preview", bg=self.panel, fg=self.muted,
-            anchor="center", justify="center", relief="flat", width=38, height=10)
-        preview.pack(fill="x", padx=10, pady=(0, 10), ipadx=8, ipady=12)
+            anchor="center", justify="center", relief="flat")
+        preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         preview.image_size = image_size
         self._preview_labels[key] = preview
 
@@ -311,34 +310,67 @@ class ScoreboardDialog(BaseDialog):
 class MovieDialog(BaseDialog):
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
         super().__init__(master, "dialog.assignment.title.movie")
+        self._set_geometry(640, 620, 560, 520)
         self.scope_labels = {key: self.tr(label_key) for key, label_key in MOVIE_SCOPE_OPTIONS}
         self.scope_ids = {self.tr(label_key): key for key, label_key in MOVIE_SCOPE_OPTIONS}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.scope_labels["0"]))
         self.movie = tk.StringVar()
+        self.movie_dir = exedir / "MoviesGBD"
+
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+        self.grid_rowconfigure(1, weight=1)
+
         ttk.Combobox(
             self,
             state="readonly",
             textvariable=self.scope,
             values=tuple(self.tr(label_key) for _, label_key in MOVIE_SCOPE_OPTIONS),
             style="Server16.TCombobox",
-        ).pack(fill="x", padx=12, pady=12)
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=12, pady=12)
+
         listbox = self._dark_listbox(self, exportselection=False, width=36, height=16, font=("Consolas", 10))
-        listbox.pack(padx=12, pady=8)
+        listbox.grid(row=1, column=0, sticky="nsew", padx=(12, 6), pady=(0, 8))
         listbox.insert("end", "None")
-        movie_dir = exedir / "MoviesGBD"
-        if movie_dir.exists():
-            for directory in sorted(p for p in movie_dir.iterdir() if p.is_dir()):
+        if self.movie_dir.exists():
+            for directory in sorted(p for p in self.movie_dir.iterdir() if p.is_dir()):
                 listbox.insert("end", directory.name)
         listbox.selection_set(0)
         self.movie.set("None")
-        listbox.bind("<<ListboxSelect>>", lambda _event: self.movie.set(listbox.get("active")))
+
+        preview_wrap = tk.Frame(self, bg=self.card, highlightthickness=1, highlightbackground="#243654")
+        preview_wrap.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=(0, 8))
+        self._dark_label(
+            preview_wrap, self.tr("dialog.movie_preview.title"), bg=self.card, font=("Bahnschrift", 11, "bold")
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+        self.preview_panel = MoviePreviewPanel(preview_wrap, self.app)
+        self.preview_panel.pack(padx=12, pady=(0, 12))
+
+        def _on_select(_event=None) -> None:
+            selection = listbox.curselection()
+            if not selection:
+                return
+            value = listbox.get(selection[0])
+            self.movie.set(value)
+            self._update_movie_preview(value)
+
+        listbox.bind("<<ListboxSelect>>", _on_select)
+
         ttk.Button(
             self,
             text=self.tr("button.select_and_assign"),
             command=lambda: self.close_ok(
                 {"selectedround": self.scope_ids.get(self.scope.get(), "0"), "Selectedmovie": self.movie.get()}
             ),
-        ).pack(fill="x", padx=12, pady=12)
+        ).grid(row=2, column=0, columnspan=2, sticky="ew", padx=12, pady=12)
+
+    def _update_movie_preview(self, value: str) -> None:
+        path = None
+        if value and value != "None":
+            candidate = self.movie_dir / value / "bootflowoutro.vp8"
+            if candidate.exists():
+                path = candidate
+        self.preview_panel.set_movie(path)
 
 
 class StadiumDialog(BaseDialog):
@@ -349,14 +381,16 @@ class StadiumDialog(BaseDialog):
         net_values = self._file_stems(self._first_existing(exedir / "FSW" / "Images" / "Nets", exedir / "FSW" / "Nets"))
         self.scope_labels = {key: self.tr(label_key) for key, label_key in STADIUM_SCOPE_OPTIONS}
         self.scope_ids = {self.tr(label_key): key for key, label_key in STADIUM_SCOPE_OPTIONS}
-        self.police_labels = {key: self.tr(label_key) for key, label_key in POLICE_PATTERN_OPTIONS}
-        self.police_ids = {self.tr(label_key): key for key, label_key in POLICE_PATTERN_OPTIONS}
         self.scope = tk.StringVar(value=self.scope_labels.get(default_scope, self.tr(STADIUM_SCOPE_OPTIONS[0][1])))
         self.search_var = tk.StringVar()
         self.country_group_var = tk.StringVar()
         self.selectedpitch = tk.StringVar(value=pitch_values[0] if pitch_values else "0")
         self.selectednet = tk.StringVar(value=net_values[0] if net_values else "0")
-        self.selectedpolice = tk.StringVar(value=self.police_labels.get("1", self.tr("dialog.police.english")))
+        # Numeric ID, same convention as the settings.ini editor's Police combo
+        # (settings_editor.py's SettingsSectionFrame._build_stadium_editor) --
+        # previously this held the translated pattern name (e.g. "German"),
+        # which looked inconsistent next to that editor showing plain "4".
+        self.selectedpolice = tk.StringVar(value="1")
         self.selectedstadium = tk.StringVar()
         self._preview_images: dict[str, ImageTk.PhotoImage] = {}
         self._preview_labels: dict[str, tk.Label] = {}
@@ -493,7 +527,7 @@ class StadiumDialog(BaseDialog):
         stadium_preview_row.grid(row=1, column=0, sticky="nsew", pady=(0, 12))
         stadium_preview_row.grid_columnconfigure(0, weight=1)
         self._preview_frames["stadium"] = stadium_preview_row
-        self._build_preview(stadium_preview_row, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(520, 420), height=24)
+        self._build_preview(stadium_preview_row, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(360, 220))
 
         preview_top = tk.Frame(right_body, bg=self.card)
         preview_top.grid(row=2, column=0, sticky="nsew")
@@ -503,13 +537,13 @@ class StadiumDialog(BaseDialog):
         pitch_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         pitch_wrap.grid_columnconfigure(0, weight=1)
         self._combo(pitch_wrap, 0, self.tr("dialog.stadium.pitch_pattern"), pitch_values, self.selectedpitch, self._on_pitch_changed)
-        self._build_preview(pitch_wrap, 0, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(420, 360), height=22, row=2)
+        self._build_preview(pitch_wrap, 0, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(155, 135), row=2)
 
         net_wrap = tk.Frame(preview_top, bg=self.card)
         net_wrap.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         net_wrap.grid_columnconfigure(0, weight=1)
         self._combo(net_wrap, 0, self.tr("dialog.stadium.net_pattern"), net_values, self.selectednet, self._on_net_changed)
-        self._build_preview(net_wrap, 0, self.tr("dialog.stadium.preview.net"), "net", image_size=(420, 360), height=22, row=2)
+        self._build_preview(net_wrap, 0, self.tr("dialog.stadium.preview.net"), "net", image_size=(155, 135), row=2)
 
         preview_bottom = tk.Frame(right_body, bg=self.card)
         preview_bottom.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
@@ -518,11 +552,11 @@ class StadiumDialog(BaseDialog):
             preview_bottom,
             0,
             self.tr("dialog.stadium.police_pattern"),
-            [self.tr(label_key) for _, label_key in POLICE_PATTERN_OPTIONS],
+            [str(i) for i in range(1, 11)],
             self.selectedpolice,
             self._on_police_changed,
         )
-        self._build_preview(preview_bottom, 0, self.tr("dialog.stadium.preview.police"), "police", image_size=(520, 420), height=24, row=2)
+        self._build_preview(preview_bottom, 0, self.tr("dialog.stadium.preview.police"), "police", image_size=(360, 220), row=2)
 
         action_bar = tk.Frame(self, bg=self.bg)
         action_bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 14))
@@ -696,12 +730,32 @@ class StadiumDialog(BaseDialog):
         title: str,
         key: str,
         image_size: tuple[int, int] = (280, 220),
-        height: int = 13,
         row: int = 0,
     ) -> None:
-        frame = tk.Frame(parent, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
+        # A tk.Label's -width/-height are character/line counts while it's
+        # showing the "No preview" placeholder text, but once an image is
+        # configured onto the same label those same numbers stop reserving
+        # enough room and the image renders clipped -- confirmed live, this
+        # was cropping every preview in this dialog down to ~60px tall.
+        # Sidestep it: give the wrapping frame a fixed pixel size (image_size
+        # plus room for the title + padding) and grid_propagate(False) it, so
+        # the frame's size is guaranteed independent of whether the label is
+        # currently showing placeholder text or the real thumbnail.
+        box_width = image_size[0] + 24
+        box_height = image_size[1] + 60
+        frame = tk.Frame(
+            parent,
+            bg=self.card_soft,
+            highlightthickness=1,
+            highlightbackground="#243654",
+            width=box_width,
+            height=box_height,
+        )
         frame.grid(row=row, column=column, padx=(0 if column == 0 else 6, 0), sticky="nsew")
-        self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).pack(anchor="w", padx=10, pady=(10, 6))
+        frame.grid_propagate(False)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(1, weight=1)
+        self._dark_label(frame, title, bg=self.card_soft, muted=True, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", padx=10, pady=(10, 6))
         preview = tk.Label(
             frame,
             text=self.tr("placeholder.no_preview"),
@@ -710,10 +764,8 @@ class StadiumDialog(BaseDialog):
             anchor="center",
             justify="center",
             relief="flat",
-            width=31,
-            height=height,
         )
-        preview.pack(fill="both", expand=True, padx=10, pady=(0, 10), ipadx=12, ipady=16)
+        preview.grid(row=1, column=0, sticky="nsew", padx=10, pady=(0, 10))
         preview.image_size = image_size
         self._preview_labels[key] = preview
 
@@ -757,13 +809,13 @@ class StadiumDialog(BaseDialog):
         self._update_preview("net", image_path, self.tr("dialog.stadium.net_value", value=self.selectednet.get() or "-"))
 
     def _on_police_changed(self, _event=None) -> None:
-        police_id = self.police_ids.get(self.selectedpolice.get(), "1")
+        police_id = self.selectedpolice.get().strip() or "1"
         image_path = self.police_source / f"{police_id}.png"
-        self._update_preview("police", image_path, self.selectedpolice.get() or self.tr("dialog.stadium.police_pattern"))
+        self._update_preview("police", image_path, police_id)
 
     def _submit(self) -> None:
         selected = [self.stadiums.get(i) for i in self.stadiums.curselection()]
-        police_id = self.police_ids.get(self.selectedpolice.get(), "1")
+        police_id = self.selectedpolice.get().strip() or "1"
         payload = {
             "selectedround": self.scope_ids.get(self.scope.get(), "0"),
             "Selectedstadium": selected[0] if selected else "",
@@ -978,8 +1030,8 @@ class AboutDialog(BaseDialog):
 
         credit_row(body, "dialog.about.developer", "igorVin")
         credit_row(body, "dialog.about.developer_continuing", "MichelMK")
-        credit_row(body, "dialog.about.collaborators", "NonoLoko")
-        credit_row(body, "dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, FIFA 16 COMUNITY")
+        credit_row(body, "dialog.about.collaborators", "NonoLoko, hoondori34")
+        credit_row(body, "dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, dinei, FIFA 16 COMUNITY")
 
         tk.Frame(body, bg="#22314b", height=1).pack(fill="x", pady=(14, 0))
         tk.Label(body, text=self.tr("dialog.about.libraries"), bg=self.bg, fg=self.muted,

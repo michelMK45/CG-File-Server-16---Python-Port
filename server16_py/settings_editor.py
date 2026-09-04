@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from .file_tools import discover_stadium_names
+from PIL import Image, ImageTk
+
+from .chants_runtime import MciAudioPlayer
+from .file_tools import discover_stadium_names, resolve_stadium_preview_path, stadium_preview_fallback_path
+from .video_preview import MoviePreviewPanel
 
 
 @dataclass(frozen=True)
@@ -52,6 +58,10 @@ class SettingsAreaEditor(tk.Toplevel):
         self._refresh_active_frame()
 
     def _on_tab_changed(self, _event=None) -> None:
+        for frame in self.frames.values():
+            stop_preview = getattr(frame, "_stop_preview", None)
+            if stop_preview is not None:
+                stop_preview()
         self._refresh_active_frame()
 
     def _refresh_active_frame(self) -> None:
@@ -78,6 +88,8 @@ class SettingsSectionFrame(tk.Frame):
         "entrance_volume": "0.16",
         "entrance_delay": "7.0",
     }
+    PLAY_ICON = "▶"
+    STOP_ICON = "■"
 
     def __init__(self, parent: tk.Misc, app, spec: SectionSpec) -> None:
         super().__init__(parent, bg=app.bg)
@@ -86,13 +98,19 @@ class SettingsSectionFrame(tk.Frame):
         self.selected_key: str | None = None
         self._refresh_job = None
         self._display_keys: list[str] = []
+        self._preview_player: MciAudioPlayer | None = None
+        self._preview_playing_path: Path | None = None
+        self._preview_poll_job = None
+        self._preview_buttons: dict[Path, ttk.Button] = {}
+        self._preview_images: dict[str, ImageTk.PhotoImage] = {}
+        self._preview_labels: dict[str, tk.Label] = {}
         self._setup_ui()
         self.bind("<Destroy>", self._on_destroy)
 
-    def tr(self, key: str, **kwargs) -> str:
+    def tr(self, translation_key: str, **kwargs) -> str:
         if hasattr(self.app, "tr"):
-            return self.app.tr(key, **kwargs)
-        return key.format(**kwargs) if kwargs else key
+            return self.app.tr(translation_key, **kwargs)
+        return translation_key.format(**kwargs) if kwargs else translation_key
 
     def _setup_ui(self) -> None:
         self.grid_columnconfigure(0, weight=2)
@@ -166,7 +184,7 @@ class SettingsSectionFrame(tk.Frame):
 
         right_card = tk.Frame(self, bg=self.app.card, highlightthickness=1, highlightbackground="#243654")
         right_card.grid(row=1, column=1, sticky="nsew", padx=(6, 12), pady=(0, 12))
-        right_card.grid_rowconfigure(2, weight=1)
+        right_card.grid_rowconfigure(1, weight=1)
         right_card.grid_columnconfigure(0, weight=1)
 
         form = tk.Frame(right_card, bg=self.app.card)
@@ -186,18 +204,63 @@ class SettingsSectionFrame(tk.Frame):
         )
         self.key_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
 
-        self.body = tk.Frame(right_card, bg=self.app.card)
-        self.body.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        # The editor body (and, for chants/stadium, the preview panel below it)
+        # can be taller than the window -- e.g. the stadium preview images only
+        # fully fit at a much larger window height than this dialog opens at.
+        # Wrap that middle section in its own scroll region so it's reachable
+        # by scrollbar/mousewheel instead of being cut off, while Key/actions/
+        # status stay pinned in view.
+        scroll_wrap = tk.Frame(right_card, bg=self.app.card)
+        scroll_wrap.grid(row=1, column=0, sticky="nsew")
+        scroll_wrap.grid_columnconfigure(0, weight=1)
+        scroll_wrap.grid_rowconfigure(0, weight=1)
+
+        body_canvas = tk.Canvas(scroll_wrap, bg=self.app.card, highlightthickness=0, bd=0)
+        body_canvas.grid(row=0, column=0, sticky="nsew")
+        body_scroll = ttk.Scrollbar(scroll_wrap, orient="vertical", command=body_canvas.yview, style="Server16.Vertical.TScrollbar")
+        body_scroll.grid(row=0, column=1, sticky="ns")
+        body_canvas.configure(yscrollcommand=body_scroll.set)
+
+        scroll_content = tk.Frame(body_canvas, bg=self.app.card)
+        scroll_content.grid_columnconfigure(0, weight=1)
+        content_window = body_canvas.create_window((0, 0), window=scroll_content, anchor="nw")
+        scroll_content.bind("<Configure>", lambda _e: body_canvas.configure(scrollregion=body_canvas.bbox("all")))
+        body_canvas.bind("<Configure>", lambda e: body_canvas.itemconfigure(content_window, width=e.width))
+
+        def _on_body_mousewheel(event):
+            if event.delta == 0:
+                return "break"
+            body_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            return "break"
+
+        body_canvas.bind("<MouseWheel>", _on_body_mousewheel)
+        scroll_content.bind("<MouseWheel>", _on_body_mousewheel)
+
+        self.body = tk.Frame(scroll_content, bg=self.app.card)
+        self.body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 8))
         self.body.grid_columnconfigure(0, weight=1)
 
         self._build_editor_body()
 
+        if self.spec.kind == "chants":
+            self._build_chants_preview_panel(scroll_content)
+        elif self.spec.kind == "stadium":
+            self._build_stadium_preview_panel(scroll_content)
+        elif self.spec.directory == "MoviesGBD":
+            self._build_movie_preview_panel(scroll_content)
+        elif self.spec.directory in ("ScoreBoardGBD", "TVLogoGBD"):
+            self._build_asset_preview_panel(scroll_content)
+
         actions = tk.Frame(right_card, bg=self.app.card)
-        actions.grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+        actions.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
         actions.grid_columnconfigure(0, weight=1)
         ttk.Button(actions, text=self.tr("button.save_settings"), command=self.save_entry).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(actions, text=self.tr("button.delete_entry"), command=self.delete_entry).grid(row=0, column=1, sticky="ew", padx=6)
-        ttk.Button(actions, text=self.tr("button.apply_runtime"), command=self._apply_runtime).grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        self.reveal_button = ttk.Button(actions, text=self.tr("button.reveal_in_explorer"), command=self._reveal_in_explorer)
+        self.reveal_button.grid(row=0, column=1, sticky="ew", padx=6)
+        if not self.spec.directory:
+            self.reveal_button.configure(state="disabled")
+        ttk.Button(actions, text=self.tr("button.delete_entry"), command=self.delete_entry).grid(row=0, column=2, sticky="ew", padx=6)
+        ttk.Button(actions, text=self.tr("button.apply_runtime"), command=self._apply_runtime).grid(row=0, column=3, sticky="ew", padx=(6, 0))
 
         self.status_var = tk.StringVar(value=self.tr("dialog.editor.no_selection"))
         tk.Label(
@@ -208,7 +271,7 @@ class SettingsSectionFrame(tk.Frame):
             font=("Bahnschrift", 9),
             anchor="w",
             justify="left",
-        ).grid(row=4, column=0, sticky="ew", padx=12, pady=(0, 12))
+        ).grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
 
     def _build_editor_body(self) -> None:
         if self.spec.kind == "simple":
@@ -252,12 +315,162 @@ class SettingsSectionFrame(tk.Frame):
         self.body.grid_columnconfigure(1, weight=0)
         for entry in self._available_choices():
             self.stadium_list.insert("end", entry)
+        # selection_set() (used by _load_stadium_value/new_entry) doesn't fire
+        # this virtual event, so those two call _update_stadium_preview() directly;
+        # this binding only covers the user clicking in the list themselves.
+        self.stadium_list.bind("<<ListboxSelect>>", lambda _e: self._update_stadium_preview())
         self.police_var = tk.StringVar(value=self.STADIUM_DEFAULTS["police"])
         self.pitch_var = tk.StringVar(value=self.STADIUM_DEFAULTS["pitch"])
         self.net_var = tk.StringVar(value=self.STADIUM_DEFAULTS["net"])
+        self.police_var.trace_add("write", lambda *_: self._update_police_preview())
+        self.pitch_var.trace_add("write", lambda *_: self._update_pitch_preview())
+        self.net_var.trace_add("write", lambda *_: self._update_net_preview())
         self._add_combo_row(self.body, 1, "Police", self.police_var, [str(i) for i in range(1, 11)])
         self._add_combo_row(self.body, 2, "Pitch", self.pitch_var, self._asset_indices(self.app.PitchMowsource))
         self._add_combo_row(self.body, 3, "Net", self.net_var, self._asset_indices(self.app.Nsource))
+
+    def _build_stadium_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Same slot _build_chants_preview_panel uses (row 1 of the scrollable
+        # content area, directly below self.body) -- the two kinds are mutually
+        # exclusive so there's no conflict.
+        self._pitch_preview_dir = self._first_existing_dir(
+            self.app.exedir / "FSW" / "Images" / "PitchMowPattern", self.app.exedir / "FSW" / "PitchMowPattern"
+        )
+        self._net_preview_dir = self._first_existing_dir(
+            self.app.exedir / "FSW" / "Images" / "Nets", self.app.exedir / "FSW" / "Nets"
+        )
+        self._police_preview_dir = self._first_existing_dir(
+            self.app.exedir / "FSW" / "Images" / "Police", self.app.exedir / "FSW" / "Police"
+        )
+
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+
+        small_row = tk.Frame(container, bg=self.app.card)
+        small_row.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
+        small_row.grid_columnconfigure(0, weight=1)
+        small_row.grid_columnconfigure(1, weight=1)
+        small_row.grid_columnconfigure(2, weight=1)
+        self._build_stadium_preview_box(small_row, 0, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(170, 140))
+        self._build_stadium_preview_box(small_row, 1, self.tr("dialog.stadium.preview.net"), "net", image_size=(170, 140))
+        self._build_stadium_preview_box(small_row, 2, self.tr("dialog.stadium.preview.police"), "police", image_size=(170, 140))
+
+        stadium_wrap = tk.Frame(container, bg=self.app.card)
+        stadium_wrap.grid(row=1, column=0, sticky="nsew")
+        stadium_wrap.grid_columnconfigure(0, weight=1)
+        self._build_stadium_preview_box(stadium_wrap, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(520, 300))
+
+        self._update_stadium_preview()
+        self._update_pitch_preview()
+        self._update_net_preview()
+        self._update_police_preview()
+
+    def _build_stadium_preview_box(
+        self,
+        parent: tk.Misc,
+        column: int,
+        title: str,
+        key: str,
+        image_size: tuple[int, int] = (280, 220),
+    ) -> None:
+        # A tk.Label's -width/-height are interpreted as character/line counts
+        # while it's showing text (the initial "No preview" placeholder), but
+        # once an image is configured onto the same label those same numbers
+        # stop reserving enough room and the image renders clipped -- that was
+        # the "previews look tiny and cropped" bug. Sidestepping it entirely:
+        # give the wrapping frame a fixed pixel size (image_size plus room for
+        # the title + padding) and grid_propagate(False) it, then let the
+        # preview label fill that fixed cell via sticky="nsew" instead of its
+        # own width/height. The frame's size is then guaranteed to be big
+        # enough for image_size, whether showing the fallback text or the
+        # actual thumbnail (PIL's .thumbnail() only ever shrinks to fit, never
+        # upscales, so the rendered image can never exceed image_size).
+        box_width = image_size[0] + 16
+        box_height = image_size[1] + 46
+        frame = tk.Frame(
+            parent,
+            bg=self.app.card_soft,
+            highlightthickness=1,
+            highlightbackground="#243654",
+            width=box_width,
+            height=box_height,
+        )
+        frame.grid(row=0, column=column, padx=(0 if column == 0 else 6, 0), sticky="nsew")
+        frame.grid_propagate(False)
+        frame.grid_columnconfigure(0, weight=1)
+        frame.grid_rowconfigure(1, weight=1)
+        tk.Label(frame, text=title, bg=self.app.card_soft, fg=self.app.muted, font=("Bahnschrift", 9)).grid(row=0, column=0, sticky="w", padx=8, pady=(8, 4))
+        preview = tk.Label(
+            frame,
+            text=self.tr("placeholder.no_preview"),
+            bg=self.app.panel,
+            fg=self.app.muted,
+            anchor="center",
+            justify="center",
+            relief="flat",
+        )
+        preview.grid(row=1, column=0, sticky="nsew", padx=8, pady=(0, 8))
+        preview.image_size = image_size
+        self._preview_labels[key] = preview
+
+    @staticmethod
+    def _first_existing_dir(*paths: Path) -> Path:
+        for path in paths:
+            if path.exists():
+                return path
+        return paths[0]
+
+    def _set_preview_image(self, key: str, image_path: Path | None, fallback_text: str) -> None:
+        label = self._preview_labels.get(key)
+        if label is None:
+            return
+        self._preview_images.pop(key, None)
+        if image_path is None or not image_path.exists():
+            label.configure(image="", text=fallback_text, compound="center")
+            return
+        try:
+            image = Image.open(image_path).convert("RGBA")
+            image.thumbnail(getattr(label, "image_size", (280, 220)))
+            photo = ImageTk.PhotoImage(image)
+        except Exception:
+            label.configure(image="", text=fallback_text, compound="center")
+            return
+        self._preview_images[key] = photo
+        label.configure(image=photo, text="", compound="center")
+
+    def _update_stadium_preview(self) -> None:
+        if "stadium" not in self._preview_labels:
+            return
+        selection = self.stadium_list.curselection()
+        stadium_name = self.stadium_list.get(selection[0]) if selection else ""
+        image_path = resolve_stadium_preview_path(self.app.exedir / self.spec.directory, stadium_name) if stadium_name else None
+        if image_path is None and stadium_name:
+            image_path = stadium_preview_fallback_path()
+        fallback = stadium_name if stadium_name else self.tr("placeholder.no_stadium_preview")
+        self._set_preview_image("stadium", image_path, fallback)
+
+    def _update_pitch_preview(self) -> None:
+        if "pitch" not in self._preview_labels:
+            return
+        value = self.pitch_var.get().strip()
+        image_path = self._pitch_preview_dir / f"{value}.png"
+        self._set_preview_image("pitch", image_path, self.tr("dialog.stadium.pitch_value", value=value or "-"))
+
+    def _update_net_preview(self) -> None:
+        if "net" not in self._preview_labels:
+            return
+        value = self.net_var.get().strip()
+        image_path = self._net_preview_dir / f"{value}.png"
+        self._set_preview_image("net", image_path, self.tr("dialog.stadium.net_value", value=value or "-"))
+
+    def _update_police_preview(self) -> None:
+        if "police" not in self._preview_labels:
+            return
+        value = self.police_var.get().strip()
+        image_path = self._police_preview_dir / f"{value}.png"
+        self._set_preview_image("police", image_path, value or self.tr("dialog.stadium.police_pattern"))
 
     def _build_net_editor(self) -> None:
         self.down_var = tk.StringVar(value=self.NET_DEFAULTS["down"])
@@ -379,6 +592,244 @@ class SettingsSectionFrame(tk.Frame):
         variable.trace_add("write", on_entry)
         return entry
 
+    def _build_chants_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Placed at row 1 of the scrollable content area, directly below
+        # self.body (row 0) -- that whole area scrolls together now, so this
+        # panel is reachable even when the form above it already fills the
+        # window (see the scroll_wrap/body_canvas setup in _setup_ui).
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        container.grid_columnconfigure(0, weight=1)
+        container.grid_rowconfigure(1, weight=1)
+
+        tk.Label(
+            container,
+            text=self.tr("dialog.editor.chants_preview.title"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 9),
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+
+        list_wrap = tk.Frame(container, bg=self.app.panel, highlightthickness=1, highlightbackground="#243654")
+        list_wrap.grid(row=1, column=0, sticky="nsew")
+        list_wrap.grid_columnconfigure(0, weight=1)
+        list_wrap.grid_rowconfigure(0, weight=1)
+
+        canvas = tk.Canvas(list_wrap, bg=self.app.panel, highlightthickness=0, height=110)
+        canvas.grid(row=0, column=0, sticky="nsew")
+        preview_scroll = ttk.Scrollbar(list_wrap, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        preview_scroll.grid(row=0, column=1, sticky="ns")
+        canvas.configure(yscrollcommand=preview_scroll.set)
+
+        self._preview_rows_frame = tk.Frame(canvas, bg=self.app.panel)
+        preview_window = canvas.create_window((0, 0), window=self._preview_rows_frame, anchor="nw")
+        self._preview_canvas = canvas
+
+        self._preview_rows_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfigure(preview_window, width=e.width))
+
+        # Rebuild the list whenever the folder changes, whether the user typed
+        # it directly or picked it from the combobox -- both go through the
+        # same StringVar.
+        self.chants_folder_var.trace_add("write", lambda *_: self._refresh_chants_preview())
+        self._refresh_chants_preview()
+
+    def _refresh_chants_preview(self) -> None:
+        if not hasattr(self, "_preview_rows_frame"):
+            return
+        self._stop_preview()
+        for child in self._preview_rows_frame.winfo_children():
+            child.destroy()
+        self._preview_buttons = {}
+
+        folder = self.chants_folder_var.get().strip()
+        base: Path | None = None
+        files: list[Path] = []
+        if folder:
+            base = self.app.exedir / "FSW" / "Chants" / folder
+            if base.exists():
+                # rglob so tracks organized into subfolders (e.g. a "Goal" or
+                # "Extra" subfolder some packs use) show up too, not just the
+                # ones sitting directly in the mapped folder.
+                files = sorted(p for p in base.rglob("*.mp3") if not p.name.endswith(".original.mp3"))
+
+        if not files or base is None:
+            tk.Label(
+                self._preview_rows_frame,
+                text=self.tr("dialog.editor.chants_preview.empty"),
+                bg=self.app.panel,
+                fg=self.app.muted,
+                font=("Bahnschrift", 9),
+            ).pack(anchor="w", padx=8, pady=6)
+            return
+
+        for path in files:
+            self._add_chants_preview_row(path, path.relative_to(base).as_posix())
+
+    def _add_chants_preview_row(self, path: Path, display_name: str) -> None:
+        row = tk.Frame(self._preview_rows_frame, bg=self.app.panel)
+        row.pack(fill="x", padx=6, pady=2)
+        tk.Label(
+            row,
+            text=display_name,
+            bg=self.app.panel,
+            fg=self.app.fg,
+            font=("Consolas", 9),
+            anchor="w",
+        ).pack(side="left", fill="x", expand=True)
+        button = ttk.Button(row, text=self.PLAY_ICON, width=3, command=lambda p=path: self._toggle_chants_preview(p))
+        button.pack(side="right")
+        self._preview_buttons[path] = button
+
+    def _toggle_chants_preview(self, path: Path) -> None:
+        if self._preview_playing_path == path:
+            self._stop_preview()
+            return
+        self._stop_preview()
+        try:
+            player = MciAudioPlayer()
+            player.open(path)
+            player.play()
+        except Exception as exc:
+            self.app.log(f"Chants preview playback failed for {path}", exc)
+            self.status_var.set(self.tr("dialog.editor.chants_preview.play_failed", file=path.name))
+            return
+        self._preview_player = player
+        self._preview_playing_path = path
+        button = self._preview_buttons.get(path)
+        if button is not None:
+            button.configure(text=self.STOP_ICON)
+        self._schedule_preview_poll()
+
+    def _schedule_preview_poll(self) -> None:
+        self._preview_poll_job = self.after(400, self._poll_preview_state)
+
+    def _poll_preview_state(self) -> None:
+        self._preview_poll_job = None
+        if self._preview_player is None:
+            return
+        try:
+            still_playing = self._preview_player.is_playing()
+        except Exception:
+            still_playing = False
+        if still_playing:
+            self._schedule_preview_poll()
+        else:
+            self._stop_preview()
+
+    def _build_movie_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Same slot _build_chants_preview_panel/_build_stadium_preview_panel use
+        # (row 1 of the scrollable content area, directly below self.body) --
+        # movies/TeamMovies/DerbyMatch are the only "simple"-kind specs pointed
+        # at MoviesGBD, so this is mutually exclusive with those two panels.
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="w", padx=12, pady=(0, 8))
+
+        tk.Label(
+            container,
+            text=self.tr("dialog.movie_preview.title"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 9),
+        ).pack(anchor="w", pady=(0, 4))
+
+        # Bigger than MovieDialog's inline preview (dialogs.py, 340x191) --
+        # the right card is roughly 600px wide at this editor's default
+        # window size (1120x700, see SettingsAreaEditor.__init__), and
+        # scroll_content's width always tracks the canvas exactly (no
+        # horizontal scrollbar), so this needs to stay comfortably under
+        # that or it gets clipped. The fullscreen button covers the rest.
+        self._movie_preview_panel = MoviePreviewPanel(container, self.app, width=560, height=315)
+        self._movie_preview_panel.pack(anchor="w")
+
+        # Rebuild whenever the folder value changes, whether typed directly or
+        # picked from the combobox -- both go through the same StringVar (see
+        # _build_editor_body's "simple" branch).
+        self.value_var.trace_add("write", lambda *_: self._refresh_movie_preview())
+        self._refresh_movie_preview()
+
+    def _refresh_movie_preview(self) -> None:
+        panel = getattr(self, "_movie_preview_panel", None)
+        if panel is None:
+            return
+        value = self.value_var.get().strip()
+        path = None
+        if value and self.spec.directory:
+            candidate = self.app.exedir / self.spec.directory / value / "bootflowoutro.vp8"
+            if candidate.exists():
+                path = candidate
+        panel.set_movie(path)
+
+    def _build_asset_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Same slot _build_chants_preview_panel/_build_stadium_preview_panel/
+        # _build_movie_preview_panel use (row 1 of the scrollable content area,
+        # directly below self.body) -- Scoreboard/TVLogo/HomeTeamScoreBoard/
+        # HomeTeamTvLogo are the only "simple"-kind specs pointed at
+        # ScoreBoardGBD/TVLogoGBD, so this is mutually exclusive with the
+        # other panels. Looks for the same thumbnail ScoreboardDialog
+        # (dialogs.py) shows: <folder>/render/thumbnail/<key>.<ext>, falling
+        # back to the first image in that thumbnail folder.
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        container.grid_columnconfigure(0, weight=1)
+
+        self._asset_preview_key = "tvlogo" if self.spec.directory == "TVLogoGBD" else "scoreboard"
+        title_key = "dialog.editor.preview.tvlogo" if self._asset_preview_key == "tvlogo" else "dialog.editor.preview.scoreboard"
+        self._build_stadium_preview_box(container, 0, self.tr(title_key), self._asset_preview_key, image_size=(340, 180))
+
+        # Rebuild whenever the value changes, whether typed directly or picked
+        # from the combobox -- both go through the same StringVar (see
+        # _build_editor_body's "simple" branch).
+        self.value_var.trace_add("write", lambda *_: self._refresh_asset_preview())
+        self._refresh_asset_preview()
+
+    def _refresh_asset_preview(self) -> None:
+        key = getattr(self, "_asset_preview_key", None)
+        if key is None or key not in self._preview_labels:
+            return
+        value = self.value_var.get().strip()
+        image_path = None
+        if value and self.spec.directory:
+            thumbnail_dir = self.app.exedir / self.spec.directory / value / "render" / "thumbnail"
+            if thumbnail_dir.exists():
+                for ext in (".png", ".jpg", ".jpeg"):
+                    candidate = thumbnail_dir / f"{key}{ext}"
+                    if candidate.exists():
+                        image_path = candidate
+                        break
+                if image_path is None:
+                    for candidate in sorted(thumbnail_dir.iterdir()):
+                        if candidate.is_file() and candidate.suffix.lower() in {".png", ".jpg", ".jpeg"}:
+                            image_path = candidate
+                            break
+        fallback = value if value else self.tr("placeholder.no_preview")
+        self._set_preview_image(key, image_path, fallback)
+
+    def _stop_preview(self) -> None:
+        movie_panel = getattr(self, "_movie_preview_panel", None)
+        if movie_panel is not None:
+            movie_panel.stop()
+        if self._preview_poll_job is not None:
+            try:
+                self.after_cancel(self._preview_poll_job)
+            except Exception:
+                pass
+            self._preview_poll_job = None
+        if self._preview_playing_path is not None:
+            button = self._preview_buttons.get(self._preview_playing_path)
+            if button is not None:
+                try:
+                    button.configure(text=self.PLAY_ICON)
+                except Exception:
+                    pass
+        if self._preview_player is not None:
+            try:
+                self._preview_player.close()
+            except Exception:
+                pass
+            self._preview_player = None
+        self._preview_playing_path = None
+
     def _add_entry_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, readonly: bool = False):
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
         entry = tk.Entry(
@@ -417,6 +868,7 @@ class SettingsSectionFrame(tk.Frame):
             except Exception:
                 pass
             self._refresh_job = None
+        self._stop_preview()
 
     def _available_choices(self) -> list[str]:
         directory = self.spec.directory
@@ -512,6 +964,7 @@ class SettingsSectionFrame(tk.Frame):
             self.police_var.set(self.STADIUM_DEFAULTS["police"])
             self.pitch_var.set(self.STADIUM_DEFAULTS["pitch"])
             self.net_var.set(self.STADIUM_DEFAULTS["net"])
+            self._update_stadium_preview()
         elif self.spec.kind == "net":
             self.down_var.set(self.NET_DEFAULTS["down"])
             self.high_var.set(self.NET_DEFAULTS["high"])
@@ -562,6 +1015,7 @@ class SettingsSectionFrame(tk.Frame):
             self.police_var.set(self.STADIUM_DEFAULTS["police"])
             self.pitch_var.set(self.STADIUM_DEFAULTS["pitch"])
             self.net_var.set(self.STADIUM_DEFAULTS["net"])
+            self._update_stadium_preview()
             return
         parts = [part.strip() for part in value.split(",") if part.strip()]
         if len(parts) >= 4:
@@ -576,6 +1030,7 @@ class SettingsSectionFrame(tk.Frame):
         self.police_var.set(police)
         self.pitch_var.set(pitch)
         self.net_var.set(net)
+        self._update_stadium_preview()
 
     def _load_net_value(self, value: str) -> None:
         parts = [part.strip() for part in value.split(",")]
@@ -714,6 +1169,57 @@ class SettingsSectionFrame(tk.Frame):
             self.status_var.set(self.status_var.get() + self.tr("dialog.editor.runtime_updated"))
         except Exception as exc:
             self.app.log("Failed to apply runtime after settings edit", exc)
+
+    def _asset_reveal_target(self) -> Path | None:
+        """Resolve the on-disk name (folder or archive stem) currently
+        selected/entered for this section, so the Reveal button knows what to
+        point Explorer at. Returns None when this section has no directory
+        (e.g. 'exclude', or 'stadiumnetid' which is keyed by numeric ID, not a
+        folder name) or nothing is currently selected/typed."""
+        directory = self.spec.directory
+        if not directory:
+            return None
+        base = self.app.exedir / directory
+        if self.spec.kind == "chants":
+            folder = self.chants_folder_var.get().strip()
+            return base / folder if folder else None
+        if self.spec.kind == "simple":
+            value = self.value_var.get().strip()
+            return base / value if value else None
+        if self.spec.kind == "stadium":
+            selection = self.stadium_list.curselection()
+            return base / self.stadium_list.get(selection[0]) if selection else None
+        if self.spec.kind in ("net", "scoreboardstdname"):
+            key = self.key_var.get().strip()
+            return base / key if key else None
+        return None
+
+    @staticmethod
+    def _resolve_existing_asset_path(target: Path) -> Path | None:
+        if target.is_dir():
+            return target
+        for suffix in (".zip", ".rar"):
+            candidate = target.with_suffix(suffix)
+            if candidate.exists():
+                return candidate
+        return target if target.exists() else None
+
+    def _reveal_in_explorer(self) -> None:
+        target = self._asset_reveal_target()
+        if target is None:
+            messagebox.showinfo(self.tr("message.settings"), self.tr("message.settings.nothing_to_reveal"))
+            return
+        resolved = self._resolve_existing_asset_path(target)
+        if resolved is None:
+            messagebox.showwarning(self.tr("message.settings"), self.tr("message.settings.asset_not_found", path=str(target)))
+            return
+        try:
+            if resolved.is_dir():
+                os.startfile(str(resolved))
+            else:
+                subprocess.Popen(["explorer", "/select,", str(resolved)])
+        except Exception as exc:
+            self.app.log(f"Failed to reveal {resolved} in Explorer", exc)
 
 
 def stadium_specs() -> list[SectionSpec]:

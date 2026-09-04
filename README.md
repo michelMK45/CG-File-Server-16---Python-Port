@@ -68,6 +68,8 @@ Optionally shows your current match, teams, and stadium in your Discord status v
 
 Built-in editors read and write `FSW/settings.ini` directly from the UI: stadium/scoreboard/TV logo/movie assignments, excluded competitions or rounds, stadium net values, scoreboard display names, and chants entries — changes apply back into the running app immediately where possible.
 
+Movie assignment (the quick "Assign Movie" dialog and the larger version in the Settings Editor's Movies/TeamMovies/DerbyMatch tabs) shows a small embedded video preview, audio included — pick a movie and it autoplays right there before you assign it (an Autoplay toggle can turn that off), with a volume slider and a fullscreen button. This decodes through `ffpyplayer` (bundled FFmpeg + SDL2, see [Requirements](#requirements)) — no separate player install needed; if that package is missing from the build, the preview controls are simply disabled with an explanatory note, everything else keeps working normally.
+
 ## Screenshots
 
 Main overlay:
@@ -458,6 +460,7 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/substitution_runtime.py`: live in-game hook that lets you raise FIFA 16's hardcoded substitution limit for the current match.
 - `server16_py/settings_editor.py`: settings editing UI.
 - `server16_py/dialogs.py`: assignment dialogs.
+- `server16_py/video_preview.py`: embedded libVLC movie (`.vp8`) preview widget shared by the Movie assignment dialog and the settings editor.
 - `server16_py/file_tools.py`: shared file-copying, archive extraction, and setup helpers.
 - `server16_py/fifa_db.py`: reads team/stadium names from the FIFA t3db database via the `db_worker.py` subprocess bridge.
 - `server16_py/db_worker.py` / `server16_py/bh_worker.py` / `server16_py/kit_worker.py` / `server16_py/kit_preview_worker.py`: 32-bit subprocess workers that load `FifaLibrary16.dll` (x86-only) to read the database, regenerate BH entries, and mix/preview kit textures, respectively.
@@ -479,6 +482,7 @@ Everything below is about building and working on the codebase itself — not ne
   - `pygame`
   - `rarfile` for native RAR extraction when available
   - `pypresence` for Discord Rich Presence (optional, see [DISCORD_SETUP.md](DISCORD_SETUP.md))
+  - `ffpyplayer` for the embedded movie (`.vp8`) preview player in the Movie assignment/settings dialogs (optional — its prebuilt wheel bundles FFmpeg + SDL2 directly, so no separate player install is needed; the preview's Play button just disables itself if the package is missing)
   - `pyinstaller` for packaging
 
 RAR stadium archives can also be extracted through the Windows `tar` command when `rarfile` is not installed (and `rarfile` itself is configured to use it as a fallback when `unrar`/`7z` are unavailable). Depending on your environment, additional packages may be needed if they are introduced by future changes.
@@ -506,7 +510,7 @@ Example:
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install psutil pillow pygame rarfile pypresence pyinstaller
+python -m pip install psutil pillow pygame rarfile pypresence ffpyplayer pyinstaller
 python main.py
 ```
 
