@@ -139,7 +139,19 @@ class OverlayMixin:
         overlay_fg = (foreground == int(overlay_hwnd) and int(overlay_hwnd) != 0)
         menu_input_fg = fifa_fg or overlay_fg
 
-        if not self._d3d_menu_visible:
+        if not self._d3d_menu_visible and not self._stadium_picker_pending:
+            # This used to clear on every tick the general menu was closed,
+            # full stop — while only the picker was pending that ran EVERY
+            # ~80ms tick and wiped out whatever _keyboard_proc's own hook
+            # thread had just captured a moment earlier, before
+            # _is_overlay_key_down below ever got a chance to read it. Net
+            # effect: the hook still ate the keystroke (blocked from
+            # reaching FIFA) but the picker never saw it either — total
+            # input lockup, confirmed live. Same reasoning as the other two
+            # _d3d_menu_visible-only gates already widened for the picker
+            # (_mouse_proc's block condition, _keyboard_proc's own capture
+            # condition) — this one just hid behind those two until they
+            # were fixed.
             self._overlay_blocked_key_down.clear()
 
         if overlay_visible_rows > 0:
@@ -162,8 +174,16 @@ class OverlayMixin:
         if filter_grid_cols > 0:
             self._overlay_filter_grid_cols = filter_grid_cols
 
-        if self._d3d_menu_visible:
+        if self._d3d_menu_visible or self._stadium_picker_pending:
+            # Both the general F12 menu and the stadium picker render into
+            # the SAME shared Rml::Context (see cgfs16_rmlui.cpp's own header
+            # comment) — this feed just needs to run whenever either one is
+            # up, or clicks landing on the picker never reach RmlUi's mouse
+            # processing at all (confirmed live: the picker rendered fine
+            # but was completely unclickable until this was widened from
+            # `if self._d3d_menu_visible:` alone).
             self._sync_rmlui_menu_mouse_feed(inj, overlay_hwnd)
+        if self._d3d_menu_visible:
             self._handle_rmlui_menu_event(inj, now)
 
         f12_down = self._is_overlay_key_down(VK_F12, menu_input_fg)
@@ -231,7 +251,11 @@ class OverlayMixin:
         # that it's the active window — F12 or a gamepad Start-hold from an
         # unrelated window must not pop the overlay open). Closing an
         # already-open menu stays unrestricted so it's never stuck open.
-        can_toggle = (menu_input_fg or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at
+        # The stadium picker additionally blocks F12/Start outright while
+        # it's pending — it's a one-shot decision the player must resolve
+        # (or close) before doing anything else; popping the full F12 menu
+        # open on top of it would be confusing and was never intended.
+        can_toggle = (menu_input_fg or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at and not self._stadium_picker_pending
 
         f12_toggle = f12_down and not self._overlay_f12_down
         key_escape_edge = key_escape_down and not self._overlay_escape_down
@@ -291,12 +315,23 @@ class OverlayMixin:
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
 
-        if self._d3d_menu_visible and inj is not None:
-            self._push_overlay_dashboard(inj)
+        if (self._d3d_menu_visible or self._stadium_picker_pending) and inj is not None:
+            # Shared with the stadium picker (see stadium_picker.rml's
+            # #hint-key-row/#hint-gp-row, driven by the same OverlayShared
+            # input_mode field SyncStadiumPicker reads) — must be pushed
+            # whenever either surface is up, not just the general menu, or
+            # the picker's own legend never updates while it's showing
+            # without the F12 menu also being open (same "own flag, never
+            # entangled with the general menu's state machine" reasoning as
+            # the rest of the picker's input handling, see the comment above
+            # the `if self._stadium_picker_pending:` block below).
             try:
                 inj.set_input_mode(self._overlay_input_mode == "gamepad")
             except Exception:
                 pass
+
+        if self._d3d_menu_visible and inj is not None:
+            self._push_overlay_dashboard(inj)
             try:
                 # Drives #hero-btn's press-shrink for the keyboard/gamepad
                 # "activate" inputs (menu.rml's #hero-btn.hero-pressed) —
@@ -535,6 +570,87 @@ class OverlayMixin:
         if self._d3d_menu_visible and (key_enter_edge or a_edge):
             self._activate_overlay_selected_item("confirm")
 
+        # Manual stadium picker (see _open_stadium_picker in
+        # stadium_runtime.py) — entirely independent of _d3d_menu_visible's
+        # tab/wizard state (same "own flag, never entangled with the general
+        # menu's state machine" reasoning as its C++ side, see
+        # stadium_picker_visible's field comment in cgfs16_overlay.cpp), so
+        # this reads the tick's already-computed key/gamepad edges directly
+        # rather than reusing any of the general-menu-gated locals above
+        # (those are only assigned when _d3d_menu_visible was already true
+        # this tick, which the picker must work without).
+        if self._stadium_picker_pending:
+            dpad_up_p = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down_p = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            dpad_up_edge_p = dpad_up_p and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down_edge_p = dpad_down_p and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            nav_up_p = dpad_up_p or key_up_down
+            nav_down_p = dpad_down_p or key_down_down
+            if inj is not None:
+                wheel_steps = self._overlay_mouse_wheel_steps
+                if wheel_steps:
+                    self._overlay_mouse_wheel_steps = 0
+                    # Pure view-scroll -- see add_stadium_picker_wheel_delta's
+                    # docstring. Doesn't touch _stadium_picker_index; RmlUi
+                    # scrolls #list natively regardless of which row is
+                    # currently keyboard/gamepad-highlighted, same as a real
+                    # scrollbar not moving the selection in a normal listbox.
+                    try:
+                        inj.add_stadium_picker_wheel_delta(wheel_steps)
+                    except Exception:
+                        pass
+            count = len(self._stadium_picker_candidates)
+            if count > 0 and inj is not None:
+                moved = False
+                if dpad_up_edge_p or key_up_edge:
+                    self._stadium_picker_index = (self._stadium_picker_index - 1) % count
+                    moved = True
+                    self._stadium_picker_nav_repeat_at = now + 0.40
+                elif dpad_down_edge_p or key_down_edge:
+                    self._stadium_picker_index = (self._stadium_picker_index + 1) % count
+                    moved = True
+                    self._stadium_picker_nav_repeat_at = now + 0.40
+                elif (nav_up_p or nav_down_p) and now >= self._stadium_picker_nav_repeat_at:
+                    self._stadium_picker_index = (self._stadium_picker_index + (-1 if nav_up_p else 1)) % count
+                    moved = True
+                    self._stadium_picker_nav_repeat_at = now + 0.10
+                if moved:
+                    try:
+                        inj.set_stadium_picker_selection(self._stadium_picker_index)
+                    except Exception:
+                        pass
+            if count > 0 and key_enter_edge:
+                self._resolve_stadium_picker(self._stadium_picker_candidates[self._stadium_picker_index])
+            elif count > 0 and a_edge:
+                # Gamepad confirm: latch until A is released instead of
+                # resolving (and hiding the picker) on the press edge itself —
+                # same "wait for release" pattern the general F12 menu already
+                # uses for its gamepad-B close (see _overlay_b_close_pending
+                # above). Resolving immediately flips stadium_picker_visible
+                # to 0, and HookedPresent's XInputEnable(TRUE) can then fire
+                # on the very next frame while A is still physically held,
+                # letting that same press reach FIFA underneath — diagnosed
+                # as the cause of "pressing A also interacts with the game"
+                # reports; not yet independently confirmed live beyond that
+                # report matching this exact mechanism. Keyboard Enter has no
+                # such race (blocked unconditionally by the low-level
+                # keyboard hook), so it keeps resolving immediately above.
+                self._stadium_picker_gp_confirm_pending = self._stadium_picker_candidates[self._stadium_picker_index]
+            elif key_escape_edge:
+                self._resolve_stadium_picker(None)
+            elif b_edge:
+                self._stadium_picker_gp_cancel_pending = True  # same release-latch reasoning as A above
+            elif inj is not None:
+                self._handle_stadium_picker_event(inj)
+
+            if self._stadium_picker_gp_confirm_pending is not None and not a_down:
+                chosen = self._stadium_picker_gp_confirm_pending
+                self._stadium_picker_gp_confirm_pending = None
+                self._resolve_stadium_picker(chosen)
+            if self._stadium_picker_gp_cancel_pending and not b_down:
+                self._stadium_picker_gp_cancel_pending = False
+                self._resolve_stadium_picker(None)
+
         self._overlay_f12_down = f12_down
         self._overlay_up_down = key_up_down
         self._overlay_down_down = key_down_down
@@ -562,6 +678,9 @@ class OverlayMixin:
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
+
+        if self._stadium_picker_pending and not self._fifa_hwnd:
+            self._resolve_stadium_picker(None)
 
     def _load_xinput_dll(self):
         for dll_name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
@@ -970,7 +1089,7 @@ class OverlayMixin:
             )
         return None, None
 
-    def _write_overlay_assignment(self, key: str, comp: str, value: str, source: str) -> bool:
+    def _write_overlay_assignment(self, key: str, comp: str, value: str, source: str, chosen_stadium: str | None = None) -> bool:
         if not comp or not key:
             return False
         try:
@@ -988,6 +1107,21 @@ class OverlayMixin:
             # Movie/scoreboard assignments skip apply_stadium_runtime to avoid
             # triggering a stadium reload as a side effect.
             if key in {"stadium", "comp"}:
+                if chosen_stadium:
+                    # The player just explicitly picked ONE stadium via this
+                    # wizard for the match about to be played -- pre-resolve
+                    # the manual stadium picker for the exact signature
+                    # apply_stadium_runtime() is about to (re)compute, so it
+                    # applies this choice directly instead of popping the
+                    # in-game picker to ask again among every stadium
+                    # assigned to this key (this entry may already hold
+                    # others too -- see _append_overlay_stadium). Mirrors the
+                    # state _resolve_stadium_picker() leaves behind after a
+                    # real picker click.
+                    self._stadium_picker_signature = (self._kickoff_generation, key, comp, value, self.HID, self.TOURNAME, self.TOURROUNDID)
+                    self._stadium_picker_pending = True
+                    self._stadium_picker_resolved = True
+                    self._stadium_picker_chosen = chosen_stadium
                 self.apply_all_runtime()
             else:
                 self.apply_scoreboard_runtime()
@@ -997,23 +1131,35 @@ class OverlayMixin:
             self.log(f"Overlay assignment failed ({source})", exc, exc_info=sys.exc_info())
             return False
 
-    def _build_overlay_stadium_payload(self, selected_item: str, comp: str, key: str) -> str:
-        police = self.PoliceNum or "4"
-        pitch = "0"
-        net = "0"
+    def _append_overlay_stadium(self, comp: str, key: str, stadium: str, police: str, pitch: str, net: str) -> str:
+        """Compose the settings.ini value for the F12 overlay's stadium-assign
+        wizard (_activate_wizard_step's "net" phase). If this key already has
+        one or more stadiums assigned -- e.g. from the desktop Stadium
+        Settings editor's multi-stadium support -- the newly picked one is
+        APPENDED, each stadium keeping its own police/pitch/net, instead of
+        overwriting the whole entry. Overwriting used to silently drop every
+        other stadium already assigned to this key. Re-picking a stadium
+        that's already assigned updates its own police/pitch/net in place
+        instead of duplicating it. See
+        StadiumRuntime._parse_stadium_entries for the per-stadium value
+        format this reads/writes."""
+        from .d3d_injector import _MAX_STADIUM_PICKER_ITEMS  # same cap the in-game picker itself enforces
+
+        entries: list[tuple[str, str, str, str]] = []
         try:
             if comp and key and self.settings_ini.key_exists(comp, key):
-                existing = self.settings_ini.read(comp, key)
-                _stadiums, ex_police, ex_pitch, ex_net = self.stadium_runtime._parse_assignment(existing)
-                if ex_police:
-                    police = ex_police
-                if ex_pitch:
-                    pitch = ex_pitch
-                if ex_net:
-                    net = ex_net
+                entries = self.stadium_runtime._parse_stadium_entries(self.settings_ini.read(comp, key))
         except Exception:
-            pass
-        return ",".join([selected_item, police, pitch, net])
+            entries = []
+        entries = [entry for entry in entries if entry[0] != stadium]
+        if len(entries) >= _MAX_STADIUM_PICKER_ITEMS:
+            self.log(
+                f"Overlay wizard: [{key}] {comp} already has {len(entries)} stadiums "
+                f"(max {_MAX_STADIUM_PICKER_ITEMS}); dropping the oldest to add {stadium}"
+            )
+            entries.pop(0)
+        entries.append((stadium, police, pitch, net))
+        return ",".join(field for entry in entries for field in entry)
 
     def _overlay_scope_back(self) -> None:
         """Returns from a tab's final list to its previous step. For most
@@ -1233,8 +1379,8 @@ class OverlayMixin:
                 comp, resolved = self._resolve_overlay_assignment_target("stadiums", scope_override=self._overlay_selected_scope)
                 if comp:
                     key = "stadium" if resolved == "Home Team" else "comp"
-                    payload = ",".join([stadium, police, pitch, net])
-                    self._write_overlay_assignment(key, comp, payload, source)
+                    payload = self._append_overlay_stadium(comp, key, stadium, police, pitch, net)
+                    self._write_overlay_assignment(key, comp, payload, source, chosen_stadium=stadium)
                 else:
                     self.log(f"Overlay wizard apply skipped ({source}): no match context")
             self._update_menu_content()
@@ -1726,6 +1872,68 @@ class OverlayMixin:
             # #hero-mute-btn; same toggle the gamepad X button fires.
             self._toggle_movie_mute()
 
+    def _handle_stadium_picker_event(self, inj) -> None:
+        """Poll the DLL's stadium_picker_event_* "last event wins" click
+        signal (written by StadiumPickerEventListener in cgfs16_rmlui.cpp)
+        — the picker's own mouse-click channel, independent of
+        menu_event_*/get_menu_event() so a stray general-menu click can
+        never be misread as a picker pick or vice versa."""
+        try:
+            seq, kind, index = inj.get_stadium_picker_event()
+        except Exception:
+            return
+        if seq == self._stadium_picker_event_last_seq:
+            return
+        self._stadium_picker_event_last_seq = seq
+        if not self._stadium_picker_pending:
+            return
+        index = int(index)
+        if kind == 1:  # item_click
+            if 0 <= index < len(self._stadium_picker_candidates):
+                self._resolve_stadium_picker(self._stadium_picker_candidates[index])
+        elif kind == 2:  # close_click
+            self._resolve_stadium_picker(None)
+
+    def _resolve_stadium_picker(self, chosen: str | None) -> None:
+        """Record the player's decision (or lack of one) and hide the panel.
+        Deliberately does NOT clear _stadium_picker_pending — only
+        apply_stadium_runtime() does that, once it has actually consumed
+        this resolution and moved on to loading; clearing it here too would
+        let the very next apply_stadium_runtime() tick see pending=False
+        and reopen a brand-new picker session for the same assignment it
+        was just resolved for."""
+        if self._stadium_picker_resolved:
+            return  # already resolved this session (e.g. a trailing click
+            # arriving the same tick as a keyboard confirm) — idempotent.
+        self._stadium_picker_chosen = chosen
+        self._stadium_picker_resolved = True
+        self._hide_stadium_picker()
+        # apply_stadium_runtime() is only entered from stats_loop when
+        # HID/AID or the match signature actually change — deliberately,
+        # per stats_loop's own comment, so it doesn't re-trigger
+        # apply_all_runtime (and re-roll the random pick) every 250ms once
+        # both are already known. A picker resolution needs a fresh call
+        # despite the signature being unchanged, or it would just sit here
+        # unconsumed until something else happens to change the signature.
+        try:
+            self.apply_all_runtime()
+        except Exception as exc:
+            self.log("Failed to apply runtime after stadium picker resolution", exc)
+
+    def _hide_stadium_picker(self) -> None:
+        """Hide the picker panel and release the input hooks it needed —
+        purely the visual/hook side; never touches
+        pending/resolved/chosen (see _resolve_stadium_picker)."""
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                inj.hide_stadium_picker()
+            except Exception:
+                pass
+        if not self._d3d_menu_visible:
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
+
     def _is_overlay_input_foreground(self) -> bool:
         fg = int(self.user32.GetForegroundWindow() or 0)
         if fg == 0:
@@ -1763,7 +1971,11 @@ class OverlayMixin:
         }
 
         def _mouse_proc(n_code: int, w_param: int, l_param: int) -> int:
-            if n_code == HC_ACTION and self._d3d_menu_visible:
+            # Blocks clicks meant for the stadium picker the same way the
+            # general F12 menu already blocks its own — same accepted
+            # DirectInput-passthrough limitation applies to both (see the
+            # comment on `blockable` below).
+            if n_code == HC_ACTION and (self._d3d_menu_visible or self._stadium_picker_pending):
                 msg = int(w_param)
                 mouse_x = mouse_y = -1
                 try:
@@ -1903,7 +2115,14 @@ class OverlayMixin:
         key_messages = {WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP}
 
         def _keyboard_proc(n_code: int, w_param: int, l_param: int) -> int:
-            if n_code == HC_ACTION and self._d3d_menu_visible:
+            # Must recognize the stadium picker the same way the mouse hook
+            # does (_mouse_proc) — otherwise this capture never populates
+            # _overlay_blocked_key_down while only the picker is pending, so
+            # _is_overlay_key_down's own (correctly-gated) hook-vs-poll check
+            # always finds an empty set and reports every key as up. Confirmed
+            # live: the picker rendered and even had its mouse feed fixed,
+            # but arrows/Enter/Esc still did nothing until this was widened.
+            if n_code == HC_ACTION and (self._d3d_menu_visible or self._stadium_picker_pending):
                 msg = int(w_param)
                 if msg in key_messages:
                     try:
@@ -1950,7 +2169,12 @@ class OverlayMixin:
         self._overlay_blocked_key_down.clear()
 
     def _is_overlay_key_down(self, vk: int, menu_input_fg: bool) -> bool:
-        if self._d3d_menu_visible and self._keyboard_hook is not None:
+        # The stadium picker (see _open_stadium_picker in stadium_runtime.py)
+        # needs the exact same hook-captured reliability fix as the general
+        # menu — FIFA's exclusive-fullscreen input handling appears to make
+        # GetAsyncKeyState polling from this process unreliable while it
+        # holds focus, regardless of which CGFS panel is asking.
+        if (self._d3d_menu_visible or self._stadium_picker_pending) and self._keyboard_hook is not None:
             return vk in self._overlay_blocked_key_down
         return bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
 

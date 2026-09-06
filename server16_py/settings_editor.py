@@ -11,6 +11,7 @@ from PIL import Image, ImageTk
 
 from .chants_runtime import MciAudioPlayer
 from .file_tools import discover_stadium_names, resolve_stadium_preview_path, stadium_preview_fallback_path
+from .stadium_runtime import StadiumRuntime
 from .video_preview import MoviePreviewPanel
 
 
@@ -71,6 +72,12 @@ class SettingsAreaEditor(tk.Toplevel):
 
 
 class SettingsSectionFrame(tk.Frame):
+    # Must match _MAX_STADIUM_PICKER_ITEMS (d3d_injector.py) / MAX_STADIUM_PICKER_ITEMS
+    # (cgfs16_overlay.cpp) -- the in-game F12 stadium picker's shared-memory
+    # buffer holds at most this many candidates (it can now scroll through all
+    # of them, so this is a generous technical ceiling, not a "fits on screen"
+    # limit), so there is no point letting a key be assigned more than this here.
+    MAX_ASSIGNED_STADIUMS = 64
     STADIUM_DEFAULTS = {"police": "4", "pitch": "0", "net": "0"}
     NET_DEFAULTS = {"down": "1086199011", "high": "1087199011", "rig": "4", "shape": "0"}
     STADIUM_NAME_DEFAULTS = {"name": "", "active": "1"}
@@ -290,8 +297,56 @@ class SettingsSectionFrame(tk.Frame):
             self.exclude_entry = self._add_entry_row(self.body, 0, "Reason", self.exclude_var, readonly=True)
 
     def _build_stadium_editor(self) -> None:
-        self.stadium_list = tk.Listbox(
-            self.body,
+        # Per-stadium Police/Pitch/Net -- name -> (police, pitch, net), keyed
+        # by stadium name (unique within Assigned, see _stadium_add_selected)
+        # so it survives reordering without tracking Listbox indices. Whichever
+        # single row is selected in Assigned is the "active" one the three
+        # combos below read from and write into (see _on_assigned_selection_changed).
+        self._stadium_params: dict[str, tuple[str, str, str]] = {}
+        self._active_stadium_name: str | None = None
+        self.body.grid_columnconfigure(0, weight=1)
+        self.body.grid_columnconfigure(1, weight=1)
+
+        # Assigned <-> Available layout: the left list is exactly the (ordered)
+        # set of stadiums saved for this key -- order matters, since it's the
+        # same order the in-game F12 stadium picker lists them in
+        # (stadium_runtime._open_stadium_picker -> stadium_picker.rml). The
+        # right list is every stadium folder that exists on disk, filterable
+        # by the search box above it. Add/Remove/Replace/Move act between them
+        # instead of one big ctrl+click multi-select list.
+        lists_row = tk.Frame(self.body, bg=self.app.card)
+        lists_row.grid(row=0, column=0, columnspan=2, sticky="nsew", pady=(0, 10))
+        lists_row.grid_columnconfigure(0, weight=1)
+        lists_row.grid_columnconfigure(2, weight=1)
+        lists_row.grid_rowconfigure(0, weight=1)
+
+        assigned_col = tk.Frame(lists_row, bg=self.app.card)
+        assigned_col.grid(row=0, column=2, sticky="nsew", padx=(8, 0))
+        assigned_col.grid_columnconfigure(0, weight=1)
+        assigned_col.grid_rowconfigure(1, weight=1)
+
+        assigned_header = tk.Frame(assigned_col, bg=self.app.card)
+        assigned_header.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        assigned_header.grid_columnconfigure(0, weight=1)
+        tk.Label(
+            assigned_header,
+            text=self.tr("dialog.editor.stadium_multi.assigned_title"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 9, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        self.assigned_count_label = tk.Label(
+            assigned_header, text="", bg=self.app.card, font=("Bahnschrift", 9, "bold"), anchor="e",
+        )
+        self.assigned_count_label.grid(row=0, column=1, sticky="e")
+
+        assigned_list_wrap = tk.Frame(assigned_col, bg=self.app.card)
+        assigned_list_wrap.grid(row=1, column=0, sticky="nsew")
+        assigned_list_wrap.grid_columnconfigure(0, weight=1)
+        assigned_list_wrap.grid_rowconfigure(0, weight=1)
+        self.assigned_stadium_list = tk.Listbox(
+            assigned_list_wrap,
             selectmode="extended",
             exportselection=False,
             height=14,
@@ -302,32 +357,255 @@ class SettingsSectionFrame(tk.Frame):
             relief="flat",
             font=("Consolas", 10),
         )
-        stadium_scroll = ttk.Scrollbar(
-            self.body,
-            orient="vertical",
-            command=self.stadium_list.yview,
-            style="Server16.Vertical.TScrollbar",
+        assigned_scroll = ttk.Scrollbar(
+            assigned_list_wrap, orient="vertical", command=self.assigned_stadium_list.yview, style="Server16.Vertical.TScrollbar",
         )
-        self.stadium_list.configure(yscrollcommand=stadium_scroll.set)
-        self.stadium_list.grid(row=0, column=0, sticky="nsew", pady=(0, 10))
-        stadium_scroll.grid(row=0, column=1, sticky="ns", padx=(8, 0), pady=(0, 10))
-        self.body.grid_columnconfigure(0, weight=1)
-        self.body.grid_columnconfigure(1, weight=0)
-        for entry in self._available_choices():
-            self.stadium_list.insert("end", entry)
-        # selection_set() (used by _load_stadium_value/new_entry) doesn't fire
-        # this virtual event, so those two call _update_stadium_preview() directly;
-        # this binding only covers the user clicking in the list themselves.
-        self.stadium_list.bind("<<ListboxSelect>>", lambda _e: self._update_stadium_preview())
+        self.assigned_stadium_list.configure(yscrollcommand=assigned_scroll.set)
+        self.assigned_stadium_list.grid(row=0, column=0, sticky="nsew")
+        assigned_scroll.grid(row=0, column=1, sticky="ns", padx=(4, 0))
+        # selection_set() (used by _load_stadium_value/new_entry/add/remove/
+        # replace/move) doesn't fire this virtual event, so those call
+        # _on_assigned_selection_changed() directly; this binding only covers
+        # the user clicking in the list themselves.
+        self.assigned_stadium_list.bind("<<ListboxSelect>>", lambda _e: self._on_assigned_selection_changed())
+        self.assigned_stadium_list.bind("<Double-Button-1>", lambda _e: self._stadium_remove_selected())
+
+        tk.Label(
+            assigned_col,
+            text=self.tr("dialog.editor.stadium_multi.hint"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 8),
+            anchor="w",
+            wraplength=220,
+            justify="left",
+        ).grid(row=2, column=0, sticky="w", pady=(4, 0))
+
+        toolbar = tk.Frame(lists_row, bg=self.app.card)
+        toolbar.grid(row=0, column=1, sticky="ns", padx=4)
+        self._stadium_add_btn = ttk.Button(
+            toolbar, text=self.tr("dialog.editor.stadium_multi.add") + " →", command=self._stadium_add_selected,
+        )
+        self._stadium_add_btn.pack(fill="x", pady=(28, 4))
+        ttk.Button(
+            toolbar, text="← " + self.tr("dialog.editor.stadium_multi.remove"), command=self._stadium_remove_selected,
+        ).pack(fill="x", pady=4)
+        ttk.Button(
+            toolbar, text=self.tr("dialog.editor.stadium_multi.replace"), command=self._stadium_replace_selected,
+        ).pack(fill="x", pady=4)
+        move_row = tk.Frame(toolbar, bg=self.app.card)
+        move_row.pack(fill="x", pady=(16, 4))
+        ttk.Button(move_row, text="▲", width=3, command=lambda: self._stadium_move_selected(-1)).pack(side="left", expand=True, fill="x")
+        ttk.Button(move_row, text="▼", width=3, command=lambda: self._stadium_move_selected(1)).pack(side="left", expand=True, fill="x")
+
+        available_col = tk.Frame(lists_row, bg=self.app.card)
+        available_col.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        available_col.grid_columnconfigure(0, weight=1)
+        available_col.grid_rowconfigure(2, weight=1)
+        tk.Label(
+            available_col,
+            text=self.tr("dialog.editor.stadium_multi.available_title"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 9, "bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.available_search_var = tk.StringVar()
+        search_entry = tk.Entry(
+            available_col,
+            textvariable=self.available_search_var,
+            bg=self.app.panel_alt,
+            fg=self.app.fg,
+            insertbackground=self.app.fg,
+            relief="flat",
+            font=("Consolas", 10),
+        )
+        search_entry.grid(row=1, column=0, sticky="ew", pady=(0, 4))
+        search_entry.bind("<KeyRelease>", lambda _e: self._filter_available_stadiums())
+
+        available_list_wrap = tk.Frame(available_col, bg=self.app.card)
+        available_list_wrap.grid(row=2, column=0, sticky="nsew")
+        available_list_wrap.grid_columnconfigure(0, weight=1)
+        available_list_wrap.grid_rowconfigure(0, weight=1)
+        self.available_stadium_list = tk.Listbox(
+            available_list_wrap,
+            selectmode="extended",
+            exportselection=False,
+            height=14,
+            bg=self.app.panel,
+            fg=self.app.fg,
+            selectbackground="#19324d",
+            selectforeground=self.app.fg,
+            relief="flat",
+            font=("Consolas", 10),
+        )
+        available_scroll = ttk.Scrollbar(
+            available_list_wrap, orient="vertical", command=self.available_stadium_list.yview, style="Server16.Vertical.TScrollbar",
+        )
+        self.available_stadium_list.configure(yscrollcommand=available_scroll.set)
+        self.available_stadium_list.grid(row=0, column=0, sticky="nsew")
+        available_scroll.grid(row=0, column=1, sticky="ns", padx=(4, 0))
+        self.available_stadium_list.bind("<Double-Button-1>", lambda _e: self._stadium_add_selected())
+        self._all_available_stadiums = self._available_choices()
+        for entry in self._all_available_stadiums:
+            self.available_stadium_list.insert("end", entry)
+
+        self.stadium_params_label = tk.Label(
+            self.body, text="", bg=self.app.card, fg=self.app.accent, font=("Bahnschrift", 9, "bold"), anchor="w",
+        )
+        self.stadium_params_label.grid(row=1, column=0, columnspan=2, sticky="w", pady=(2, 4))
+
         self.police_var = tk.StringVar(value=self.STADIUM_DEFAULTS["police"])
         self.pitch_var = tk.StringVar(value=self.STADIUM_DEFAULTS["pitch"])
         self.net_var = tk.StringVar(value=self.STADIUM_DEFAULTS["net"])
-        self.police_var.trace_add("write", lambda *_: self._update_police_preview())
-        self.pitch_var.trace_add("write", lambda *_: self._update_pitch_preview())
-        self.net_var.trace_add("write", lambda *_: self._update_net_preview())
-        self._add_combo_row(self.body, 1, "Police", self.police_var, [str(i) for i in range(1, 11)])
-        self._add_combo_row(self.body, 2, "Pitch", self.pitch_var, self._asset_indices(self.app.PitchMowsource))
-        self._add_combo_row(self.body, 3, "Net", self.net_var, self._asset_indices(self.app.Nsource))
+        # Each StringVar write both refreshes that field's preview image AND
+        # (when a single Assigned row is selected) writes the new value back
+        # into that stadium's own entry in self._stadium_params -- see
+        # _on_stadium_param_changed. Re-applying the same value back to
+        # itself (e.g. right after _on_assigned_selection_changed loads a
+        # freshly-selected row's values into these vars) is a harmless no-op.
+        self.police_var.trace_add("write", lambda *_: self._on_stadium_param_changed("police"))
+        self.pitch_var.trace_add("write", lambda *_: self._on_stadium_param_changed("pitch"))
+        self.net_var.trace_add("write", lambda *_: self._on_stadium_param_changed("net"))
+        self.police_combo = self._add_combo_row(self.body, 2, self.tr("dialog.editor.field.police"), self.police_var, [str(i) for i in range(1, 11)])
+        self.pitch_combo = self._add_combo_row(self.body, 3, self.tr("dialog.editor.field.pitch"), self.pitch_var, self._asset_indices(self.app.PitchMowsource))
+        self.net_combo = self._add_combo_row(self.body, 4, self.tr("dialog.editor.field.net"), self.net_var, self._asset_indices(self.app.Nsource))
+        self._refresh_stadium_assigned_state()
+
+    def _stadium_default_triple(self) -> tuple[str, str, str]:
+        return (self.STADIUM_DEFAULTS["police"], self.STADIUM_DEFAULTS["pitch"], self.STADIUM_DEFAULTS["net"])
+
+    def _set_stadium_param_controls_state(self, state: str) -> None:
+        for combo in (self.police_combo, self.pitch_combo, self.net_combo):
+            combo.configure(state=state)
+
+    def _on_assigned_selection_changed(self) -> None:
+        """Loads the single selected Assigned row's own Police/Pitch/Net into
+        the three combos below (or disables them when 0 or >1 rows are
+        selected, to avoid ambiguously bulk-editing). Called after every
+        mutation (add/remove/replace/move) as well as on <<ListboxSelect>>."""
+        selection = self.assigned_stadium_list.curselection()
+        if len(selection) == 1:
+            name = self.assigned_stadium_list.get(selection[0])
+            self._active_stadium_name = name
+            police, pitch, net = self._stadium_params.get(name, self._stadium_default_triple())
+            self.police_var.set(police)
+            self.pitch_var.set(pitch)
+            self.net_var.set(net)
+            self._set_stadium_param_controls_state("normal")
+            self.stadium_params_label.configure(text=self.tr("dialog.editor.stadium_multi.editing_params", name=name))
+        else:
+            self._active_stadium_name = None
+            self._set_stadium_param_controls_state("disabled")
+            self.stadium_params_label.configure(text=self.tr("dialog.editor.stadium_multi.select_to_edit_params"))
+        self._update_stadium_preview()
+
+    def _on_stadium_param_changed(self, field: str) -> None:
+        if field == "police":
+            self._update_police_preview()
+        elif field == "pitch":
+            self._update_pitch_preview()
+        else:
+            self._update_net_preview()
+        if self._active_stadium_name is not None:
+            self._stadium_params[self._active_stadium_name] = (
+                self.police_var.get().strip(), self.pitch_var.get().strip(), self.net_var.get().strip(),
+            )
+
+    def _refresh_stadium_assigned_state(self) -> None:
+        count = self.assigned_stadium_list.size()
+        over_max = count > self.MAX_ASSIGNED_STADIUMS
+        self.assigned_count_label.configure(
+            text=self.tr("dialog.editor.stadium_multi.count", count=count, max=self.MAX_ASSIGNED_STADIUMS),
+            fg=self.app.error if over_max else self.app.gold,
+        )
+        self._stadium_add_btn.configure(state="disabled" if count >= self.MAX_ASSIGNED_STADIUMS else "normal")
+        self._on_assigned_selection_changed()
+
+    def _filter_available_stadiums(self) -> None:
+        query = self.available_search_var.get().strip().lower()
+        self.available_stadium_list.delete(0, "end")
+        for name in self._all_available_stadiums:
+            if not query or query in name.lower():
+                self.available_stadium_list.insert("end", name)
+
+    def _stadium_add_selected(self) -> None:
+        to_add = [self.available_stadium_list.get(index) for index in self.available_stadium_list.curselection()]
+        if not to_add:
+            return
+        existing = set(self.assigned_stadium_list.get(0, "end"))
+        last_added_index = None
+        for name in to_add:
+            if name in existing:
+                continue
+            if self.assigned_stadium_list.size() >= self.MAX_ASSIGNED_STADIUMS:
+                self.status_var.set(self.tr("dialog.editor.stadium_multi.max_reached", max=self.MAX_ASSIGNED_STADIUMS))
+                break
+            self.assigned_stadium_list.insert("end", name)
+            # A stadium not yet in _stadium_params (the common case) starts at
+            # the defaults; one already there (e.g. re-added after Remove)
+            # keeps whatever it had rather than resetting it.
+            self._stadium_params.setdefault(name, self._stadium_default_triple())
+            existing.add(name)
+            last_added_index = self.assigned_stadium_list.size() - 1
+        if last_added_index is not None:
+            self.assigned_stadium_list.selection_clear(0, "end")
+            self.assigned_stadium_list.selection_set(last_added_index)
+            self.assigned_stadium_list.activate(last_added_index)
+            self._refresh_stadium_assigned_state()
+
+    def _stadium_remove_selected(self) -> None:
+        selection = self.assigned_stadium_list.curselection()
+        if not selection:
+            return
+        for index in reversed(selection):
+            name = self.assigned_stadium_list.get(index)
+            self.assigned_stadium_list.delete(index)
+            self._stadium_params.pop(name, None)
+        self._refresh_stadium_assigned_state()
+
+    def _stadium_replace_selected(self) -> None:
+        assigned_selection = self.assigned_stadium_list.curselection()
+        available_selection = self.available_stadium_list.curselection()
+        if len(assigned_selection) != 1 or len(available_selection) != 1:
+            self.status_var.set(self.tr("dialog.editor.stadium_multi.select_to_replace"))
+            return
+        index = assigned_selection[0]
+        new_name = self.available_stadium_list.get(available_selection[0])
+        current_name = self.assigned_stadium_list.get(index)
+        if new_name != current_name and new_name in set(self.assigned_stadium_list.get(0, "end")):
+            self.status_var.set(self.tr("dialog.editor.stadium_multi.already_assigned", name=new_name))
+            return
+        # Replace in place (same index) so it doesn't reshuffle in-game picker
+        # order. The new occupant inherits the outgoing one's Police/Pitch/Net
+        # (replacing preserves "this slot's configuration", it just swaps which
+        # stadium fills it) unless the new name already has its own saved
+        # values from earlier (e.g. it was assigned before and removed).
+        if new_name != current_name:
+            inherited = self._stadium_params.get(new_name, self._stadium_params.get(current_name, self._stadium_default_triple()))
+            self._stadium_params[new_name] = inherited
+            self._stadium_params.pop(current_name, None)
+        self.assigned_stadium_list.delete(index)
+        self.assigned_stadium_list.insert(index, new_name)
+        self.assigned_stadium_list.selection_set(index)
+        self._refresh_stadium_assigned_state()
+
+    def _stadium_move_selected(self, direction: int) -> None:
+        selection = self.assigned_stadium_list.curselection()
+        if len(selection) != 1:
+            return
+        index = selection[0]
+        target = index + direction
+        items = list(self.assigned_stadium_list.get(0, "end"))
+        if target < 0 or target >= len(items):
+            return
+        items[index], items[target] = items[target], items[index]
+        self.assigned_stadium_list.delete(0, "end")
+        for name in items:
+            self.assigned_stadium_list.insert("end", name)
+        self.assigned_stadium_list.selection_set(target)
+        self.assigned_stadium_list.activate(target)
+        self._on_assigned_selection_changed()
 
     def _build_stadium_preview_panel(self, scroll_content: tk.Misc) -> None:
         # Same slot _build_chants_preview_panel uses (row 1 of the scrollable
@@ -353,9 +631,9 @@ class SettingsSectionFrame(tk.Frame):
         small_row.grid_columnconfigure(0, weight=1)
         small_row.grid_columnconfigure(1, weight=1)
         small_row.grid_columnconfigure(2, weight=1)
-        self._build_stadium_preview_box(small_row, 0, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(170, 140))
-        self._build_stadium_preview_box(small_row, 1, self.tr("dialog.stadium.preview.net"), "net", image_size=(170, 140))
-        self._build_stadium_preview_box(small_row, 2, self.tr("dialog.stadium.preview.police"), "police", image_size=(170, 140))
+        self._build_stadium_preview_box(small_row, 0, self.tr("dialog.stadium.preview.police"), "police", image_size=(170, 140))
+        self._build_stadium_preview_box(small_row, 1, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(170, 140))
+        self._build_stadium_preview_box(small_row, 2, self.tr("dialog.stadium.preview.net"), "net", image_size=(170, 140))
 
         stadium_wrap = tk.Frame(container, bg=self.app.card)
         stadium_wrap.grid(row=1, column=0, sticky="nsew")
@@ -443,8 +721,13 @@ class SettingsSectionFrame(tk.Frame):
     def _update_stadium_preview(self) -> None:
         if "stadium" not in self._preview_labels:
             return
-        selection = self.stadium_list.curselection()
-        stadium_name = self.stadium_list.get(selection[0]) if selection else ""
+        selection = self.assigned_stadium_list.curselection()
+        if selection:
+            stadium_name = self.assigned_stadium_list.get(selection[0])
+        elif self.assigned_stadium_list.size() > 0:
+            stadium_name = self.assigned_stadium_list.get(0)
+        else:
+            stadium_name = ""
         image_path = resolve_stadium_preview_path(self.app.exedir / self.spec.directory, stadium_name) if stadium_name else None
         if image_path is None and stadium_name:
             image_path = stadium_preview_fallback_path()
@@ -960,11 +1243,9 @@ class SettingsSectionFrame(tk.Frame):
             choices = self._available_choices()
             self.value_var.set(choices[0] if choices else "")
         elif self.spec.kind == "stadium":
-            self.stadium_list.selection_clear(0, "end")
-            self.police_var.set(self.STADIUM_DEFAULTS["police"])
-            self.pitch_var.set(self.STADIUM_DEFAULTS["pitch"])
-            self.net_var.set(self.STADIUM_DEFAULTS["net"])
-            self._update_stadium_preview()
+            self.assigned_stadium_list.delete(0, "end")
+            self._stadium_params = {}
+            self._refresh_stadium_assigned_state()
         elif self.spec.kind == "net":
             self.down_var.set(self.NET_DEFAULTS["down"])
             self.high_var.set(self.NET_DEFAULTS["high"])
@@ -1010,27 +1291,30 @@ class SettingsSectionFrame(tk.Frame):
         self.status_var.set(self.tr("dialog.editor.editing", section=self.spec.section, key=key))
 
     def _load_stadium_value(self, value: str) -> None:
-        self.stadium_list.selection_clear(0, "end")
-        if not value or value == "None":
-            self.police_var.set(self.STADIUM_DEFAULTS["police"])
-            self.pitch_var.set(self.STADIUM_DEFAULTS["pitch"])
-            self.net_var.set(self.STADIUM_DEFAULTS["net"])
-            self._update_stadium_preview()
-            return
-        parts = [part.strip() for part in value.split(",") if part.strip()]
-        if len(parts) >= 4:
-            stadiums, police, pitch, net = parts[:-3], parts[-3], parts[-2], parts[-1]
-        else:
-            stadiums, police, pitch, net = parts[:1], self.STADIUM_DEFAULTS["police"], self.STADIUM_DEFAULTS["pitch"], self.STADIUM_DEFAULTS["net"]
-        choices = self._available_choices()
-        for stadium in stadiums:
-            if stadium in choices:
-                index = choices.index(stadium)
-                self.stadium_list.selection_set(index)
-        self.police_var.set(police)
-        self.pitch_var.set(pitch)
-        self.net_var.set(net)
-        self._update_stadium_preview()
+        self.assigned_stadium_list.delete(0, "end")
+        self._stadium_params = {}
+        if value and value != "None":
+            entries = StadiumRuntime._parse_stadium_entries(value)
+            if not entries:
+                # Malformed/too-short legacy value (fewer than 4 comma fields)
+                # -- fall back to a lone stadium name with default params,
+                # same graceful degradation as before this per-stadium rework.
+                parts = [part.strip() for part in value.split(",") if part.strip()]
+                if parts:
+                    entries = [(parts[0], *self._stadium_default_triple())]
+            # Keep every assigned name in its saved order, even one whose
+            # folder no longer exists on disk (renamed/removed pack) --
+            # dropping it here would silently lose it the moment this key is
+            # opened and re-saved. The Available list on the right stays
+            # limited to real, discoverable folders, since you can only *add*
+            # ones that actually exist.
+            for name, police, pitch, net in entries:
+                self.assigned_stadium_list.insert("end", name)
+                self._stadium_params[name] = (police, pitch, net)
+        if self.assigned_stadium_list.size() > 0:
+            self.assigned_stadium_list.selection_set(0)
+            self.assigned_stadium_list.activate(0)
+        self._refresh_stadium_assigned_state()
 
     def _load_net_value(self, value: str) -> None:
         parts = [part.strip() for part in value.split(",")]
@@ -1091,10 +1375,14 @@ class SettingsSectionFrame(tk.Frame):
         if self.spec.kind == "simple":
             return self.value_var.get().strip()
         if self.spec.kind == "stadium":
-            selected = [self.stadium_list.get(index) for index in self.stadium_list.curselection()]
-            if not selected:
+            names = list(self.assigned_stadium_list.get(0, "end"))
+            if not names:
                 return "None"
-            return ",".join(selected + [self.police_var.get().strip(), self.pitch_var.get().strip(), self.net_var.get().strip()])
+            fields: list[str] = []
+            for name in names:
+                police, pitch, net = self._stadium_params.get(name, self._stadium_default_triple())
+                fields.extend([name, police, pitch, net])
+            return ",".join(fields)
         if self.spec.kind == "net":
             return ",".join(
                 [
@@ -1187,8 +1475,12 @@ class SettingsSectionFrame(tk.Frame):
             value = self.value_var.get().strip()
             return base / value if value else None
         if self.spec.kind == "stadium":
-            selection = self.stadium_list.curselection()
-            return base / self.stadium_list.get(selection[0]) if selection else None
+            selection = self.assigned_stadium_list.curselection()
+            if selection:
+                return base / self.assigned_stadium_list.get(selection[0])
+            if self.assigned_stadium_list.size() > 0:
+                return base / self.assigned_stadium_list.get(0)
+            return None
         if self.spec.kind in ("net", "scoreboardstdname"):
             key = self.key_var.get().strip()
             return base / key if key else None

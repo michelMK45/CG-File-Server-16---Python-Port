@@ -74,6 +74,16 @@ const wchar_t *RmlOverlay_KitCarouselImageCurrent();
 const wchar_t *RmlOverlay_KitCarouselImageNext();
 int RmlOverlay_KitCarouselCycleSeq();
 int RmlOverlay_KitCarouselDirection();
+// Must match MAX_STADIUM_PICKER_ITEMS in cgfs16_overlay.cpp / d3d_injector.py.
+#define MAX_STADIUM_PICKER_ITEMS 64
+bool RmlOverlay_StadiumPickerVisible();
+const wchar_t *RmlOverlay_StadiumPickerHeader();
+int RmlOverlay_StadiumPickerItemCount();
+const wchar_t *RmlOverlay_StadiumPickerItemText(int index);
+const wchar_t *RmlOverlay_StadiumPickerItemThumbPath(int index);
+long RmlOverlay_StadiumPickerSelectedIndex();
+void RmlOverlay_PushStadiumPickerEvent(int kind, int index);
+int RmlOverlay_StadiumPickerConsumeWheelDelta();
 // Movies-tab live video preview (OverlayVideoShared, cgfs16_overlay.cpp) —
 // OVERLAY_VIDEO_W/H must match the same constants there and in
 // cgfs16_rmlui_menu.cpp/d3d_injector.py.
@@ -82,6 +92,21 @@ int RmlOverlay_KitCarouselDirection();
 bool RmlOverlay_VideoPlaying();
 long RmlOverlay_VideoFrameSeq();
 const unsigned char *RmlOverlay_VideoPixels();
+// Live mouse feed (Python -> DLL, written every ~80ms by
+// _sync_rmlui_menu_mouse_feed) — fed into the shared Rml::Context once per
+// frame from RmlOverlay_RenderFrame below, not from any one document's own
+// Sync function, since every document here (menu, stadium panel, stadium
+// picker, ...) shares that one Context. See RmlOverlay_RenderFrame's comment
+// on why this used to live inside RmlMenu_Sync and had to move.
+long RmlOverlay_MenuMouseX();
+long RmlOverlay_MenuMouseY();
+bool RmlOverlay_MenuMouseLeftDown();
+// Which hint bar to show (0 = keyboard/mouse, 1 = gamepad) and the bundled
+// icon directories — same fields the general F12 menu's own hint bar uses
+// (cgfs16_rmlui_menu.cpp), reused here for the stadium picker's hint bar.
+long RmlOverlay_InputMode();
+const wchar_t *RmlOverlay_GamepadIconDir();
+const wchar_t *RmlOverlay_KeyboardIconDir();
 
 // ---------------------------------------------------------------------------
 // wchar_t -> UTF-8 helper (shared struct strings are wide; Rml::String is UTF-8)
@@ -149,6 +174,7 @@ static Rml::String ResolveToastIconPath(const wchar_t *kind) {
 static const char kToastDocFile[] = "toast.rml";
 static const char kStadiumDocFile[] = "stadium_panel.rml";
 static const char kKitCarouselDocFile[] = "kit_carousel.rml";
+static const char kStadiumPickerDocFile[] = "stadium_picker.rml";
 
 // ---------------------------------------------------------------------------
 // D3D11 shader — origin: Phase 0 POC, unchanged. Vertex layout matches
@@ -1271,6 +1297,11 @@ static CgfsRmlRenderInterface *g_renderIf = nullptr;
 static CgfsRmlSystemInterface *g_systemIf = nullptr;
 static CgfsRmlFileInterface   *g_fileIf = nullptr;
 static Rml::Context           *g_context = nullptr;
+// Last-seen raw left-button state, for down/up edge detection against the
+// shared Context — see RmlOverlay_RenderFrame's mouse-feed block. Present
+// fires far more often than Python's ~80ms mouse-field write, so this must
+// be compared every frame rather than trusting a single sample.
+static bool                    g_sharedMouseLeftWasDown = false;
 static bool                    g_initDone = false;
 static bool                    g_initFailed = false;
 
@@ -1469,6 +1500,271 @@ static bool ApplyKitCarouselCloseAnim() {
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// Manual stadium picker (multi-stadium assignments, random-selection
+// checkbox unchecked) — a CENTERED modal, unlike the stadium panel/kit
+// carousel above (both right-hand-side stacking notifications): it needs the
+// player's deliberate attention/click, not a passing status update, so it
+// does not participate in RmlOverlay_RenderFrame's stacking cursor. Own
+// doc/flags, same "never fight over one shared visible flag" rationale as
+// kit_carousel_visible (see its field comment in cgfs16_overlay.cpp).
+//
+// Row pool is fixed at MAX_STADIUM_PICKER_ITEMS: unlike the general F12
+// menu's ROW_POOL/menu_items[] virtual-scroll machinery, every candidate row
+// is a real DOM element all the time (no window_base re-mapping) -- with the
+// pool sized generously (64) this is cheap, and it keeps row index == real
+// candidate index everywhere (StadiumPickerEventListener's click index needs
+// no translation). What doesn't fit in #list's fixed height simply overflows
+// and scrolls via plain RCSS `overflow-y: auto` -- SyncStadiumPicker calls
+// ScrollIntoView() on the highlighted row on every selection change (keeps
+// keyboard/gamepad reachable past the visible window) and forwards
+// stadium_picker_wheel_delta into Context::ProcessMouseWheel so the mouse
+// wheel scrolls it too, same shared mouse-feed Context every other RmlUi
+// document here already uses. Keyboard/gamepad highlight navigation is
+// otherwise entirely Python-side (writes stadium_picker_selected_index, see
+// CLAUDE.md §2.3) — this file only ever reads that index to drive the
+// preview panel + scroll position and only ever pushes a
+// stadium_picker_event for a genuine mouse click (row or close button),
+// mirroring MenuEventListener in cgfs16_rmlui_menu.cpp.
+// ---------------------------------------------------------------------------
+static Rml::ElementDocument *g_stadiumPickerDoc = nullptr;
+static Rml::Element         *g_spHeader = nullptr;
+static Rml::Element         *g_spRow[MAX_STADIUM_PICKER_ITEMS] = {};
+static Rml::Element         *g_spRowText[MAX_STADIUM_PICKER_ITEMS] = {};
+static bool                  g_spRowShown[MAX_STADIUM_PICKER_ITEMS] = {};
+static Rml::Element         *g_spCloseBtn = nullptr;
+static Rml::Element         *g_spPreviewImg = nullptr;
+static Rml::Element         *g_spPreviewTitle = nullptr;
+static wchar_t                g_spPreviewImgPathLoaded[MAX_IMG] = {};
+// Button legend (Navigate/Select/Close) — same swap-by-input-mode shape as
+// the general F12 menu's own hint bar (kKeyHints/kGpHints,
+// cgfs16_rmlui_menu.cpp), just three fixed items instead of that file's
+// full hint set (no tab/filter/mute hints needed here).
+static Rml::Element         *g_spHintKeyRow = nullptr;
+static Rml::Element         *g_spHintGpRow = nullptr;
+static Rml::Element         *g_spHintKeyIcon1[3] = {};
+static Rml::Element         *g_spHintKeyIcon2[3] = {};
+static Rml::Element         *g_spHintGpIcon1[3] = {};
+static wchar_t                g_spHintKeyIconDirLoaded[MAX_IMG] = {};
+static wchar_t                g_spHintGpIconDirLoaded[MAX_IMG] = {};
+// Forces a fresh preview/title refresh the moment a NEW picker session opens
+// (see SyncStadiumPicker's g_stadiumPickerDocShown branch) even if that new
+// session's selected index/count happen to numerically match the previous
+// session's — those are a different assignment's candidates, not the same
+// stadium, so the reload-on-change guard below must not skip them.
+static int                    g_spLastSelectedIndex = -1;
+static int                    g_spLastItemCount = -1;
+
+static bool      g_stadiumPickerDocShown = false;
+static bool      g_spOpenAnimActive = false;
+static ULONGLONG g_spOpenAnimStartTick = 0;
+static bool      g_spCloseAnimActive = false;
+static ULONGLONG g_spCloseAnimStartTick = 0;
+static const float SP_OPEN_ANIM_MS  = 220.f;
+static const float SP_CLOSE_ANIM_MS = 170.f;
+
+// Grow-in/out (scale + fade) rather than the side panels' slide — this is a
+// centered modal, not something entering from an edge.
+static void ApplyStadiumPickerOpenAnim() {
+    if (!g_stadiumPickerDoc || !g_spOpenAnimActive) return;
+    float elapsedMs = (float)(GetTickCount64() - g_spOpenAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / SP_OPEN_ANIM_MS);
+    if (t >= 1.f) {
+        g_spOpenAnimActive = false;
+        g_stadiumPickerDoc->SetProperty("opacity", "1");
+        g_stadiumPickerDoc->SetProperty("transform", "none");
+        return;
+    }
+    float eased = 1.f - powf(1.f - t, 3.f);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", eased);
+    g_stadiumPickerDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "scale(%.4f)", 0.96f + 0.04f * eased);
+    g_stadiumPickerDoc->SetProperty("transform", buf);
+}
+
+// Returns true once finished — caller then Hide()s the document.
+static bool ApplyStadiumPickerCloseAnim() {
+    if (!g_stadiumPickerDoc) return true;
+    float elapsedMs = (float)(GetTickCount64() - g_spCloseAnimStartTick);
+    float t = (std::min)(1.f, elapsedMs / SP_CLOSE_ANIM_MS);
+    if (t >= 1.f) return true;
+    float eased = t * t * t;
+    char buf[32];
+    snprintf(buf, sizeof(buf), "%.4f", 1.f - eased);
+    g_stadiumPickerDoc->SetProperty("opacity", buf);
+    snprintf(buf, sizeof(buf), "scale(%.4f)", 1.f - 0.04f * eased);
+    g_stadiumPickerDoc->SetProperty("transform", buf);
+    return false;
+}
+
+// stadium_picker_event_kind values — must match d3d_injector.py's
+// get_stadium_picker_event() / app_overlay.py's _handle_stadium_picker_event()
+// docstrings exactly.
+enum StadiumPickerEventKind { SPEVK_ITEM_CLICK = 1, SPEVK_CLOSE_CLICK = 2 };
+
+class StadiumPickerEventListener : public Rml::EventListener {
+public:
+    void ProcessEvent(Rml::Event &event) override;
+};
+static StadiumPickerEventListener g_stadiumPickerEventListener;
+
+void StadiumPickerEventListener::ProcessEvent(Rml::Event &event) {
+    Rml::Element *cur = event.GetCurrentElement();
+    if (!cur) return;
+    if (event == Rml::EventId::Click) {
+        if (cur == g_spCloseBtn) {
+            RmlOverlay_PushStadiumPickerEvent(SPEVK_CLOSE_CLICK, 0);
+            return;
+        }
+        for (int i = 0; i < MAX_STADIUM_PICKER_ITEMS; i++) {
+            if (cur == g_spRow[i] && g_spRowShown[i]) {
+                RmlOverlay_PushStadiumPickerEvent(SPEVK_ITEM_CLICK, i);
+                return;
+            }
+        }
+    }
+}
+
+// Sets one hint-bar icon's src to "<iconDir>\<iconFile>" — same shape as
+// SetIconSrcCached (cgfs16_rmlui_menu.cpp), duplicated rather than shared
+// since that one is file-static and this file's hint icons never need its
+// per-frame keyboard/gamepad-swap caching (see the two icon-dir guards in
+// SyncStadiumPicker, which already skip redundant calls at a coarser
+// per-directory-change granularity).
+static void SpSetIconSrc(Rml::Element *el, const wchar_t *iconDir, const wchar_t *iconFile) {
+    if (!el || !iconDir || !iconDir[0] || !iconFile) return;
+    size_t dirLen = wcslen(iconDir);
+    bool hasSlash = dirLen > 0 && (iconDir[dirLen - 1] == L'\\' || iconDir[dirLen - 1] == L'/');
+    wchar_t path[MAX_IMG] = {};
+    _snwprintf_s(path, MAX_IMG, _TRUNCATE, hasSlash ? L"%s%s" : L"%s\\%s", iconDir, iconFile);
+    el->SetAttribute("src", WideToUtf8(path));
+}
+
+// Owns the stadium picker's full per-frame lifecycle — same open/close
+// animation shape as SyncStadiumPanel/SyncKitCarousel, but centered instead
+// of right-aligned, and with click-driven row content instead of a passive
+// display.
+static void SyncStadiumPicker(int vpW, int vpH, bool visible) {
+    if (!g_stadiumPickerDoc) return;
+
+    if (!visible) {
+        if (g_spCloseAnimActive) {
+            if (ApplyStadiumPickerCloseAnim()) {
+                g_stadiumPickerDoc->Hide();
+                g_stadiumPickerDocShown = false;
+                g_spCloseAnimActive = false;
+            }
+        } else if (g_stadiumPickerDocShown) {
+            g_spOpenAnimActive = false; // don't fight an interrupted open
+            g_spCloseAnimActive = true;
+            g_spCloseAnimStartTick = GetTickCount64();
+            ApplyStadiumPickerCloseAnim();
+        }
+        return;
+    }
+
+    if (g_spCloseAnimActive) {
+        g_spCloseAnimActive = false;
+        g_spOpenAnimActive = true;
+        g_spOpenAnimStartTick = GetTickCount64();
+    } else if (!g_stadiumPickerDocShown) {
+        g_spOpenAnimActive = true;
+        g_spOpenAnimStartTick = GetTickCount64();
+        // A brand-new picker session — force the preview/title refresh below
+        // even if this session's selected index/count numerically match the
+        // previous session's (see g_spLastSelectedIndex's comment).
+        g_spLastSelectedIndex = -1;
+        g_spLastItemCount = -1;
+    }
+    g_stadiumPickerDocShown = true;
+
+    // Centered, fixed 640x420 size.
+    char leftBuf[16], topBuf[16];
+    snprintf(leftBuf, sizeof(leftBuf), "%dpx", (vpW - 640) / 2);
+    snprintf(topBuf, sizeof(topBuf), "%dpx", (vpH - 420) / 2);
+    g_stadiumPickerDoc->SetProperty("left", leftBuf);
+    g_stadiumPickerDoc->SetProperty("top", topBuf);
+    g_stadiumPickerDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None);
+
+    ApplyStadiumPickerOpenAnim();
+
+    if (g_spHeader) g_spHeader->SetInnerRML(WideToUtf8(RmlOverlay_StadiumPickerHeader()));
+
+    // Button legend — icons only reload when the bundled directory changes
+    // (set once after injection, so in practice this fires once per icon
+    // set, same reload-on-change guard as every image src in this file).
+    const wchar_t *keyDir = RmlOverlay_KeyboardIconDir();
+    if (wcscmp(keyDir, g_spHintKeyIconDirLoaded) != 0) {
+        wcscpy_s(g_spHintKeyIconDirLoaded, keyDir);
+        SpSetIconSrc(g_spHintKeyIcon1[0], keyDir, L"up.png");
+        SpSetIconSrc(g_spHintKeyIcon2[0], keyDir, L"down.png");
+        SpSetIconSrc(g_spHintKeyIcon1[1], keyDir, L"enter.png");
+        SpSetIconSrc(g_spHintKeyIcon1[2], keyDir, L"esc.png");
+    }
+    const wchar_t *gpDir = RmlOverlay_GamepadIconDir();
+    if (wcscmp(gpDir, g_spHintGpIconDirLoaded) != 0) {
+        wcscpy_s(g_spHintGpIconDirLoaded, gpDir);
+        SpSetIconSrc(g_spHintGpIcon1[0], gpDir, L"dpad.png");
+        SpSetIconSrc(g_spHintGpIcon1[1], gpDir, L"a.png");
+        SpSetIconSrc(g_spHintGpIcon1[2], gpDir, L"b.png");
+    }
+    bool gamepadMode = RmlOverlay_InputMode() != 0;
+    if (g_spHintKeyRow) g_spHintKeyRow->SetProperty("display", gamepadMode ? "none" : "flex");
+    if (g_spHintGpRow) g_spHintGpRow->SetProperty("display", gamepadMode ? "flex" : "none");
+
+    int count = RmlOverlay_StadiumPickerItemCount();
+    if (count < 0) count = 0;
+    if (count > MAX_STADIUM_PICKER_ITEMS) count = MAX_STADIUM_PICKER_ITEMS;
+    int selected = (int)RmlOverlay_StadiumPickerSelectedIndex();
+    if (count > 0 && (selected < 0 || selected >= count)) selected = 0;
+
+    for (int i = 0; i < MAX_STADIUM_PICKER_ITEMS; i++) {
+        if (!g_spRow[i]) continue;
+        if (i < count) {
+            if (g_spRowText[i]) g_spRowText[i]->SetInnerRML(WideToUtf8(RmlOverlay_StadiumPickerItemText(i)));
+            g_spRow[i]->SetProperty("display", "flex");
+            g_spRowShown[i] = true;
+            g_spRow[i]->SetClass("row-selected", i == selected);
+        } else {
+            g_spRow[i]->SetProperty("display", "none");
+            g_spRowShown[i] = false;
+        }
+    }
+
+    // Big preview only reloads when the highlighted row (or the whole
+    // candidate set, on a fresh session) actually changed — same
+    // reload-on-change guard as SyncStadiumPanel's single image.
+    if (selected != g_spLastSelectedIndex || count != g_spLastItemCount) {
+        g_spLastSelectedIndex = selected;
+        g_spLastItemCount = count;
+        // Keep the keyboard/gamepad-highlighted row visible now that #list
+        // can hold more rows than fit on screen at once (see this function's
+        // header comment) -- Nearest/Nearest+Instant only scrolls the
+        // minimum needed to bring the row fully into view, so stepping one
+        // row at a time near the middle of a long list doesn't re-snap the
+        // whole viewport every tick.
+        if (count > 0 && selected >= 0 && selected < MAX_STADIUM_PICKER_ITEMS && g_spRow[selected]) {
+            g_spRow[selected]->ScrollIntoView(Rml::ScrollIntoViewOptions(
+                Rml::ScrollAlignment::Nearest, Rml::ScrollAlignment::Nearest, Rml::ScrollBehavior::Instant));
+        }
+        if (g_spPreviewTitle)
+            g_spPreviewTitle->SetInnerRML(count > 0 ? WideToUtf8(RmlOverlay_StadiumPickerItemText(selected)) : Rml::String());
+        const wchar_t *thumb = count > 0 ? RmlOverlay_StadiumPickerItemThumbPath(selected) : L"";
+        if (wcscmp(thumb, g_spPreviewImgPathLoaded) != 0) {
+            wcscpy_s(g_spPreviewImgPathLoaded, thumb);
+            if (g_spPreviewImg) {
+                if (thumb[0]) {
+                    g_spPreviewImg->SetAttribute("src", WideToUtf8(thumb));
+                    g_spPreviewImg->SetProperty("display", "block");
+                } else {
+                    g_spPreviewImg->SetProperty("display", "none");
+                }
+            }
+        }
+    }
+}
+
 static void ApplyStadiumOpenAnim() {
     if (!g_stadiumDoc || !g_stadiumOpenAnimActive) return;
     float elapsedMs = (float)(GetTickCount64() - g_stadiumOpenAnimStartTick);
@@ -1589,6 +1885,7 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     Rml::String toastPath = contentDir + "\\" + kToastDocFile;
     Rml::String stadiumPath = contentDir + "\\" + kStadiumDocFile;
     Rml::String kitCarouselPath = contentDir + "\\" + kKitCarouselDocFile;
+    Rml::String stadiumPickerPath = contentDir + "\\" + kStadiumPickerDocFile;
 
     // Load the (still dev-gated, Phase 2 WIP) menu document FIRST so it
     // renders below the toast/stadium docs, preserving the existing
@@ -1602,10 +1899,11 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     g_toastDoc = g_context->LoadDocument(toastPath);
     g_stadiumDoc = g_context->LoadDocument(stadiumPath);
     g_kitCarouselDoc = g_context->LoadDocument(kitCarouselPath);
-    if (!g_toastDoc || !g_stadiumDoc || !g_kitCarouselDoc) {
-        Log("[RmlOverlay] LoadDocument failed (toast='%s' -> %p, stadium='%s' -> %p, kit_carousel='%s' -> %p)",
+    g_stadiumPickerDoc = g_context->LoadDocument(stadiumPickerPath);
+    if (!g_toastDoc || !g_stadiumDoc || !g_kitCarouselDoc || !g_stadiumPickerDoc) {
+        Log("[RmlOverlay] LoadDocument failed (toast='%s' -> %p, stadium='%s' -> %p, kit_carousel='%s' -> %p, stadium_picker='%s' -> %p)",
             toastPath.c_str(), (void*)g_toastDoc, stadiumPath.c_str(), (void*)g_stadiumDoc,
-            kitCarouselPath.c_str(), (void*)g_kitCarouselDoc);
+            kitCarouselPath.c_str(), (void*)g_kitCarouselDoc, stadiumPickerPath.c_str(), (void*)g_stadiumPickerDoc);
         g_initFailed = true;
         return false;
     }
@@ -1647,7 +1945,37 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     g_kcImgCurrent = g_kitCarouselDoc->GetElementById("img-current");
     g_kcImgNext    = g_kitCarouselDoc->GetElementById("img-next");
 
-    // All three documents start hidden; RmlOverlay_RenderFrame shows/hides
+    g_spHeader = g_stadiumPickerDoc->GetElementById("header");
+    g_spCloseBtn = g_stadiumPickerDoc->GetElementById("close-btn");
+    g_spPreviewImg = g_stadiumPickerDoc->GetElementById("preview-img");
+    g_spPreviewTitle = g_stadiumPickerDoc->GetElementById("preview-title");
+    for (int i = 0; i < MAX_STADIUM_PICKER_ITEMS; i++) {
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "sprow%d", i);
+        g_spRow[i] = g_stadiumPickerDoc->GetElementById(idBuf);
+        if (g_spRow[i]) {
+            g_spRowText[i] = g_spRow[i]->QuerySelector(".row-text");
+            g_spRow[i]->AddEventListener(Rml::EventId::Click, &g_stadiumPickerEventListener);
+        }
+    }
+    if (g_spCloseBtn) g_spCloseBtn->AddEventListener(Rml::EventId::Click, &g_stadiumPickerEventListener);
+
+    g_spHintKeyRow = g_stadiumPickerDoc->GetElementById("hint-key-row");
+    g_spHintGpRow = g_stadiumPickerDoc->GetElementById("hint-gp-row");
+    for (int i = 0; i < 3; i++) {
+        char idBuf[16];
+        snprintf(idBuf, sizeof(idBuf), "sp-hintkey%d", i);
+        if (Rml::Element *item = g_stadiumPickerDoc->GetElementById(idBuf)) {
+            g_spHintKeyIcon1[i] = item->QuerySelector(".icon1");
+            g_spHintKeyIcon2[i] = item->QuerySelector(".icon2");
+        }
+        snprintf(idBuf, sizeof(idBuf), "sp-hintgp%d", i);
+        if (Rml::Element *item = g_stadiumPickerDoc->GetElementById(idBuf)) {
+            g_spHintGpIcon1[i] = item->QuerySelector(".icon1");
+        }
+    }
+
+    // All four documents start hidden; RmlOverlay_RenderFrame shows/hides
     // them per frame based on the shared-memory visibility flags.
 
     Log("[RmlOverlay] Init ok");
@@ -1918,6 +2246,7 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
 
     bool stadiumVisible = RmlOverlay_StadiumPanelVisible();
     bool kitCarouselVisible = RmlOverlay_KitCarouselVisible();
+    bool stadiumPickerVisible = RmlOverlay_StadiumPickerVisible();
 
     // OR in g_toastAnyActive (last SyncToasts call's own result) so a toast
     // that Python already hid but is still mid close-out fade keeps getting
@@ -1938,6 +2267,7 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
     // leaving the document permanently Shown() in RmlUi's own bookkeeping
     // (see RmlMenu_DocShown's header comment for the full failure chain).
     if (!stadiumVisible && !g_stadiumDocShown && !kitCarouselVisible && !g_kitCarouselDocShown &&
+        !stadiumPickerVisible && !g_stadiumPickerDocShown &&
         !anyToastRaw && !menuVisible && !RmlMenu_DocShown()) return;
 
     DXGI_SWAP_CHAIN_DESC scd = {};
@@ -1984,6 +2314,7 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
     SyncToasts(toastsTop, anyToast);
     SyncStadiumPanel(vpW, stadiumTop, stadiumVisible);
     SyncKitCarousel(vpW, kitCarouselTop, kitCarouselVisible);
+    SyncStadiumPicker(vpW, vpH, stadiumPickerVisible);
     RmlMenu_Sync(vpW, vpH, scd.OutputWindow);
 
     if (g_toastDoc) {
@@ -1995,6 +2326,45 @@ void RmlOverlay_RenderFrame(IDXGISwapChain *sc, ID3D11Device *dev, ID3D11DeviceC
         snprintf(leftBuf, sizeof(leftBuf), "%dpx", vpW - 360 - 20);
         g_toastDoc->SetProperty("left", leftBuf);
         if (anyToast) g_toastDoc->Show(Rml::ModalFlag::None, Rml::FocusFlag::None); else g_toastDoc->Hide();
+    }
+
+    // Live mouse feed — deliberately here, after every Sync* call above has
+    // given its document's elements their final position for this frame, so
+    // Context::Update() right below (which does RmlUi's actual hit-testing)
+    // sees up-to-date geometry. Used to live inside RmlMenu_Sync
+    // (cgfs16_rmlui_menu.cpp) alone, which meant it only ever ran while the
+    // general F12 menu itself was visible (that function returns early
+    // otherwise) — so a click aimed at any OTHER document sharing this same
+    // Context (the stadium picker, in particular) never reached RmlUi's
+    // mouse processing at all. One shared Context, one mouse feed, run
+    // unconditionally whenever this function got this far (i.e. something
+    // is visible) rather than tucked inside one specific document's sync.
+    // Modifier keys (shift/ctrl/etc.) aren't tracked by this simplified
+    // feed, so 0 is passed for key_modifier_state.
+    if (g_context) {
+        int mx = (int)RmlOverlay_MenuMouseX();
+        int my = (int)RmlOverlay_MenuMouseY();
+        g_context->ProcessMouseMove(mx, my, 0);
+        bool leftDown = RmlOverlay_MenuMouseLeftDown();
+        if (leftDown && !g_sharedMouseLeftWasDown) {
+            g_context->ProcessMouseButtonDown(0, 0);
+        } else if (!leftDown && g_sharedMouseLeftWasDown) {
+            g_context->ProcessMouseButtonUp(0, 0);
+        }
+        g_sharedMouseLeftWasDown = leftDown;
+
+        // Stadium picker mouse-wheel scroll -- see stadium_picker_wheel_delta's
+        // field comment in cgfs16_overlay.cpp. RmlUi resolves this against
+        // whatever is under the cursor (GetClosestScrollableContainer), so
+        // this is a safe no-op whenever the hovered element isn't #list's
+        // native overflow:auto container (e.g. the general F12 menu's own
+        // hand-rolled list, which isn't an RCSS-scrollable element). Sign
+        // flipped to match _navigate_menu_items(-wheel_steps * step)'s
+        // existing "forward rotation = toward earlier items" convention.
+        int wheelDelta = RmlOverlay_StadiumPickerConsumeWheelDelta();
+        if (wheelDelta != 0) {
+            g_context->ProcessMouseWheel((float)-wheelDelta, 0);
+        }
     }
 
     g_context->Update();

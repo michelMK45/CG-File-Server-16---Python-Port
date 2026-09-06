@@ -33,13 +33,55 @@ class StadiumRuntime:
         )
 
     @staticmethod
-    def _parse_assignment(raw_value: str) -> tuple[list[str], str, str, str]:
+    def _parse_stadium_entries(raw_value: str) -> list[tuple[str, str, str, str]]:
+        """Parse a [stadium]/[comp] settings.ini value into one (name, police,
+        pitch, net) tuple per assigned stadium, transparently handling both
+        formats found on disk:
+          - legacy shared-triple: name1[,name2,...],police,pitch,net -- every
+            name gets the SAME trailing triple. Still written by dialogs.py's
+            "Assign Stadium" dialog and by db_worker-free direct edits.
+          - per-stadium: name1,police1,pitch1,net1[,name2,police2,pitch2,net2,...]
+            -- each stadium carries its own triple. Written by
+            settings_editor.py's Stadium Settings editor and by the F12
+            overlay wizard's stadium-assign flow once it appends to an
+            existing key.
+        Disambiguated without a new delimiter: the per-stadium format's total
+        field count is always an exact multiple of 4, AND the field right
+        after the first name is always numeric (a real stadium folder name is
+        never a bare number, and police is always a plain small integer) --
+        the legacy format's second field is only ever numeric when there is
+        exactly one stadium, in which case both interpretations agree anyway
+        so there is nothing to disambiguate.
+        """
         parts = [part.strip() for part in raw_value.split(",") if part.strip()]
         if len(parts) < 4:
-            return [], "", "", ""
+            return []
+        if len(parts) % 4 == 0 and parts[1].isdigit():
+            entries = []
+            for i in range(0, len(parts), 4):
+                name, police, pitch, net = parts[i:i + 4]
+                if name and name != "None":
+                    entries.append((name, police, pitch, net))
+            return entries
+        # Legacy shared-triple format: N names, then exactly 3 trailing values.
         police, pitch, net = parts[-3:]
-        stadiums = [name for name in parts[:-3] if name and name != "None"]
-        return stadiums, police, pitch, net
+        return [(name, police, pitch, net) for name in parts[:-3] if name and name != "None"]
+
+    @staticmethod
+    def _parse_assignment(raw_value: str) -> tuple[list[str], str, str, str]:
+        """Legacy shared-triple view over _parse_stadium_entries, kept for
+        callers that don't (yet) act on per-stadium police/pitch/net --
+        dialogs.py's "Assign Stadium" dialog and apply_stadium_runtime's own
+        candidate-name gathering below (which discards police/pitch/net
+        entirely). For a genuinely per-stadium value this reports the first
+        stadium's own triple as if it were shared -- an accepted, existing
+        limitation for those call sites, not a new regression."""
+        entries = StadiumRuntime._parse_stadium_entries(raw_value)
+        if not entries:
+            return [], "", "", ""
+        names = [name for name, _police, _pitch, _net in entries]
+        _name, police, pitch, net = entries[0]
+        return names, police, pitch, net
 
     @staticmethod
     def _build_task_request_key(section_name: str, section_id: str, raw_value: str) -> tuple[str, str, str]:
@@ -158,16 +200,32 @@ class StadiumRuntime:
             existing_stadiums = [s for s in valid_stadiums if _stad_exists(s)]
             if existing_stadiums:
                 valid_stadiums = existing_stadiums
-            # Pick the random stadium here, before the dedup check.
-            # If there are multiple options, exclude the currently loaded stadium
-            # so we always rotate to a different one each kickoff.
-            if len(valid_stadiums) > 1 and app.curstad in valid_stadiums:
-                candidates = [s for s in valid_stadiums if s != app.curstad]
-            else:
-                candidates = valid_stadiums
-            desired_stadium = random.choice(candidates)
             task_request_key = self._build_task_request_key(section_name, section_id, raw_value)
             stadium_signature = (app._kickoff_generation, section_name, section_id, raw_value, app.HID, app.TOURNAME, app.TOURROUNDID)
+            manual_mode = (
+                not app.random_stadium_selection_var.get()
+                and getattr(app, "_d3d_injector", None) is not None
+                and app.show_overlay_var.get()
+            )
+            if len(valid_stadiums) > 1 and manual_mode:
+                # Manual mode: let the player pick via the in-game stadium
+                # picker instead of rolling randomly. Only one picker session
+                # is ever open at a time — a matching pending signature means
+                # this is the same assignment we already popped the picker
+                # for; a different one means a new assignment needs a fresh
+                # picker session (see _open_stadium_picker). No overlay
+                # injector available (not injected yet / DLL missing) falls
+                # straight through to random — there's nothing to show.
+                if app._stadium_picker_pending and app._stadium_picker_signature == stadium_signature:
+                    if not app._stadium_picker_resolved:
+                        return  # still waiting on the player; don't re-show, don't re-roll
+                    desired_stadium = app._stadium_picker_chosen or self._random_stadium_choice(app.curstad, valid_stadiums)
+                    app._stadium_picker_pending = False
+                else:
+                    self._open_stadium_picker(valid_stadiums, stadium_signature)
+                    return
+            else:
+                desired_stadium = self._random_stadium_choice(app.curstad, valid_stadiums)
             if stadium_signature == app._last_stadium_applied_signature and app.curstad == desired_stadium:
                 app._set_progress(100, f"Stadium already loaded: {desired_stadium}")
                 return
@@ -204,6 +262,52 @@ class StadiumRuntime:
         app._update_audio_overview()
         app._set_progress(100, "Default stadium restored")
         app.log("No stadium assignment found; default stadium restored")
+
+    @staticmethod
+    def _random_stadium_choice(current: str, valid_stadiums: list[str]) -> str:
+        """Pick a stadium at random from valid_stadiums, excluding the
+        currently-loaded one when there's more than one option so back-to-
+        back matches against the same team/round/tournament don't repeat the
+        same stadium. Shared by both the "random selection" checkbox path
+        and the manual picker's "closed without picking" fallback."""
+        if len(valid_stadiums) > 1 and current in valid_stadiums:
+            candidates = [s for s in valid_stadiums if s != current]
+        else:
+            candidates = valid_stadiums
+        return random.choice(candidates)
+
+    def _open_stadium_picker(self, candidates: list[str], signature: tuple) -> None:
+        """Show the in-game stadium-picker overlay panel and mark it pending
+        for `signature` — apply_stadium_runtime() returns without loading
+        anything until _handle_stadium_picker_event (app_overlay.py) records
+        a resolution (a click, a close, or the page-transition safety net in
+        app_game.py giving up on it)."""
+        app = self.app
+        inj = getattr(app, "_d3d_injector", None)
+        if inj is None or not app.show_overlay_var.get():
+            # No overlay available (not injected yet / DLL missing, or the
+            # user has the whole in-game overlay disabled) — there's nothing
+            # to show, so don't stall stadium loading waiting for an
+            # interaction that can never happen.
+            app.log("Stadium picker requested but no overlay is available; using random selection instead")
+            return
+        thumbs = [str(app._resolve_stadium_preview_path_or_default(name) or "") for name in candidates]
+        header = app.tr("overlay.stadium_picker.header")
+        app._stadium_picker_index = 0
+        inj.show_stadium_picker(header, candidates, thumbs, selected=0)
+        app._install_keyboard_hook()
+        app._install_mouse_wheel_hook()
+        app._stadium_picker_pending = True
+        app._stadium_picker_signature = signature
+        app._stadium_picker_resolved = False
+        app._stadium_picker_chosen = None
+        app._stadium_picker_candidates = list(candidates)
+        # Clear any gamepad A/B release-latch left over from a previous
+        # picker session (see app_overlay.py's tick handling) so a stale
+        # pending confirm/cancel can never bleed into this fresh one.
+        app._stadium_picker_gp_confirm_pending = None
+        app._stadium_picker_gp_cancel_pending = False
+        app.log(f"Stadium picker opened for [{signature[1]}] {signature[2]} with {len(candidates)} candidates")
 
     def start_stadium_task(
         self,
@@ -269,11 +373,10 @@ class StadiumRuntime:
         if not app.settings_ini.key_exists(hid, section):
             raise RuntimeError(f"Missing stadium assignment [{section}] {hid}")
         raw_value = app.settings_ini.read(hid, section)
-        valid_stadiums, police, pitch, net = self._parse_assignment(raw_value)
-        if len(valid_stadiums) == 0 and not all([police, pitch, net]):
-            raise RuntimeError(f"Invalid stadium assignment [{section}] {hid}: {raw_value}")
+        entries = self._parse_stadium_entries(raw_value)
+        valid_stadiums = [name for name, _police, _pitch, _net in entries]
         if not valid_stadiums:
-            raise RuntimeError(f"No valid stadium names in assignment [{section}] {hid}")
+            raise RuntimeError(f"No valid stadium names in assignment [{section}] {hid}: {raw_value}")
         # Use the pre-selected stadium if provided (chosen in apply_stadium_runtime),
         # otherwise fall back to random.choice (e.g. when called directly).
         chosen = (chosen_stadium or "").strip()
@@ -281,6 +384,10 @@ class StadiumRuntime:
             stad_name = chosen
         else:
             stad_name = random.choice(valid_stadiums)
+        # Resolve THIS stadium's own police/pitch/net (each stadium can carry its
+        # own values now -- see _parse_stadium_entries) before stad_name below gets
+        # reassigned to its resolved on-disk form.
+        police, pitch, net = next((p, pi, n) for name, p, pi, n in entries if name == stad_name)
         stad_name, source_path, source_kind = self._resolve_stadium_source(stad_name)
         # Support zip/rar archives: extract to a temp folder and work from there
         _temp_dir = None

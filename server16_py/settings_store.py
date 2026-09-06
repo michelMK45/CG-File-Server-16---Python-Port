@@ -46,6 +46,11 @@ class SettingsStore:
         "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         "OVERLAY_PERFORMANCE_MODE": False,
+        # Default True preserves today's behavior (random pick) for existing
+        # installs; unchecking it makes apply_stadium_runtime() open the
+        # in-game stadium picker instead whenever a team/round/tournament
+        # has more than one valid stadium assigned.
+        "RANDOM_STADIUM_SELECTION": True,
         "MOVIE_PREVIEW_MUTED": False,
         "LANGUAGE": "en",
         "UI_ZOOM": UI_ZOOM_DEFAULT,
@@ -153,6 +158,15 @@ class SettingsStore:
     @overlay_performance_mode.setter
     def overlay_performance_mode(self, value: bool) -> None:
         self.data["OVERLAY_PERFORMANCE_MODE"] = bool(value)
+        self.save()
+
+    @property
+    def random_stadium_selection(self) -> bool:
+        return bool(self.data.get("RANDOM_STADIUM_SELECTION", True))
+
+    @random_stadium_selection.setter
+    def random_stadium_selection(self, value: bool) -> None:
+        self.data["RANDOM_STADIUM_SELECTION"] = bool(value)
         self.save()
 
     @property

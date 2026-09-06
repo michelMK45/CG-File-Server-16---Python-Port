@@ -34,6 +34,7 @@ _MAX_MENU_ITEMS    = 256  # must match MAX_MENU_ITEMS in the compiled DLL
 _MAX_DASH_ITEMS    = 10
 _MAX_TOASTS        = 6    # must match MAX_TOASTS in the compiled DLL
 _MAX_ICON          = 32   # must match MAX_ICON in the compiled DLL
+_MAX_STADIUM_PICKER_ITEMS = 64  # must match MAX_STADIUM_PICKER_ITEMS in the compiled DLL
 
 
 class _ToastEntry(ctypes.Structure):
@@ -195,6 +196,36 @@ class _OverlayShared(ctypes.Structure):
         # plain += is fine — no InterlockedIncrement needed on this side.
         ("kit_carousel_cycle_seq",  ctypes.c_long),
         ("kit_carousel_direction",  ctypes.c_long),  # -1 (prev) / +1 (next)
+        # Manual stadium picker (multi-stadium assignments, random-selection
+        # checkbox unchecked) — a fully independent panel/doc from the
+        # stadium-loading modal and the kit carousel above (own visible
+        # flag), same rationale as kit_carousel_visible: the passive stadium
+        # panel may already be mid-flight (`visible`/`image_path`) at the
+        # exact moment a *different* multi-stadium assignment needs the
+        # player to choose one. See show_stadium_picker()/
+        # stadium_picker.rml/SyncStadiumPicker in cgfs16_rmlui.cpp.
+        ("stadium_picker_visible",     ctypes.c_long),
+        ("stadium_picker_header",      ctypes.c_wchar * _MAX_STR),
+        ("stadium_picker_item_count",  ctypes.c_long),
+        ("stadium_picker_items",       (ctypes.c_wchar * _MAX_MENU_ITEM_LEN) * _MAX_STADIUM_PICKER_ITEMS),
+        ("stadium_picker_thumbs",      (ctypes.c_wchar * _MAX_IMG) * _MAX_STADIUM_PICKER_ITEMS),
+        # Python -> DLL: which row keyboard/gamepad navigation currently has
+        # highlighted (drives the big preview panel) — mouse hover is handled
+        # RmlUi-side once the pointer is over a row, same as the general menu.
+        ("stadium_picker_selected_index", ctypes.c_long),
+        # DLL -> Python "last event wins" signal, same shape as
+        # menu_event_seq/kit_carousel_cycle_seq. kind: 0=none,
+        # 1=item_click/confirm, 2=close. index is the candidate row index,
+        # item_click only.
+        ("stadium_picker_event_seq",   ctypes.c_long),
+        ("stadium_picker_event_kind",  ctypes.c_long),
+        ("stadium_picker_event_index", ctypes.c_long),
+        # Python -> DLL: accumulated mouse-wheel notches for the picker's
+        # scrollable #list (one WM_MOUSEWHEEL notch = +-1) -- see
+        # add_stadium_picker_wheel_delta(). Read-and-reset once per frame by
+        # cgfs16_rmlui.cpp and forwarded to Rml::Context::ProcessMouseWheel.
+        # Single writer (this process), so a plain += is fine.
+        ("stadium_picker_wheel_delta", ctypes.c_long),
     ]
 
 
@@ -552,6 +583,67 @@ class D3DOverlayInjector:
         if self._shared is not None:
             self._shared.kit_carousel_visible = 0
 
+    def show_stadium_picker(self, header: str, items: list, thumb_paths: list | None = None,
+                             selected: int = 0) -> None:
+        """Show the manual stadium-picker panel — a dedicated panel/doc,
+        independent of the stadium-loading show()/update()/hide() above and
+        of the kit carousel, so none of the three ever fight over one shared
+        visible flag. `items`/`thumb_paths` are truncated to
+        MAX_STADIUM_PICKER_ITEMS; `thumb_paths`, if given, must be the same
+        length/order as `items` (empty string = no preview for that row)."""
+        if not self._ready or self._shared is None:
+            return
+        count = min(len(items), _MAX_STADIUM_PICKER_ITEMS)
+        for i in range(count):
+            self._shared.stadium_picker_items[i].value = str(items[i])[:_MAX_MENU_ITEM_LEN - 1]
+            thumb = ""
+            if thumb_paths and i < len(thumb_paths) and thumb_paths[i]:
+                thumb = str(thumb_paths[i])[:_MAX_IMG - 1]
+            self._shared.stadium_picker_thumbs[i].value = thumb
+        for i in range(count, _MAX_STADIUM_PICKER_ITEMS):
+            self._shared.stadium_picker_items[i].value = ""
+            self._shared.stadium_picker_thumbs[i].value = ""
+        self._shared.stadium_picker_header = (header or "")[:_MAX_STR - 1]
+        self._shared.stadium_picker_item_count = count
+        self._shared.stadium_picker_selected_index = max(0, min(int(selected), max(0, count - 1)))
+        # Write visible LAST so the DLL sees consistent data.
+        self._shared.stadium_picker_visible = 1
+
+    def set_stadium_picker_selection(self, index: int) -> None:
+        """Update the keyboard/gamepad-highlighted row without re-sending the
+        whole item list — see _sync_d3d_menu_input-style nav polling."""
+        if not self._ready or self._shared is None:
+            return
+        count = int(self._shared.stadium_picker_item_count)
+        if count <= 0:
+            return
+        self._shared.stadium_picker_selected_index = max(0, min(int(index), count - 1))
+
+    def add_stadium_picker_wheel_delta(self, steps: int) -> None:
+        """Accumulate mouse-wheel notches for the picker's scrollable #list --
+        consumed (and reset to 0) once per frame by cgfs16_rmlui.cpp, which
+        forwards it to RmlUi's Context::ProcessMouseWheel so the native
+        overflow-y:auto scroll actually moves. Purely a view-scroll signal;
+        never touches stadium_picker_selected_index."""
+        if not self._ready or self._shared is None:
+            return
+        self._shared.stadium_picker_wheel_delta += int(steps)
+
+    def hide_stadium_picker(self) -> None:
+        if self._shared is not None:
+            self._shared.stadium_picker_visible = 0
+
+    def get_stadium_picker_event(self) -> tuple[int, int, int]:
+        """Return (seq, kind, index) from the DLL's "last event wins" click
+        signal for the stadium picker — see StadiumPickerEventListener in
+        cgfs16_rmlui.cpp. kind: 0=none, 1=item_click/confirm, 2=close.
+        Callers should compare seq against their own last-seen value and only
+        act when it changed (a single slot, not a queue)."""
+        if not self._ready or self._shared is None:
+            return (0, 0, 0)
+        return (int(self._shared.stadium_picker_event_seq), int(self._shared.stadium_picker_event_kind),
+                int(self._shared.stadium_picker_event_index))
+
     def set_gamepad_icon_dir(self, path: str) -> None:
         """Write the bundled gamepad button-icon directory (call once after inject)."""
         if not self._ready or self._shared is None:
@@ -835,6 +927,16 @@ class D3DOverlayInjector:
         self._shared.kit_carousel_image_next = ""
         self._shared.kit_carousel_cycle_seq = 0
         self._shared.kit_carousel_direction = 0
+        self._shared.stadium_picker_visible = 0
+        self._shared.stadium_picker_header = ""
+        self._shared.stadium_picker_item_count = 0
+        for i in range(_MAX_STADIUM_PICKER_ITEMS):
+            self._shared.stadium_picker_items[i].value = ""
+            self._shared.stadium_picker_thumbs[i].value = ""
+        self._shared.stadium_picker_selected_index = 0
+        self._shared.stadium_picker_event_seq = 0
+        self._shared.stadium_picker_event_kind = 0
+        self._shared.stadium_picker_event_index = 0
         self._ready = True
         log.debug("D3DOverlay: shared memory opened at 0x%X, size=%d",
                   ptr, ctypes.sizeof(_OverlayShared))

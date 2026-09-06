@@ -477,11 +477,6 @@ static void ApplyTabGliderAnim(Rml::Element *el, float height) {
     SetRectPx(el, g_gliderAnimTargetLeft, 0.f, g_gliderAnimTargetWidth, height);
 }
 
-// Phase 2 Step 3: last-seen raw button state, for down/up edge detection —
-// Present fires far more often than Python's ~80ms mouse-field write, so
-// this must be compared every frame rather than trusting a single sample.
-static bool g_mouseLeftWasDown = false;
-
 // Phase 2 Step 4: click/scroll event reporting state.
 // g_rowAbsIndex[k] = the ABSOLUTE index (into the current tab's full item
 // list, not just the visible window) that row pool slot k currently shows —
@@ -888,9 +883,6 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
                 g_menuDoc->Hide();
                 g_menuDocShown = false;
                 g_panelCloseAnimActive = false;
-                // Avoid a stuck-drag if the button was still held when the
-                // menu closed (e.g. Esc/B while dragging the scrollbar thumb).
-                g_mouseLeftWasDown = false;
             }
         } else if (g_menuDocShown) {
             // Just transitioned open -> closed this frame: kick off the
@@ -1588,24 +1580,17 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         wcscpy_s(g_keyIconDirLoaded, keyDir);
     }
 
-    // ── Live mouse feed — deliberately last, after every element above has
-    // its final position for this frame, so RmlUi's hit-testing (driven by
-    // Context::Update(), called right after RmlMenu_Sync returns) sees
-    // up-to-date geometry. Modifier keys (shift/ctrl/etc.) aren't tracked by
-    // this simplified feed, so 0 is passed for key_modifier_state.
-    Rml::Context *ctx = g_menuDoc->GetContext();
-    if (ctx) {
-        int mx = (int)RmlOverlay_MenuMouseX();
-        int my = (int)RmlOverlay_MenuMouseY();
-        ctx->ProcessMouseMove(mx, my, 0);
-        bool leftDown = RmlOverlay_MenuMouseLeftDown();
-        if (leftDown && !g_mouseLeftWasDown) {
-            ctx->ProcessMouseButtonDown(0, 0);
-        } else if (!leftDown && g_mouseLeftWasDown) {
-            ctx->ProcessMouseButtonUp(0, 0);
-        }
-        g_mouseLeftWasDown = leftDown;
-    }
+    // Live mouse feed used to be fed into the shared Rml::Context right here
+    // — moved to RmlOverlay_RenderFrame (cgfs16_rmlui.cpp), which now does it
+    // ONCE per frame against the one Context every document (this menu, the
+    // stadium panel, the stadium picker, ...) actually shares, rather than
+    // living inside this function specifically. Being here meant it only
+    // ever ran while THIS document's own `visible` was true (this function
+    // returns early above when it isn't) — so a mouse click aimed at the
+    // stadium picker while the general menu was closed never reached RmlUi's
+    // mouse processing AT ALL, confirmed live (arrows/Enter worked once the
+    // keyboard-hook-side bugs were fixed; clicks still did nothing until
+    // this was relocated). See RmlOverlay_RenderFrame's own comment.
 }
 
 // See the declaration in cgfs16_rmlui_menu.h — lets RmlOverlay_RenderFrame

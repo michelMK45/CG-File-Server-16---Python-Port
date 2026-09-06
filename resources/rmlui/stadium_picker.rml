@@ -1,0 +1,300 @@
+<rml>
+<head>
+<style>
+body {
+    display: block;
+    position: absolute;
+    width: 640px;
+    height: 468px;
+    box-sizing: border-box;
+    border-radius: 18px;
+    /* Same two-layer "gradient border" trick as stadium_panel.rml/toast.rml:
+       this outer box paints the gradient via `decorator` and 2px of padding
+       shows through as a ring around #card's solid fill. */
+    padding: 2px;
+    decorator: horizontal-gradient(#00F2FE #4FACFE);
+    box-shadow: 0px 12px 32px #000000CC;
+    font-family: "Segoe UI";
+    /* opacity/transform are driven per-frame from C++
+       (ApplyStadiumPickerOpenAnim/CloseAnim in cgfs16_rmlui.cpp), not an
+       RCSS `transition` — see SyncStadiumPanel's comment in cgfs16_rmlui.cpp
+       for why (SetAttribute("src", ...)/SetProperty aren't stylesheet-
+       definition changes, so RCSS transitions never fire on them). */
+    opacity: 0;
+}
+#card {
+    display: block;
+    position: relative;
+    width: 100%;
+    height: 100%;
+    background-color: #101828F5;
+    border-radius: 16px;
+    overflow: hidden;
+}
+#headerbar {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    height: 52px;
+    padding: 0px 18px;
+    box-sizing: border-box;
+    border-bottom: 1px #24365480;
+}
+#header {
+    display: block;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 26px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #FFFFFFFF;
+}
+#close-btn {
+    display: block;
+    width: 32px;
+    height: 32px;
+    line-height: 32px;
+    text-align: center;
+    font-size: 16px;
+    color: #99BBDDFF;
+    background-color: #1A2740FF;
+    border-radius: 8px;
+}
+#close-btn:hover { color: #FFFFFFFF; background-color: #24365AFF; }
+#body {
+    display: flex;
+    flex-direction: row;
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    top: 68px;
+    bottom: 66px;
+    column-gap: 16px;
+}
+/* Button legend, same shape/spirit as the F12 menu's own hint bar
+   (menu.rml's #hint-key-row/#hint-gp-row) -- one row per input device,
+   swapped by display based on input_mode; see SyncStadiumPicker. */
+#hint-bar {
+    display: block;
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    bottom: 16px;
+    height: 32px;
+    border-top: 1px #24365480;
+}
+.hint-row {
+    display: flex;
+    flex-direction: row;
+    justify-content: center;
+    column-gap: 22px;
+    padding-top: 10px;
+}
+.hint-item {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
+}
+.hint-item .icons {
+    display: flex;
+    flex-direction: row;
+    column-gap: 2px;
+}
+.hint-item img {
+    display: block;
+    width: 20px;
+    height: 20px;
+}
+.hint-item .label {
+    display: block;
+    font-size: 13px;
+    color: #8B9BB4FF;
+    white-space: nowrap;
+}
+#list {
+    display: flex;
+    flex-direction: column;
+    width: 250px;
+    flex-shrink: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    row-gap: 4px;
+}
+/* Native RmlUi scrollbar (see cgfs16_rmlui.cpp's SyncStadiumPicker comment) --
+   these generated elements have no built-in size/appearance of their own, so
+   without this block #list's overflow-y:auto would scroll but render no
+   visible scrollbar at all. Unscoped tag selectors are safe here since #list
+   is the only overflow:auto element in this document. */
+scrollbarvertical { width: 10px; }
+scrollbarvertical slidertrack {
+    background-color: #0C1420FF;
+    border-radius: 4px;
+}
+scrollbarvertical sliderbar {
+    width: 6px;
+    margin-left: 2px;
+    background-color: #2A3B57FF;
+    border-radius: 3px;
+}
+scrollbarvertical sliderarrowdec, scrollbarvertical sliderarrowinc {
+    height: 0px;
+}
+.row {
+    display: none;
+    flex-direction: row;
+    align-items: center;
+    /* Without this, #list's flex column would shrink every row to fit once
+       more than ~8 are shown at once instead of overflowing -- flex-shrink
+       defaults to 1, and shrinking happens before overflow ever kicks in. */
+    flex-shrink: 0;
+    height: 36px;
+    padding-left: 14px;
+    padding-right: 10px;
+    box-sizing: border-box;
+    border-radius: 8px;
+    background-color: #16223AFF;
+    color: #CCD8EAFF;
+    font-size: 15px;
+}
+.row:hover { background-color: #1D2C4AFF; color: #FFFFFFFF; }
+/* Declared after .row so it wins the cascade on the properties it sets,
+   same equal-specificity/source-order reasoning as every other row-state
+   class in this codebase (see menu.rml's own .row:hover for the pattern). */
+.row-selected {
+    background-color: #17324DFF;
+    color: #FFFFFFFF;
+    box-shadow: inset 2px 0px 0px #4FACFEFF;
+}
+.row-text {
+    display: block;
+    flex: 1 1 auto;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+#preview {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    background-color: #0C1420FF;
+    border-radius: 12px;
+    overflow: hidden;
+    padding: 14px;
+    box-sizing: border-box;
+}
+#preview-imgbox {
+    display: block;
+    flex: 1 1 auto;
+    text-align: center;
+    vertical-align: middle;
+    overflow: hidden;
+}
+#preview-img { display: none; max-width: 100%; max-height: 100%; }
+#preview-title {
+    display: block;
+    flex-shrink: 0;
+    margin-top: 10px;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: 0.5px;
+    color: #4FACFEFF;
+    text-align: center;
+}
+</style>
+</head>
+<body>
+<div id="card">
+<div id="headerbar">
+<div id="header"></div>
+<div id="close-btn">X</div>
+</div>
+<div id="body">
+<div id="list">
+<div id="sprow0" class="row"><div class="row-text"></div></div>
+<div id="sprow1" class="row"><div class="row-text"></div></div>
+<div id="sprow2" class="row"><div class="row-text"></div></div>
+<div id="sprow3" class="row"><div class="row-text"></div></div>
+<div id="sprow4" class="row"><div class="row-text"></div></div>
+<div id="sprow5" class="row"><div class="row-text"></div></div>
+<div id="sprow6" class="row"><div class="row-text"></div></div>
+<div id="sprow7" class="row"><div class="row-text"></div></div>
+<div id="sprow8" class="row"><div class="row-text"></div></div>
+<div id="sprow9" class="row"><div class="row-text"></div></div>
+<div id="sprow10" class="row"><div class="row-text"></div></div>
+<div id="sprow11" class="row"><div class="row-text"></div></div>
+<div id="sprow12" class="row"><div class="row-text"></div></div>
+<div id="sprow13" class="row"><div class="row-text"></div></div>
+<div id="sprow14" class="row"><div class="row-text"></div></div>
+<div id="sprow15" class="row"><div class="row-text"></div></div>
+<div id="sprow16" class="row"><div class="row-text"></div></div>
+<div id="sprow17" class="row"><div class="row-text"></div></div>
+<div id="sprow18" class="row"><div class="row-text"></div></div>
+<div id="sprow19" class="row"><div class="row-text"></div></div>
+<div id="sprow20" class="row"><div class="row-text"></div></div>
+<div id="sprow21" class="row"><div class="row-text"></div></div>
+<div id="sprow22" class="row"><div class="row-text"></div></div>
+<div id="sprow23" class="row"><div class="row-text"></div></div>
+<div id="sprow24" class="row"><div class="row-text"></div></div>
+<div id="sprow25" class="row"><div class="row-text"></div></div>
+<div id="sprow26" class="row"><div class="row-text"></div></div>
+<div id="sprow27" class="row"><div class="row-text"></div></div>
+<div id="sprow28" class="row"><div class="row-text"></div></div>
+<div id="sprow29" class="row"><div class="row-text"></div></div>
+<div id="sprow30" class="row"><div class="row-text"></div></div>
+<div id="sprow31" class="row"><div class="row-text"></div></div>
+<div id="sprow32" class="row"><div class="row-text"></div></div>
+<div id="sprow33" class="row"><div class="row-text"></div></div>
+<div id="sprow34" class="row"><div class="row-text"></div></div>
+<div id="sprow35" class="row"><div class="row-text"></div></div>
+<div id="sprow36" class="row"><div class="row-text"></div></div>
+<div id="sprow37" class="row"><div class="row-text"></div></div>
+<div id="sprow38" class="row"><div class="row-text"></div></div>
+<div id="sprow39" class="row"><div class="row-text"></div></div>
+<div id="sprow40" class="row"><div class="row-text"></div></div>
+<div id="sprow41" class="row"><div class="row-text"></div></div>
+<div id="sprow42" class="row"><div class="row-text"></div></div>
+<div id="sprow43" class="row"><div class="row-text"></div></div>
+<div id="sprow44" class="row"><div class="row-text"></div></div>
+<div id="sprow45" class="row"><div class="row-text"></div></div>
+<div id="sprow46" class="row"><div class="row-text"></div></div>
+<div id="sprow47" class="row"><div class="row-text"></div></div>
+<div id="sprow48" class="row"><div class="row-text"></div></div>
+<div id="sprow49" class="row"><div class="row-text"></div></div>
+<div id="sprow50" class="row"><div class="row-text"></div></div>
+<div id="sprow51" class="row"><div class="row-text"></div></div>
+<div id="sprow52" class="row"><div class="row-text"></div></div>
+<div id="sprow53" class="row"><div class="row-text"></div></div>
+<div id="sprow54" class="row"><div class="row-text"></div></div>
+<div id="sprow55" class="row"><div class="row-text"></div></div>
+<div id="sprow56" class="row"><div class="row-text"></div></div>
+<div id="sprow57" class="row"><div class="row-text"></div></div>
+<div id="sprow58" class="row"><div class="row-text"></div></div>
+<div id="sprow59" class="row"><div class="row-text"></div></div>
+<div id="sprow60" class="row"><div class="row-text"></div></div>
+<div id="sprow61" class="row"><div class="row-text"></div></div>
+<div id="sprow62" class="row"><div class="row-text"></div></div>
+<div id="sprow63" class="row"><div class="row-text"></div></div>
+</div>
+<div id="preview">
+<div id="preview-imgbox"><img id="preview-img" /></div>
+<div id="preview-title"></div>
+</div>
+</div>
+<div id="hint-bar">
+<div id="hint-key-row" class="hint-row">
+<div id="sp-hintkey0" class="hint-item"><div class="icons"><img class="icon1"/><img class="icon2"/></div><div class="label">Navigate</div></div>
+<div id="sp-hintkey1" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Select</div></div>
+<div id="sp-hintkey2" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Close</div></div>
+</div>
+<div id="hint-gp-row" class="hint-row" style="display: none;">
+<div id="sp-hintgp0" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Navigate</div></div>
+<div id="sp-hintgp1" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Select</div></div>
+<div id="sp-hintgp2" class="hint-item"><div class="icons"><img class="icon1"/></div><div class="label">Close</div></div>
+</div>
+</div>
+</div>
+</body>
+</rml>

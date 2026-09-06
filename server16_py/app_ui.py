@@ -2618,6 +2618,15 @@ class UIMixin:
         )
         performance_mode_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
+        random_stadium_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.random_stadium_selection"),
+            variable=self.random_stadium_selection_var,
+            command=self._toggle_random_stadium_selection,
+        )
+        random_stadium_switch.pack(anchor="w", padx=12, pady=(0, 10))
+
     def _toggle_discord_rpc(self) -> None:
         new_state = self.module_vars["DiscordRPC"].get()
         self._discord_rpc_enabled = new_state
@@ -2673,6 +2682,16 @@ class UIMixin:
             self._refresh_d3d_window()
             self._update_d3d_preview_image()
 
+    def _toggle_random_stadium_selection(self) -> None:
+        self.settings.random_stadium_selection = self.random_stadium_selection_var.get()
+        self.settings.save()
+        # Switching back to random mid-pick shouldn't leave the picker
+        # stranded open with no way to resolve it (apply_stadium_runtime()
+        # only re-checks this flag on its next tick, and only takes the
+        # picker branch at all while a picker is already pending).
+        if self.random_stadium_selection_var.get() and self._stadium_picker_pending:
+            self._resolve_stadium_picker(None)
+
     def _toggle_custom_kit_numbers(self) -> None:
         from .file_tools import general_lua_is_foreign, set_kit_number_scheme
 
@@ -2707,6 +2726,12 @@ class UIMixin:
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
+        # Disabling the overlay mid-pick leaves the stadium picker with no
+        # input loop to resolve it (_sync_d3d_menu_input's own show_overlay_var
+        # check would otherwise skip it forever) — same "don't strand it"
+        # reasoning as _toggle_random_stadium_selection.
+        if not self.show_overlay_var.get() and self._stadium_picker_pending:
+            self._resolve_stadium_picker(None)
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "card.chants.title", "card.chants.subtitle")

@@ -49,6 +49,14 @@
 #define MAX_DASH_ITEMS    10
 #define MAX_TOASTS        6
 #define MAX_ICON          32
+// Was 8 (one screenful, no scrolling) -- raised so a multi-stadium
+// assignment is no longer artificially capped at what fit on screen at
+// once now that SyncStadiumPicker's #list scrolls (native RmlUi
+// overflow-y:auto + ScrollIntoView on keyboard/gamepad nav, wheel forwarded
+// via stadium_picker_wheel_delta below). 64 is far beyond any realistic
+// per-key stadium assignment; see settings_editor.py's MAX_ASSIGNED_STADIUMS,
+// which must match.
+#define MAX_STADIUM_PICKER_ITEMS 64
 
 struct ToastEntry {
     volatile LONG visible;       // 0 = hidden, 1 = shown
@@ -234,6 +242,40 @@ struct OverlayShared {
     // prefetched thumbnail arriving late).
     volatile LONG kit_carousel_cycle_seq;
     volatile LONG kit_carousel_direction;
+    // Manual stadium picker (multi-stadium assignments, random-selection
+    // checkbox unchecked) — a fully independent panel/doc from the
+    // stadium-loading modal and the kit carousel above (own visible flag),
+    // same rationale as kit_carousel_visible: the passive stadium panel may
+    // already be mid-flight (`visible`/`image_path`) at the exact moment a
+    // *different* multi-stadium assignment needs the player to choose one.
+    // See show_stadium_picker()/stadium_picker.rml/SyncStadiumPicker in
+    // cgfs16_rmlui.cpp. MUST match _MAX_STADIUM_PICKER_ITEMS in
+    // d3d_injector.py.
+    volatile LONG stadium_picker_visible;
+    wchar_t stadium_picker_header[MAX_STR];
+    volatile LONG stadium_picker_item_count;
+    wchar_t stadium_picker_items[MAX_STADIUM_PICKER_ITEMS][MAX_MENU_ITEM_LEN];
+    wchar_t stadium_picker_thumbs[MAX_STADIUM_PICKER_ITEMS][MAX_IMG];
+    // Python -> DLL: which row keyboard/gamepad navigation currently has
+    // highlighted (drives the big preview panel) — mouse hover is handled
+    // RmlUi-side once the pointer is over a row, same as the general menu.
+    volatile LONG stadium_picker_selected_index;
+    // DLL -> Python "last event wins" signal, same shape as
+    // menu_event_seq/kit_carousel_cycle_seq. kind: 0=none,
+    // 1=item_click/confirm, 2=close. index is the candidate row index,
+    // item_click only.
+    volatile LONG stadium_picker_event_seq;
+    volatile LONG stadium_picker_event_kind;
+    volatile LONG stadium_picker_event_index;
+    // Python -> DLL: mouse-wheel notches accumulated since this field was
+    // last consumed (positive/negative, one WM_MOUSEWHEEL notch = +-1) --
+    // see add_stadium_picker_wheel_delta() in d3d_injector.py. Read-and-reset
+    // once per frame by RmlOverlay_StadiumPickerConsumeWheelDelta() and
+    // forwarded to Rml::Context::ProcessMouseWheel so #list's native
+    // overflow-y:auto scroll actually moves under the cursor -- single
+    // writer (Python, plain +=), so no InterlockedIncrement is needed on
+    // that side, same reasoning as kit_carousel_cycle_seq above.
+    volatile LONG stadium_picker_wheel_delta;
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -330,6 +372,37 @@ int RmlOverlay_KitCarouselCycleSeq() {
 }
 int RmlOverlay_KitCarouselDirection() {
     return g_data ? (int)InterlockedCompareExchange(&g_data->kit_carousel_direction, 0, 0) : 0;
+}
+bool RmlOverlay_StadiumPickerVisible() {
+    return g_data && InterlockedCompareExchange(&g_data->stadium_picker_visible, 0, 0) != 0;
+}
+const wchar_t *RmlOverlay_StadiumPickerHeader() { return g_data ? g_data->stadium_picker_header : L""; }
+int RmlOverlay_StadiumPickerItemCount() {
+    return g_data ? (int)InterlockedCompareExchange(&g_data->stadium_picker_item_count, 0, 0) : 0;
+}
+const wchar_t *RmlOverlay_StadiumPickerItemText(int index) {
+    return (g_data && index >= 0 && index < MAX_STADIUM_PICKER_ITEMS) ? g_data->stadium_picker_items[index] : L"";
+}
+const wchar_t *RmlOverlay_StadiumPickerItemThumbPath(int index) {
+    return (g_data && index >= 0 && index < MAX_STADIUM_PICKER_ITEMS) ? g_data->stadium_picker_thumbs[index] : L"";
+}
+LONG RmlOverlay_StadiumPickerSelectedIndex() {
+    return g_data ? InterlockedCompareExchange(&g_data->stadium_picker_selected_index, 0, 0) : 0;
+}
+// Writer for the stadium picker's own "last event wins" click signal — same
+// kind/index-then-seq write order as RmlOverlay_PushMenuEvent.
+void RmlOverlay_PushStadiumPickerEvent(int kind, int index) {
+    if (!g_data) return;
+    InterlockedExchange(&g_data->stadium_picker_event_kind, (LONG)kind);
+    InterlockedExchange(&g_data->stadium_picker_event_index, (LONG)index);
+    InterlockedIncrement(&g_data->stadium_picker_event_seq);
+}
+// Reads and zeroes stadium_picker_wheel_delta atomically -- called once per
+// frame by SyncStadiumPicker, which forwards the result to
+// Rml::Context::ProcessMouseWheel. Returning the pre-reset value (not 0)
+// means a caller that skips a frame never loses accumulated notches.
+int RmlOverlay_StadiumPickerConsumeWheelDelta() {
+    return g_data ? (int)InterlockedExchange(&g_data->stadium_picker_wheel_delta, 0) : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -658,16 +731,25 @@ static HRESULT WINAPI HookedPresent(IDXGISwapChain *sc, UINT syncInterval, UINT 
             g_data?(int)g_data->visible:-1,
             g_data?(int)g_data->menu_visible:-1);
 
-    // Suppress / restore gamepad input for FIFA when the overlay menu opens or closes.
-    // XInputEnable(FALSE) sets a flag inside xinput*.dll that makes all XInputGetState
-    // calls in this process return zero — covers IAT, cached GetProcAddress, and any
-    // other call path.  Python runs in a separate process and is unaffected.
+    // Suppress / restore gamepad input for FIFA when the overlay menu OR the
+    // stadium picker opens or closes. XInputEnable(FALSE) sets a flag inside
+    // xinput*.dll that makes all XInputGetState calls in this process return
+    // zero — covers IAT, cached GetProcAddress, and any other call path.
+    // Python runs in a separate process and is unaffected.
+    // Originally gated on menu_visible alone — the stadium picker is a
+    // separate document/flag (see stadium_picker_visible's comment above)
+    // that this check knew nothing about, so a controller's D-pad/A/B still
+    // reached FIFA underneath the picker even though the mouse/keyboard
+    // hooks (Python-side) already knew to block for it. Confirmed live.
     if (!g_XInputEnable) InitXInputEnable();
     if (g_XInputEnable && g_data) {
         LONG menuVis = InterlockedCompareExchange(&g_data->menu_visible, 0, 0) ? 1 : 0;
-        if (InterlockedExchange(&g_menuWasSuppressed, menuVis) != menuVis) {
-            g_XInputEnable(menuVis == 0 ? TRUE : FALSE);
-            Log("[XInput] XInputEnable(%s) menu_visible=%d", menuVis ? "FALSE" : "TRUE", menuVis);
+        LONG pickerVis = InterlockedCompareExchange(&g_data->stadium_picker_visible, 0, 0) ? 1 : 0;
+        LONG suppress = (menuVis || pickerVis) ? 1 : 0;
+        if (InterlockedExchange(&g_menuWasSuppressed, suppress) != suppress) {
+            g_XInputEnable(suppress == 0 ? TRUE : FALSE);
+            Log("[XInput] XInputEnable(%s) menu_visible=%d stadium_picker_visible=%d",
+                suppress ? "FALSE" : "TRUE", menuVis, pickerVis);
         }
     }
 
@@ -758,11 +840,14 @@ static PFN_XInputGetState_t g_origXInputGetState = nullptr;
 
 static DWORD WINAPI HookedXInputGetState(DWORD idx, CGFS_XINPUT_STATE *pState) {
     DWORD r = g_origXInputGetState(idx, pState);
-    // While the overlay menu is open, zero all buttons/axes so FIFA doesn't
-    // see the same inputs the user sends to the overlay.
+    // While the overlay menu OR the stadium picker is open, zero all
+    // buttons/axes so FIFA doesn't see the same inputs the user sends to
+    // whichever one is up (see the matching XInputEnable() fix above for
+    // why menu_visible alone isn't enough anymore).
     // dwPacketNumber is left intact so the game still sees a live controller.
     if (r == 0 && pState && g_data &&
-        InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0)
+        (InterlockedCompareExchange(&g_data->menu_visible, 0, 0) != 0 ||
+         InterlockedCompareExchange(&g_data->stadium_picker_visible, 0, 0) != 0))
         pState->Gamepad = {};
     return r;
 }

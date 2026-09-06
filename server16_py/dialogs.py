@@ -16,6 +16,7 @@ from .file_tools import (
     stadium_country_counts,
     stadium_preview_fallback_path,
 )
+from .stadium_runtime import StadiumRuntime
 from .video_preview import MoviePreviewPanel
 
 
@@ -380,6 +381,16 @@ class StadiumDialog(BaseDialog):
         # which looked inconsistent next to that editor showing plain "4".
         self.selectedpolice = tk.StringVar(value="1")
         self.selectedstadium = tk.StringVar()
+        # Which (comp, section) assignment targets this dialog session has
+        # already pre-loaded the existing selection for (see
+        # _reload_existing_selection_for_scope) -- seeded once per target so
+        # switching scope back and forth doesn't clobber a selection the
+        # user is actively editing, while still fixing the underlying bug
+        # this exists for: reopening "Assign Stadium" to add one more
+        # stadium to an already-multi-assigned team used to start from an
+        # empty list, so Save silently replaced the whole existing
+        # multi-stadium assignment with just whatever was freshly clicked.
+        self._preloaded_targets: set[tuple[str, str]] = set()
         self._preview_images: dict[str, ImageTk.PhotoImage] = {}
         self._preview_labels: dict[str, tk.Label] = {}
         self._preview_frames: dict[str, tk.Frame] = {}
@@ -686,7 +697,60 @@ class StadiumDialog(BaseDialog):
         mode = "extended" if scope_id in {"2", "3", "4"} else "browse"
         self.stadiums.configure(selectmode=mode)
         self.selection_hint.configure(text=self.tr("dialog.stadium.multiple_selection") if mode == "extended" else self.tr("dialog.stadium.single_selection"))
+        self._reload_existing_selection_for_scope(scope_id)
         self._update_selection_summary()
+
+    def _resolve_existing_assignment_target(self, scope_id: str) -> tuple[str, str] | tuple[None, None]:
+        """Same scope -> (comp id, ini section) mapping assign_stadium() uses
+        to decide where to write (assignment_runtime.py) -- scopes 0/2 both
+        target the Home Team's [stadium] key, 1/3 both target the Round's
+        [comp] key, so "Home Team" and "Multiple Home Team" (etc.) are really
+        two different UIs over the SAME underlying entry, not separate data."""
+        app = self.app
+        mapping = {
+            "0": (getattr(app, "HID", "") or "", "stadium"),
+            "1": (getattr(app, "TOURROUNDID", "") or "", "comp"),
+            "2": (getattr(app, "HID", "") or "", "stadium"),
+            "3": (getattr(app, "TOURROUNDID", "") or "", "comp"),
+            "4": (getattr(app, "TOURNAME", "") or "", "comp"),
+        }
+        comp, section = mapping.get(scope_id, ("", ""))
+        return (comp, section) if comp else (None, None)
+
+    def _reload_existing_selection_for_scope(self, scope_id: str) -> None:
+        comp, section = self._resolve_existing_assignment_target(scope_id)
+        if not comp or not section:
+            return
+        target = (comp, section)
+        if target in self._preloaded_targets:
+            return  # already seeded this dialog session -- don't stomp an in-progress edit
+        self._preloaded_targets.add(target)
+        if not self.app.settings_ini.key_exists(comp, section):
+            return
+        raw_value = self.app.settings_ini.read(comp, section)
+        stadiums, police, pitch, net = StadiumRuntime._parse_assignment(raw_value)
+        if not stadiums:
+            return
+        self.stadiums.selection_clear(0, "end")
+        names_in_list = [self.stadiums.get(i) for i in range(self.stadiums.size())]
+        first_index = None
+        for name in stadiums:
+            if name in names_in_list:
+                index = names_in_list.index(name)
+                self.stadiums.selection_set(index)
+                if first_index is None:
+                    first_index = index
+        if first_index is not None:
+            self.stadiums.activate(first_index)
+            self.stadiums.see(first_index)
+        self.selectedstadium.set(stadiums[0])
+        if police:
+            self.selectedpolice.set(police)
+        if pitch:
+            self.selectedpitch.set(pitch)
+        if net:
+            self.selectednet.set(net)
+        self._update_stadium_preview()
 
     def _refresh_selection(self) -> None:
         selected = [self.stadiums.get(i) for i in self.stadiums.curselection()]

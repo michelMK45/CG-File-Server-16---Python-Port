@@ -109,6 +109,20 @@ class GameMixin:
         # page path did or didn't arm/start Team Entrance (see CLAUDE.md §7,
         # "entrance anthem does not restart when the match is restarted").
         self.log(f"Page transition: {page_name!r} (entrance_armed={self._entrance_armed} matchstarted={self.matchstarted})")
+        # Safety net for the manual stadium picker (see _open_stadium_picker
+        # in stadium_runtime.py): it only ever opens while sitting at
+        # KickOffHub, so the first genuine transition away from it — the
+        # player backing out, switching teams, or the match progressing
+        # toward TV/bumper — means it's never coming back for this session.
+        # Force-resolve to random rather than leaving the match without a
+        # stadium because nobody ever clicked the popup. Same page-name-
+        # driven "the only available signal can't distinguish two
+        # situations" safety-net pattern as the Team Entrance saga (CLAUDE.md
+        # §7) — deliberately checked before any early return below so it
+        # fires no matter what the new page turns out to be.
+        if self._stadium_picker_pending and page_name != "game/screens/playNow/KickOffHub":
+            self.log(f"Stadium picker abandoned (left KickOffHub for {page_name!r}); falling back to random")
+            self._resolve_stadium_picker(None)
         if self._page_blocks_team_entrance(page_name):
             # `self.matchstarted` is normally only flipped False by
             # ChantsRuntime's own poll loop, after 3 consecutive 0.5s-spaced

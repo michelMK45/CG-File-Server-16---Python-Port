@@ -75,6 +75,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
         self.overlay_performance_mode_var = tk.BooleanVar(value=self.settings.overlay_performance_mode)
+        self.random_stadium_selection_var = tk.BooleanVar(value=self.settings.random_stadium_selection)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
@@ -247,6 +248,25 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_task_signature = None
         self._stadium_task_request_key = None
         self._last_stadium_applied_signature = None
+        # Manual stadium-picker state (only used while
+        # random_stadium_selection_var is unchecked and the current
+        # assignment resolves to more than one valid stadium) — see
+        # StadiumRuntime._open_stadium_picker / apply_stadium_runtime.
+        self._stadium_picker_pending = False
+        self._stadium_picker_signature = None
+        self._stadium_picker_resolved = False
+        self._stadium_picker_chosen: str | None = None
+        self._stadium_picker_candidates: list[str] = []
+        self._stadium_picker_index = 0
+        self._stadium_picker_nav_repeat_at = 0.0
+        self._stadium_picker_event_last_seq = 0
+        # Latch gamepad A/B confirm-cancel until the button is released,
+        # same reasoning/pattern as _overlay_b_close_pending above: resolving
+        # immediately on the press edge hides the picker (stadium_picker_visible=0)
+        # the same frame, and HookedPresent's XInputEnable(TRUE) can fire while
+        # the button is still physically held, leaking that same press to FIFA.
+        self._stadium_picker_gp_confirm_pending: str | None = None
+        self._stadium_picker_gp_cancel_pending = False
         self.labels = {}
         self.stat_title_labels = {}
         self.info_labels = {}
