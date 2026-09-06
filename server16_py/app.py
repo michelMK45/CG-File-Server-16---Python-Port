@@ -117,6 +117,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._attached_once = False
         self._logs_visible = False
         self._kickoff_generation = 0
+        self._active_ball_runtime: dict | None = None
+        self._active_adboard_injected_files: list[str] = []
         self._entrance_sequence = 0
         self._overlay_f12_down = False
         self._overlay_up_down = False
@@ -584,6 +586,20 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def apply_all_runtime(self) -> None:
         self.log(f"Applying runtime HID={self.HID} AID={self.AID} TOUR={self.TOURNAME} ROUND={self.TOURROUNDID} STAD={self.STADID}")
         self._set_progress(5, "Applying runtime")
+        # Ball is small and timing-sensitive: applied before Stadium/Scoreboard so it
+        # doesn't lose the race against the (slower) stadium/scoreboard copy jobs.
+        try:
+            self.apply_ball_runtime()
+        except Exception as exc:
+            self.log("Ball runtime error", exc, exc_info=True)
+        try:
+            self.apply_referee_runtime()
+        except Exception as exc:
+            self.log("Referee runtime error", exc, exc_info=True)
+        try:
+            self.apply_wipe_runtime()
+        except Exception as exc:
+            self.log("Wipe runtime error", exc, exc_info=True)
         if self.module_enabled("Stadium"):
             self.apply_stadium_runtime()
         else:
@@ -600,6 +616,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.apply_movie_runtime()
         except Exception as exc:
             self.log("Movie runtime error", exc, exc_info=True)
+        # Adboard depends on curstad (stadium priority), so it must run after
+        # Stadium is applied -- it waits out the stadium copy job itself if
+        # that job is still running in the background (see AssetRuntime.apply_adboard_runtime).
+        try:
+            self.apply_adboard_runtime()
+        except Exception as exc:
+            self.log("Adboard runtime error", exc, exc_info=True)
         if not self._stadium_task_running:
             self._set_progress(100, "Runtime ready")
 
@@ -639,6 +662,18 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
 
     def apply_movie_runtime(self) -> None:
         self.assets_runtime.apply_movie_runtime()
+
+    def apply_ball_runtime(self) -> None:
+        self.assets_runtime.apply_ball_runtime()
+
+    def apply_referee_runtime(self) -> None:
+        self.assets_runtime.apply_referee_runtime()
+
+    def apply_wipe_runtime(self) -> None:
+        self.assets_runtime.apply_wipe_runtime()
+
+    def apply_adboard_runtime(self) -> None:
+        self.assets_runtime.apply_adboard_runtime()
 
     def tv_bumper_page(self) -> None:
         self.assets_runtime.tv_bumper_page()

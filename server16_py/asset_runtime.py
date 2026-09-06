@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -292,8 +294,262 @@ class AssetRuntime:
             app.log("Default movie restored")
         self.update_audio_overview()
 
+    def apply_ball_runtime(self) -> None:
+        """Copies FSW/balls/<folder>/*.rx3 for the current round, ported from
+        Nono's fork (see CLAUDE.md). Ini-only: assign by hand under
+        settings.ini's [ball] section, key=TOURROUNDID value=<folder> (same
+        section/key shape Nono's server reads).
+
+        Applied before Stadium/Scoreboard in apply_all_runtime (Nono found the
+        ball arriving 7-11s late when it went after the scoreboard copy), and
+        remembered per kickoff generation so tv_bumper_page() can reapply it
+        if anything overwrites data/sceneassets/ball/ later in the same match.
+        """
+        app = self.app
+        app._active_ball_runtime = None
+        key = app.TOURROUNDID
+        ball_folder = app.settings_ini.read(key, "ball") if key else ""
+        if not app.module_enabled("Ball"):
+            if ball_folder and (app.exedir / "FSW" / "balls" / ball_folder).exists():
+                self._show_warning_toast(app.tr("notify.warn.ball_off"), app.tr("notify.warn.assets_skipped"))
+            return
+        if not key or not ball_folder:
+            return
+        src_dir = app.exedir / "FSW" / "balls" / ball_folder
+        if not src_dir.exists():
+            app.log(f"Ball folder not found: {src_dir}")
+            return
+        target_dir = app.exedir / "data" / "sceneassets" / "ball"
+        copy(src_dir, target_dir)
+        app._active_ball_runtime = {
+            "generation": app._kickoff_generation,
+            "key": key,
+            "folder": ball_folder,
+            "src_dir": str(src_dir),
+        }
+        app.log(f"Ball runtime: [{key}] {ball_folder} applied")
+        self._show_asset_toast(app.tr("notify.ball_loaded"), ball_folder)
+
+    def reapply_active_ball_runtime(self, *, reason: str) -> bool:
+        """Re-copies the currently active Ball profile, if any, as long as no
+        newer match (kickoff generation) has started since it was applied."""
+        app = self.app
+        profile = app._active_ball_runtime
+        if not profile or profile.get("generation") != app._kickoff_generation:
+            return False
+        src_dir = Path(str(profile["src_dir"]))
+        if not src_dir.exists():
+            return False
+        target_dir = app.exedir / "data" / "sceneassets" / "ball"
+        copy(src_dir, target_dir)
+        app.log(f"Ball priority preserved ({reason}): [{profile['key']}] {profile['folder']}")
+        return True
+
+    def apply_referee_runtime(self) -> None:
+        """Copies FSW/referee/<folder>/*.rx3 for the current round to
+        data/sceneassets/kit/ (same destination team kits use), ported from
+        Nono's fork. Ini-only: settings.ini [referee], key=TOURROUNDID.
+        No stadium dependency, so — like Ball — this runs early in
+        apply_all_runtime, before Stadium/Scoreboard."""
+        app = self.app
+        key = app.TOURROUNDID
+        referee_folder = app.settings_ini.read(key, "referee") if key else ""
+        if not app.module_enabled("Referee"):
+            if referee_folder and (app.exedir / "FSW" / "referee" / referee_folder).exists():
+                self._show_warning_toast(app.tr("notify.warn.referee_off"), app.tr("notify.warn.assets_skipped"))
+            return
+        if not key or not referee_folder:
+            return
+        src_dir = app.exedir / "FSW" / "referee" / referee_folder
+        if not src_dir.exists():
+            app.log(f"Referee folder not found: {src_dir}")
+            return
+        target_dir = app.exedir / "data" / "sceneassets" / "kit"
+        copy(src_dir, target_dir)
+        app.log(f"Referee runtime: [{key}] {referee_folder} applied")
+        self._show_asset_toast(app.tr("notify.referee_loaded"), referee_folder)
+
+    def apply_wipe_runtime(self) -> None:
+        """Copies FSW/wipe/<folder>/*.rx3 for the current round to
+        data/sceneassets/wipe3d/ (the 3D scene-transition wipe), ported from
+        Nono's fork. Ini-only: settings.ini [wipe], key=TOURROUNDID."""
+        app = self.app
+        key = app.TOURROUNDID
+        wipe_folder = app.settings_ini.read(key, "wipe") if key else ""
+        if not app.module_enabled("Wipe"):
+            if wipe_folder and (app.exedir / "FSW" / "wipe" / wipe_folder).exists():
+                self._show_warning_toast(app.tr("notify.warn.wipe_off"), app.tr("notify.warn.assets_skipped"))
+            return
+        if not key or not wipe_folder:
+            return
+        src_dir = app.exedir / "FSW" / "wipe" / wipe_folder
+        if not src_dir.exists():
+            app.log(f"Wipe folder not found: {src_dir}")
+            return
+        target_dir = app.exedir / "data" / "sceneassets" / "wipe3d"
+        copy(src_dir, target_dir)
+        app.log(f"Wipe runtime: [{key}] {wipe_folder} applied")
+        self._show_asset_toast(app.tr("notify.wipe_loaded"), wipe_folder)
+
+    def _clear_active_adboard_files(self) -> None:
+        """Deletes whatever the previous adboard application injected.
+
+        Ported from Nono's restore_adboard_runtime(), but simplified: instead
+        of tracking real match-end via a FluxHub/post-match page heuristic
+        (Nono's own version of the same page-name-ambiguity problem this
+        codebase already fought through for Team Entrance -- see CLAUDE.md
+        §7), stale files are cleared unconditionally right before the next
+        application. This is simpler and strictly safer: a round with no
+        adboard match can never keep showing a stale, unrelated pack.
+        """
+        app = self.app
+        target_dir = app.exedir / "data" / "sceneassets" / "adboard"
+        for name in getattr(app, "_active_adboard_injected_files", []):
+            path = target_dir / name
+            if path.exists():
+                try:
+                    path.unlink()
+                except OSError as exc:
+                    app.log(f"Adboard: could not remove stale file {name}: {exc}")
+        app._active_adboard_injected_files = []
+
+    def cleanup_startup_adboard_files(self) -> None:
+        """Ported from Nono's _cleanup_injected_adboards(). Defensive cleanup
+        of six fixed per-slot filenames his fork's older Adboard scheme used
+        to write directly (predating the whole-folder-copy approach this port
+        and his current fork both use) -- harmless no-op unless an install
+        upgrading from that older scheme still has them lying around."""
+        app = self.app
+        target_dir = app.exedir / "data" / "sceneassets" / "adboard"
+        cleanup_names = [
+            "specificadboard_0_993_0_0.rx3",
+            "specificadboard_0_992_0_0.rx3",
+            "specificadboard_0_996_0_0.rx3",
+            "specificadboard_0_991_0_0.rx3",
+            "specificadboard_0_995_0_0.rx3",
+            "specificadboard_0_994_0_0.rx3",
+        ]
+        removed = 0
+        for name in cleanup_names:
+            path = target_dir / name
+            if path.exists():
+                try:
+                    path.unlink()
+                    removed += 1
+                except OSError as exc:
+                    app.log(f"Adboard startup cleanup: could not remove {name}: {exc}")
+        if removed:
+            app.log(f"Startup cleanup: {removed} adboard files removed")
+
+    def apply_adboard_runtime(self) -> None:
+        """Entry point ported from Nono's fork. Priority: current stadium's
+        own FSW/adboards/<stadium>/ folder, falling back to the round's
+        FSW/adboards/<folder>/ (settings.ini [adboard], key=TOURROUNDID) only
+        if the stadium folder is missing/empty. Ini-only, no assignment UI.
+
+        If Stadium is enabled and its background copy job is still running,
+        app.curstad isn't final yet -- wait for it on a background thread
+        (without blocking the UI) before picking a priority, same as Nono's
+        fork does for the same reason.
+        """
+        app = self.app
+        if not app.module_enabled("Adboard"):
+            self._clear_active_adboard_files()
+            adboard_folder = app.settings_ini.read(app.TOURROUNDID, "adboard") if app.TOURROUNDID else ""
+            has_assignment = bool(
+                (app.curstad and (app.exedir / "FSW" / "adboards" / app.curstad).exists())
+                or (adboard_folder and (app.exedir / "FSW" / "adboards" / adboard_folder).exists())
+            )
+            if has_assignment:
+                self._show_warning_toast(app.tr("notify.warn.adboard_off"), app.tr("notify.warn.assets_skipped"))
+            return
+        if app.module_enabled("Stadium") and app._stadium_task_running:
+            def _wait_and_apply() -> None:
+                waited = 0.0
+                while app._stadium_task_running and waited < 20.0:
+                    time.sleep(0.25)
+                    waited += 0.25
+                if app._stadium_task_running:
+                    app.log("Adboard: timeout waiting for stadium task, continuing anyway")
+                if app.module_enabled("Adboard"):
+                    self._apply_adboard_runtime_impl()
+
+            threading.Thread(target=_wait_and_apply, daemon=True, name="AdboardWaitStadium").start()
+        else:
+            self._apply_adboard_runtime_impl()
+
+    def _apply_adboard_runtime_impl(self) -> None:
+        app = self.app
+        self._clear_active_adboard_files()
+        target_dir = app.exedir / "data" / "sceneassets" / "adboard"
+        flag_target_dir = app.exedir / "data" / "sceneassets" / "flag"
+
+        def _copy_cornerflags(source_dir: Path) -> int:
+            copied = 0
+            for src in sorted(source_dir.iterdir()):
+                if src.is_file() and "cornerflag" in src.name.lower():
+                    copy_if_exists(src, flag_target_dir / src.name)
+                    copied += 1
+            return copied
+
+        copied_files: list[str] = []
+        stadium_matched = False
+        source_label = ""
+
+        if app.curstad:
+            stadium_dir = app.exedir / "FSW" / "adboards" / app.curstad
+            if stadium_dir.exists():
+                for src in sorted(stadium_dir.iterdir()):
+                    if src.suffix.lower() != ".rx3":
+                        continue
+                    copy_if_exists(src, target_dir / src.name)
+                    copied_files.append(src.name)
+                if copied_files:
+                    stadium_matched = True
+                    source_label = app.curstad
+                    app.log(f"Adboard runtime: stadium [{app.curstad}] -> {len(copied_files)} files")
+                    flags_copied = _copy_cornerflags(stadium_dir)
+                    if flags_copied:
+                        app.log(f"Cornerflag runtime: stadium [{app.curstad}] -> {flags_copied} files copied")
+                else:
+                    app.log(f"Adboard: stadium folder [{app.curstad}] has no .rx3 files")
+            else:
+                app.log(f"Adboard: no stadium folder for [{app.curstad}] (tried: {stadium_dir})")
+
+        if not stadium_matched and app.TOURROUNDID:
+            adboard_folder = app.settings_ini.read(app.TOURROUNDID, "adboard")
+            if adboard_folder:
+                adboards_dir = app.exedir / "FSW" / "adboards" / adboard_folder
+                if adboards_dir.exists():
+                    for src in sorted(adboards_dir.iterdir()):
+                        if src.suffix.lower() != ".rx3":
+                            continue
+                        copy_if_exists(src, target_dir / src.name)
+                        copied_files.append(src.name)
+                    if copied_files:
+                        source_label = adboard_folder
+                        app.log(f"Adboard runtime: [{app.TOURROUNDID}] {adboard_folder} -> {len(copied_files)} files")
+                        flags_copied = _copy_cornerflags(adboards_dir)
+                        if flags_copied:
+                            app.log(f"Cornerflag runtime: [{app.TOURROUNDID}] {adboard_folder} -> {flags_copied} files copied")
+                    else:
+                        app.log(f"Adboard: round folder [{adboard_folder}] has no .rx3 files")
+                else:
+                    app.log(f"Adboard folder not found: {adboards_dir}")
+
+        app._active_adboard_injected_files = copied_files
+        if copied_files:
+            # Routed through the worker queue rather than called directly:
+            # this may be running on the AdboardWaitStadium background thread,
+            # and Tk calls (app.after, used by _show_asset_toast) aren't safe
+            # off the main thread -- same reason stadium_runtime.py's own
+            # background copy steps queue their toasts instead of calling
+            # _show_toast_notification directly.
+            app._worker_queue.put(("toast", app.tr("notify.adboard_loaded"), source_label, 3500, ""))
+
     def tv_bumper_page(self) -> None:
         app = self.app
+        self.reapply_active_ball_runtime(reason="TV bumper")
         if not app.module_enabled("StadiumNet"):
             return
         source_key = "stadiumnetid" if not app.curstad else "stadiumnetname"

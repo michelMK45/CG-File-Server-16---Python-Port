@@ -2555,7 +2555,7 @@ class UIMixin:
         module_names = [
             "Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun",
             "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong",
-            "DiscordRPC",
+            "Ball", "Adboard", "Referee", "Wipe", "DiscordRPC",
         ]
         for idx, name in enumerate(module_names):
             initial = self._discord_rpc_enabled if name == "DiscordRPC" else False

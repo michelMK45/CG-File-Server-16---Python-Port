@@ -139,6 +139,10 @@ class LocalizationMixin:
             "StadiumNet": "module.stadiumnet",
             "Chants": "module.chants",
             "TeamEntrance": "module.team_entrance",
+            "Ball": "module.ball",
+            "Adboard": "module.adboard",
+            "Referee": "module.referee",
+            "Wipe": "module.wipe",
             "DiscordRPC": "module.discord_rpc",
         }
         for name, check in self.module_checks.items():
