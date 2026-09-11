@@ -115,7 +115,14 @@ class OverlayMixin:
         inj = self._d3d_injector
         if inj is None:
             return
-        if not self.show_overlay_var.get():
+        if not self.show_overlay_var.get() and not self._stadium_picker_pending:
+            # The stadium picker is deliberately exempt from this gate — it
+            # is driven solely by toggle.random_stadium_selection
+            # (see stadium_runtime.py's manual_mode), not by "Enable in-game
+            # overlay", which only controls the F12 general menu below. If a
+            # picker is pending, input syncing must keep running (mouse
+            # feed, keyboard/gamepad nav) or it would render but never
+            # respond to anything.
             if self._d3d_menu_visible:
                 self._d3d_menu_visible = False
                 self._overlay_wizard_phase = None

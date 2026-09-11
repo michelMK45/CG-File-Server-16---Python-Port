@@ -324,7 +324,6 @@ class StadiumRuntime:
             manual_mode = (
                 not app.random_stadium_selection_var.get()
                 and getattr(app, "_d3d_injector", None) is not None
-                and app.show_overlay_var.get()
             )
             if len(valid_stadiums) > 1 and manual_mode:
                 # Manual mode: let the player pick via the in-game stadium
@@ -335,6 +334,12 @@ class StadiumRuntime:
                 # picker session (see _open_stadium_picker). No overlay
                 # injector available (not injected yet / DLL missing) falls
                 # straight through to random — there's nothing to show.
+                # Deliberately independent of show_overlay_var: the picker
+                # renders through the same always-on D3D overlay injection
+                # and input loop the stadium-loading toast/modal already use
+                # (see _sync_d3d_menu_input's own show_overlay_var gate),
+                # not the F12 general menu — "Enable in-game overlay" toggles
+                # that menu specifically, not this feature.
                 if app._stadium_picker_pending and app._stadium_picker_signature == stadium_signature:
                     if not app._stadium_picker_resolved:
                         return  # still waiting on the player; don't re-show, don't re-roll
@@ -403,11 +408,13 @@ class StadiumRuntime:
         app_game.py giving up on it)."""
         app = self.app
         inj = getattr(app, "_d3d_injector", None)
-        if inj is None or not app.show_overlay_var.get():
-            # No overlay available (not injected yet / DLL missing, or the
-            # user has the whole in-game overlay disabled) — there's nothing
-            # to show, so don't stall stadium loading waiting for an
-            # interaction that can never happen.
+        if inj is None:
+            # No overlay available (not injected yet / DLL missing) — there's
+            # nothing to show, so don't stall stadium loading waiting for an
+            # interaction that can never happen. Deliberately not gated on
+            # show_overlay_var ("Enable in-game overlay") — that toggle only
+            # controls the F12 general menu; the picker uses the same
+            # always-on injection/input loop as the stadium-loading toast.
             app.log("Stadium picker requested but no overlay is available; using random selection instead")
             return
         thumbs = [str(app._resolve_stadium_preview_path_or_default(name) or "") for name in candidates]

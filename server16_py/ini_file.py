@@ -241,6 +241,43 @@ class SessionIniFile:
         self._reload_if_needed(force=True)
 
 
+def import_sections(dest: SessionIniFile, source: SessionIniFile, sections: list[str], mode: str) -> tuple[int, int]:
+    """Applies the given sections from `source` into `dest`, per `mode`:
+
+    - "replace": clears each destination section first, then writes every imported key -- so a
+      key the destination had that the import doesn't is removed, not left behind.
+    - "merge": only ever writes keys the destination doesn't already have in that section; an
+      existing key's value is never touched, no matter what the import says it should be.
+
+    Returns (keys_written, keys_removed_or_skipped): for "replace" the second value is how many
+    pre-existing keys were cleared before rewriting; for "merge" it's how many imported keys were
+    already present and therefore left untouched. Caller is responsible for calling dest.save()
+    afterward.
+    """
+    if mode == "replace":
+        removed = 0
+        written = 0
+        for section in sections:
+            removed += len(dest.as_dict(section))
+            dest.delete_section(section)
+            for key, value in source.items(section):
+                dest.write(key, value, section)
+                written += 1
+        return written, removed
+
+    written = 0
+    skipped = 0
+    for section in sections:
+        existing = dest.as_dict(section)
+        for key, value in source.items(section):
+            if key in existing:
+                skipped += 1
+                continue
+            dest.write(key, value, section)
+            written += 1
+    return written, skipped
+
+
 def export_sections(source: SessionIniFile, sections: list[str], dest_path: str | Path) -> int:
     """Writes the given sections (and their key=value pairs) from `source` into a standalone
     .ini file at dest_path, in the same format SessionIniFile writes/reads. Returns the number

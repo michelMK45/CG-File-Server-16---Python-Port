@@ -1018,6 +1018,47 @@ class SectionPickerDialog(BaseDialog):
         self.close_ok(selected)
 
 
+class ImportModeDialog(BaseDialog):
+    """Shown right after SectionPickerDialog in the settings-import flow, once the user has
+    picked which sections to import. Asks whether each selected section should be replaced
+    wholesale (old keys the import doesn't mention are removed) or merged (only keys currently
+    missing are added; existing values are never touched). `close_ok` receives "replace" or
+    "merge"."""
+
+    def __init__(self, master: tk.Misc, section_count: int) -> None:
+        super().__init__(master, "dialog.settings_io.mode_title")
+        self._set_geometry(420, 300, 380, 280)
+
+        self._dark_label(
+            self,
+            self.tr("dialog.settings_io.mode_subtitle", count=section_count),
+            bg=self.bg,
+            muted=True,
+            font=("Bahnschrift", 10),
+            wraplength=380,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=16, pady=(16, 12))
+
+        def _option(button_key: str, desc_key: str, mode: str) -> None:
+            frame = tk.Frame(self, bg=self.card, highlightthickness=1, highlightbackground="#243654")
+            frame.pack(fill="x", padx=16, pady=(0, 10))
+            ttk.Button(frame, text=self.tr(button_key), command=lambda: self.close_ok(mode)).pack(fill="x", padx=10, pady=(10, 4))
+            self._dark_label(
+                frame,
+                self.tr(desc_key),
+                bg=self.card,
+                muted=True,
+                font=("Bahnschrift", 9),
+                wraplength=350,
+                justify="left",
+                anchor="w",
+            ).pack(fill="x", padx=10, pady=(0, 10))
+
+        _option("dialog.settings_io.mode_replace", "dialog.settings_io.mode_replace_desc", "replace")
+        _option("dialog.settings_io.mode_merge", "dialog.settings_io.mode_merge_desc", "merge")
+
+
 class AboutDialog(BaseDialog):
     _GITHUB = "https://github.com/michelMK45/CG-File-Server-16---Python-Port"
     _FORUM = "https://soccergaming.com/forums/threads/cg-file-server-16-python-port.6475909/"

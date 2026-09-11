@@ -312,6 +312,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.camera_tab = None
         self.setup_tab = None
         self.kits_tab = None
+        self.settings_tab = None
+        self.notification_switch = None
+        self.kit_hotkeys_switch = None
+        self.keep_open_switch = None
+        self.overlay_switch = None
+        self.performance_mode_switch = None
+        self.random_stadium_switch = None
         self._setup_canvas = None
         self._setup_canvas_body = None
         self._assets_canvas = None

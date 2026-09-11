@@ -135,6 +135,85 @@ def _find_python32(extra_dirs: list | None = None) -> list[str] | None:
     return None
 
 
+class _ToolTip:
+    """Minimal hover tooltip: a borderless Toplevel with a wrapped label,
+    shown near the cursor after a short delay and dismissed on leave/click.
+    `text_provider` is called fresh every time the tooltip is about to show
+    (not cached at bind time), so a `lambda: self.tr(key)` reference stays
+    correct across a language switch without needing its own entry in
+    _apply_main_localization."""
+
+    DELAY_MS = 450
+    WRAPLENGTH = 320
+
+    def __init__(self, widget: tk.Widget, text_provider, bg: str, fg: str, border: str) -> None:
+        self._widget = widget
+        self._text_provider = text_provider
+        self._bg = bg
+        self._fg = fg
+        self._border = border
+        self._after_id: str | None = None
+        self._tip: tk.Toplevel | None = None
+        widget.bind("<Enter>", self._on_enter, add="+")
+        widget.bind("<Leave>", self._on_leave, add="+")
+        widget.bind("<ButtonPress>", self._on_leave, add="+")
+
+    def _on_enter(self, _event=None) -> None:
+        self._cancel_scheduled()
+        self._after_id = self._widget.after(self.DELAY_MS, self._show)
+
+    def _on_leave(self, _event=None) -> None:
+        self._cancel_scheduled()
+        self._hide()
+
+    def _cancel_scheduled(self) -> None:
+        if self._after_id is not None:
+            try:
+                self._widget.after_cancel(self._after_id)
+            except Exception:
+                pass
+            self._after_id = None
+
+    def _show(self) -> None:
+        self._after_id = None
+        if self._tip is not None or not self._widget.winfo_exists():
+            return
+        text = self._text_provider()
+        if not text:
+            return
+        x = self._widget.winfo_rootx() + 12
+        y = self._widget.winfo_rooty() + self._widget.winfo_height() + 6
+        tip = tk.Toplevel(self._widget)
+        tip.wm_overrideredirect(True)
+        try:
+            tip.wm_attributes("-topmost", True)
+        except Exception:
+            pass
+        tip.configure(bg=self._border)
+        label = tk.Label(
+            tip,
+            text=text,
+            bg=self._bg,
+            fg=self._fg,
+            font=("Bahnschrift", 9),
+            justify="left",
+            wraplength=self.WRAPLENGTH,
+            padx=8,
+            pady=6,
+        )
+        label.pack(padx=1, pady=1)
+        tip.wm_geometry(f"+{x}+{y}")
+        self._tip = tip
+
+    def _hide(self) -> None:
+        if self._tip is not None:
+            try:
+                self._tip.destroy()
+            except Exception:
+                pass
+            self._tip = None
+
+
 class UIMixin:
     """Window construction, theming, and all widget interaction — part of Server16App via multiple inheritance."""
 
@@ -422,11 +501,13 @@ class UIMixin:
         self.camera_tab = tk.Frame(self.tabview, bg=self.bg)
         self.setup_tab = tk.Frame(self.tabview, bg=self.bg)
         self.kits_tab = tk.Frame(self.tabview, bg=self.bg)
+        self.settings_tab = tk.Frame(self.tabview, bg=self.bg)
         self.tabview.add(self.dashboard_tab, text=self.tr("tab.dashboard"))
         self.tabview.add(self.kits_tab, text=self.tr("tab.kits"))
         self.tabview.add(self.audio_tab, text=self.tr("tab.chants"))
         self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
         self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
+        self.tabview.add(self.settings_tab, text=self.tr("tab.settings"))
         self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
         self.tabview.select(self.dashboard_tab)
         self.tabview.bind("<<NotebookTabChanged>>", self._on_tab_changed)
@@ -477,6 +558,7 @@ class UIMixin:
         self._build_camera_tab()
         self._build_setup_tab()
         self._build_kits_tab()
+        self._build_settings_tab()
         self._build_logs_card()
         self._apply_main_localization()
 
@@ -1039,6 +1121,11 @@ class UIMixin:
             self._card_title_bindings = []
         self._card_title_bindings.append((title_label, title_key, subtitle_label, subtitle_key))
         return card
+
+    def _add_tooltip(self, widget: tk.Widget, translation_key: str) -> None:
+        """Attach a hover tooltip to `widget`, its text resolved via
+        self.tr(translation_key) fresh on every show (see _ToolTip)."""
+        _ToolTip(widget, lambda: self.tr(translation_key), self.card, self.fg, "#243654")
 
     def _dark_listbox(self, parent: tk.Misc, **kwargs) -> tk.Listbox:
         return tk.Listbox(
@@ -2548,8 +2635,6 @@ class UIMixin:
     def _build_modules_card(self, parent: tk.Misc, row: int) -> None:
         card = self._card(parent, "card.modules.title", "card.modules.subtitle")
         card.grid(row=row, column=0, sticky="ew")
-        card.configure(height=316)
-        card.grid_propagate(False)
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
         module_names = [
@@ -2571,61 +2656,83 @@ class UIMixin:
             check.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
             self.module_checks[name] = check
 
-        tk.Label(card, text=self.tr("label.app_options"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9)).pack(anchor="w", padx=12, pady=(4, 2))
+    def _build_settings_tab(self) -> None:
+        """App Options, moved off the Dashboard's Modules card into their own
+        tab and split into App Settings (general app behavior) vs. Overlay
+        Settings (F12 in-game overlay / stadium picker behavior)."""
+        outer = tk.Frame(self.settings_tab, bg=self.bg)
+        outer.pack(fill="both", expand=True, padx=10, pady=10)
+        outer.grid_columnconfigure(0, weight=1)
+        outer.grid_columnconfigure(1, weight=1)
+        outer.grid_rowconfigure(0, weight=1)
 
-        notification_switch = ttk.Checkbutton(
+        self._build_app_settings_card(outer)
+        self._build_overlay_settings_card(outer)
+
+    def _build_app_settings_card(self, parent: tk.Misc) -> None:
+        card = self._card(parent, "card.app_settings.title", "card.app_settings.subtitle")
+        card.grid(row=0, column=0, sticky="new", padx=(0, 12))
+
+        self.notification_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
-            text="Show loading notification",
+            text=self.tr("toggle.show_loading_notification"),
             variable=self.show_stadium_loading_var,
             command=self._toggle_stadium_loading_visibility,
         )
-        notification_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self.notification_switch.pack(anchor="w", padx=12, pady=(6, 4))
 
-        overlay_switch = ttk.Checkbutton(
-            card,
-            style="Switch.TCheckbutton",
-            text=self.tr("toggle.show_overlay"),
-            variable=self.show_overlay_var,
-            command=self._toggle_overlay_enabled,
-        )
-        overlay_switch.pack(anchor="w", padx=12, pady=(0, 4))
-
-        kit_hotkeys_switch = ttk.Checkbutton(
+        self.kit_hotkeys_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
             text=self.tr("toggle.kit_hotkeys"),
             variable=self.kit_hotkeys_var,
             command=self._toggle_kit_hotkeys,
         )
-        kit_hotkeys_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self.kit_hotkeys_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self._add_tooltip(self.kit_hotkeys_switch, "tooltip.kit_hotkeys")
 
-        keep_open_switch = ttk.Checkbutton(
+        self.keep_open_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
             text=self.tr("toggle.keep_open"),
             variable=self.keep_open_var,
             command=self._toggle_keep_open,
         )
-        keep_open_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self.keep_open_switch.pack(anchor="w", padx=12, pady=(0, 10))
 
-        performance_mode_switch = ttk.Checkbutton(
+    def _build_overlay_settings_card(self, parent: tk.Misc) -> None:
+        card = self._card(parent, "card.overlay_settings.title", "card.overlay_settings.subtitle")
+        card.grid(row=0, column=1, sticky="new")
+
+        self.overlay_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.show_overlay"),
+            variable=self.show_overlay_var,
+            command=self._toggle_overlay_enabled,
+        )
+        self.overlay_switch.pack(anchor="w", padx=12, pady=(6, 4))
+
+        self.performance_mode_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
             text=self.tr("toggle.performance_mode"),
             variable=self.overlay_performance_mode_var,
             command=self._toggle_overlay_performance_mode,
         )
-        performance_mode_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        self.performance_mode_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self._add_tooltip(self.performance_mode_switch, "tooltip.performance_mode")
 
-        random_stadium_switch = ttk.Checkbutton(
+        self.random_stadium_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
             text=self.tr("toggle.random_stadium_selection"),
             variable=self.random_stadium_selection_var,
             command=self._toggle_random_stadium_selection,
         )
-        random_stadium_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        self.random_stadium_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        self._add_tooltip(self.random_stadium_switch, "tooltip.random_stadium_selection")
 
     def _toggle_discord_rpc(self) -> None:
         new_state = self.module_vars["DiscordRPC"].get()
@@ -2726,12 +2833,12 @@ class UIMixin:
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
-        # Disabling the overlay mid-pick leaves the stadium picker with no
-        # input loop to resolve it (_sync_d3d_menu_input's own show_overlay_var
-        # check would otherwise skip it forever) — same "don't strand it"
-        # reasoning as _toggle_random_stadium_selection.
-        if not self.show_overlay_var.get() and self._stadium_picker_pending:
-            self._resolve_stadium_picker(None)
+        # The stadium picker is deliberately NOT stranded/cancelled here —
+        # it no longer depends on this toggle at all (see
+        # _sync_d3d_menu_input's show_overlay_var gate and
+        # stadium_runtime.py's manual_mode); it keeps running regardless of
+        # "Enable in-game overlay", driven solely by
+        # toggle.random_stadium_selection.
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "card.chants.title", "card.chants.subtitle")

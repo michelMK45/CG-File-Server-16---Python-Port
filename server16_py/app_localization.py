@@ -77,6 +77,7 @@ class LocalizationMixin:
             self.tabview.tab(self.kits_tab, text=self.tr("tab.kits"))
             self.tabview.tab(self.audio_tab, text=self.tr("tab.chants"))
             self.tabview.tab(self.camera_tab, text=self.tr("tab.camera"))
+            self.tabview.tab(self.settings_tab, text=self.tr("tab.settings"))
             self.tabview.tab(self.logs_tab, text=self.tr("tab.logs"))
         if self.logs_group is not None:
             self.logs_group.configure(text=self.tr("logs.group"))
@@ -88,6 +89,21 @@ class LocalizationMixin:
         self._apply_camera_localization()
         self._refresh_card_titles()
         self._apply_setup_notice_localization()
+        self._apply_settings_tab_localization()
+
+    def _apply_settings_tab_localization(self) -> None:
+        if self.notification_switch is not None:
+            self.notification_switch.configure(text=self.tr("toggle.show_loading_notification"))
+        if self.kit_hotkeys_switch is not None:
+            self.kit_hotkeys_switch.configure(text=self.tr("toggle.kit_hotkeys"))
+        if self.keep_open_switch is not None:
+            self.keep_open_switch.configure(text=self.tr("toggle.keep_open"))
+        if self.overlay_switch is not None:
+            self.overlay_switch.configure(text=self.tr("toggle.show_overlay"))
+        if self.performance_mode_switch is not None:
+            self.performance_mode_switch.configure(text=self.tr("toggle.performance_mode"))
+        if self.random_stadium_switch is not None:
+            self.random_stadium_switch.configure(text=self.tr("toggle.random_stadium_selection"))
 
     def _refresh_card_titles(self) -> None:
         if hasattr(self, "_card_title_bindings"):

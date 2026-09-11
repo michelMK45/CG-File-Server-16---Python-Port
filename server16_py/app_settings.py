@@ -8,9 +8,9 @@ from tkinter import filedialog, messagebox
 
 import psutil
 
-from .dialogs import SectionPickerDialog
+from .dialogs import ImportModeDialog, SectionPickerDialog
 from .fifa_db import FifaDatabase
-from .ini_file import SessionIniFile, export_sections
+from .ini_file import SessionIniFile, export_sections, import_sections
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 
 
@@ -256,32 +256,15 @@ class SettingsMixin:
             return
         selected_sections = dialog.result
 
+        mode_dialog = ImportModeDialog(self, len(selected_sections))
+        self.wait_window(mode_dialog)
+        if not mode_dialog.result:
+            self.log("Settings import cancelled by user before choosing replace/merge mode")
+            return
+        mode = mode_dialog.result
+
         self.settings_ini.reload()
-        conflicts: list[tuple[str, str, str, str]] = []
-        additions = 0
-        for section in selected_sections:
-            existing = self.settings_ini.as_dict(section)
-            for key, value in imported.items(section):
-                if key in existing and existing[key] != value:
-                    conflicts.append((section, key, existing[key], value))
-                elif key not in existing:
-                    additions += 1
-
-        if conflicts:
-            preview_lines = [f"[{section}] {key}: {old} -> {new}" for section, key, old, new in conflicts[:15]]
-            if len(conflicts) > 15:
-                preview_lines.append(f"... (+{len(conflicts) - 15})")
-            proceed = messagebox.askyesno(
-                self.tr("message.settings_io"),
-                self.tr("message.settings_io.conflicts_confirm", count=len(conflicts), preview="\n".join(preview_lines)),
-            )
-            if not proceed:
-                self.log("Settings import cancelled by user due to key conflicts")
-                return
-
-        for section in selected_sections:
-            for key, value in imported.items(section):
-                self.settings_ini.write(key, value, section)
+        written, other = import_sections(self.settings_ini, imported, selected_sections, mode)
         self.settings_ini.save()
         self._load_module_states()
         try:
@@ -290,11 +273,18 @@ class SettingsMixin:
         except Exception as exc:
             self.log("Failed to apply runtime after settings import", exc)
 
-        self.log(f"Imported settings sections {selected_sections} from {source} ({additions} new, {len(conflicts)} overwritten)")
-        messagebox.showinfo(
-            self.tr("message.settings_io"),
-            self.tr("message.settings_io.import_done", added=additions, overwritten=len(conflicts), sections=len(selected_sections)),
-        )
+        if mode == "replace":
+            self.log(f"Imported settings sections {selected_sections} from {source} (replaced, {written} key(s) written, {other} old key(s) removed)")
+            messagebox.showinfo(
+                self.tr("message.settings_io"),
+                self.tr("message.settings_io.import_done_replace", written=written, removed=other, sections=len(selected_sections)),
+            )
+        else:
+            self.log(f"Imported settings sections {selected_sections} from {source} (merged, {written} new key(s) added, {other} existing key(s) kept)")
+            messagebox.showinfo(
+                self.tr("message.settings_io"),
+                self.tr("message.settings_io.import_done_merge", added=written, skipped=other, sections=len(selected_sections)),
+            )
 
     def select_fifa_exe(self) -> None:
         filename = filedialog.askopenfilename(filetypes=[("Executable", "*.exe")], title=self.tr("filedialog.select_fifa_exe"))
