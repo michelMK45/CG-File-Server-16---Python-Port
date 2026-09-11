@@ -21,6 +21,7 @@ from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .kit_mixer import KitMixRuntime
+from .match_string_patcher import MatchStringPatchCoordinator, StadiumDbNamePatchCoordinator
 from .memory_access import Memory
 from .movie_preview_runtime import MoviePreviewRuntime
 from .localization import LocalizationManager
@@ -405,6 +406,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._last_live_score = (0, 0)
         self._last_live_update = ""
         self.assets_runtime = AssetRuntime(self)
+        self.match_string_patcher = MatchStringPatchCoordinator(self)
+        self.stadium_db_name_patcher = StadiumDbNamePatchCoordinator(self)
         self.stadium_runtime = StadiumRuntime(self)
         self.chants_runtime = ChantsRuntime(self)
         self.entrance_runtime = TeamEntranceRuntime(self)
@@ -687,6 +690,35 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def _reset_chants_state(self) -> None:
         self.entrance_runtime.reset()
         self.chants_runtime.reset_chants_state()
+        self.match_string_patcher.reset()
+        # stadium_db_name_patcher is DELIBERATELY not reset here. Unlike
+        # match_string_patcher (keyed per match by HID/AID/kickoff
+        # generation -- a genuinely new struct instance every match, so
+        # resetting it every time is correct), StadiumDbNamePatchCoordinator
+        # is keyed only by (process id, injID/slot) and is explicitly
+        # designed to stay valid for the whole FIFA process lifetime (see
+        # its class docstring, match_string_patcher.py) -- the loaded DB
+        # table's buffer address doesn't move between matches, only between
+        # FIFA restarts. Found live 2026-09-11: this call was firing on
+        # every KickOffHub visit (_handle_page_transition calls
+        # _reset_chants_state() there), wiping get_current_name()'s cache
+        # every single match even though the FIFA process never changed. The
+        # next match's request_db_name_patch() then resolved old_name back
+        # to the ORIGINAL vanilla DB name ("Waldstadion"/"Sanderson Park")
+        # instead of whatever the previous match had actually renamed the
+        # buffer to -- searching for text that no longer exists in memory,
+        # finding 0 candidates, and silently leaving the previous match's
+        # custom name stuck on screen. Removing this call also means a
+        # SECOND-and-later match in the same FIFA session gets the
+        # coordinator's existing "is_rename" fast path (Part 15) for free:
+        # once an address is confirmed once, later matches just rewrite it
+        # directly with no scan needed at all. If a cached address ever goes
+        # stale (FIFA reuses that memory for something else), _patch_one's
+        # own re-validation already detects that and falls back to a fresh
+        # scan -- no explicit reset is needed for correctness across a
+        # genuine FIFA restart either, since _key() already embeds
+        # process_id and a new process_id can never match old cached
+        # entries.
 
     def _fade_player(self, player: MciAudioPlayer, start: float, end: float, duration_ms: int) -> None:
         self.chants_runtime.fade_player(player, start, end, duration_ms)

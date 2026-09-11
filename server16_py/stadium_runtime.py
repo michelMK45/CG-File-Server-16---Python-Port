@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import random
+import re
 import unicodedata
 import tempfile
 import threading
@@ -11,15 +12,133 @@ from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
 from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
-from .match_string_patcher import patch_match_string
 
 if TYPE_CHECKING:
     from .app import Server16App
+
+_TRAILING_PAREN_RE = re.compile(r"\s*\([^()]*\)\s*$")
+
+
+def _clean_db_display_name(raw: str) -> str:
+    """Strip modding-DB conventions that never make it onto screen.
+
+    Confirmed live 2026-09-09: `fifa_db.py`'s raw stadium-table lookup for
+    injID 176 on a FIP install returned "_Waldstadion (Fussballstadion)", but
+    the game only ever rendered "Waldstadion" — a leading "_" (a common
+    modding-tool trick to sort an entry to the top of in-game lists) and a
+    trailing " (...)" disambiguator (here, literally "football stadium" in
+    German — an internal reference note, not player-facing text) are both
+    stripped by FIFA's own UI before display. Search text for
+    StadiumDbNamePatchCoordinator must match what's actually on screen, not
+    the raw DB field, or the isolated-string scan will never find it.
+    """
+    text = raw.strip()
+    if text.startswith("_"):
+        text = text[1:]
+    text = _TRAILING_PAREN_RE.sub("", text).strip()
+    return text
 
 
 class StadiumRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
+
+    def resolve_scoreboard_display_name(self, stad_name: str) -> str:
+        """Resolve the [scoreboardstdname] display name for a stadium, or
+        fall back to the stadium's own on-disk name when no override is
+        configured."""
+        app = self.app
+        if app.settings_ini.key_exists(stad_name, "scoreboardstdname"):
+            raw_std = app.settings_ini.read(stad_name, "scoreboardstdname")
+            display_name = raw_std.split(",")[0].strip()
+            return display_name if display_name else stad_name
+        return stad_name
+
+    def write_active_stad_name(self, std_name: str) -> bool:
+        """Write the given display name into every known scoreboard
+        stadium-name pointer chain (176/261, plus their "B" and "C"
+        alternates — see offsets.py).
+
+        The struct layout this leaf offset points into apparently shifts
+        with FIFA build/mod, so more than one of these six chains can
+        legitimately fail to resolve to a real string buffer on a given
+        install — that is expected, not a bug, which is why each write is
+        wrapped individually and only logged, never raised. Returns True if
+        at least one slot was written and verified.
+        """
+        app = self.app
+        if not app.memory.is_open():
+            return False
+        written = False
+        slots = [
+            ("176", app.offsets.STDNAMEOFFSET176),
+            ("176B", app.offsets.STDNAMEOFFSET176B),
+            ("176C", app.offsets.STDNAMEOFFSET176C),
+            ("261", app.offsets.STDNAMEOFFSET261),
+            ("261B", app.offsets.STDNAMEOFFSET261B),
+            ("261C", app.offsets.STDNAMEOFFSET261C),
+        ]
+        for label, offsets in slots:
+            try:
+                safe_value, address = app.memory.write_string_with_offsets_safe(
+                    app.offsets.STDNAMEBASE,
+                    offsets,
+                    std_name,
+                    max_bytes=63,
+                    validation_size=256,
+                    # These buffers' previous contents are not guaranteed to
+                    # be printable ASCII: FIFA can store localized text
+                    # (UTF-8/Windows-1252) or leave internal bytes before the
+                    # struct is fully initialized. Keep the NUL-bound, size
+                    # cap and read-back verification, but do not reject the
+                    # correct slot only because its old bytes are non-ASCII.
+                    require_printable_existing=False,
+                )
+                if safe_value != std_name:
+                    # write_string_safe's max_bytes=63 below is only a floor —
+                    # it measures real zero-padding past the buffer's own NUL
+                    # and uses that instead when there's more room (see
+                    # Memory.write_string_safe's docstring) — so a truncation
+                    # here means the buffer genuinely has no more space, not
+                    # that a fixed 63-byte cap was hit.
+                    app.log(
+                        f"Stad name slot {label}: truncated '{std_name}' -> "
+                        f"'{safe_value}' (buffer has no more room)"
+                    )
+                app.log(f"Stad name slot {label} verified at 0x{address:X}")
+                written = True
+            except Exception as exc:
+                app.log(f"Stad name write skipped slot {label}: {exc}")
+        return written
+
+    def request_db_name_patch(self, injid: str, new_name: str) -> None:
+        """Ask StadiumDbNamePatchCoordinator to rewrite the loaded
+        fifa_ng_db.db stadium-name text for this container slot.
+
+        The "old" name to search for is whatever StadiumDbNamePatchCoordinator
+        has CONFIRMED (get_current_name -- set only on an actual successful
+        read-verify or write-verify, never optimistically) is currently live
+        in that slot's buffer, otherwise the slot's vanilla DB name (stadium
+        ID == injid; see CLAUDE.md §7 Part 3's live-confirmed "Waldstadion"
+        finding for why 176/261 double as real DB stadium IDs). Deliberately
+        does NOT cache/assume `new_name` is now live itself -- an earlier
+        version of this method did, and a live test (2026-09-09, Part 8)
+        showed that broke every retry after the first: each retry recomputed
+        old_name as the assumed-already-applied new_name, saw old==new, and
+        silently skipped scanning again, even though the patch had never
+        actually succeeded. As long as it keeps failing, this keeps resolving
+        the same correct original name for every retry. A missing/unavailable
+        team_db (32-bit bridge not connected) just means this soft-fails --
+        the pointer-chain write in write_active_stad_name still runs
+        regardless.
+        """
+        app = self.app
+        old_name = app.stadium_db_name_patcher.get_current_name(injid)
+        if not old_name:
+            raw_db_name = app._resolve_stadium_name(injid)
+            old_name = _clean_db_display_name(raw_db_name) if raw_db_name else None
+        if old_name:
+            app.stadium_db_name_patcher.request(injid, old_name, new_name)
 
     def has_assignment(self) -> bool:
         """Return True if there is a stadium assignment for the current match context."""
@@ -327,26 +446,28 @@ class StadiumRuntime:
         app._update_stadium_loading_modal(10, f"Loading stadium from [{section_name}] {section_id}")
         # Write the stadium name to memory immediately — before file copying starts —
         # so it is already in place when FIFA renders the match intro screen.
+        # Avoid patching fifa_ng_db.db on disk (db_patcher.py) — that change can
+        # survive the match lifecycle and leave the game crashing on the next
+        # launch (see CLAUDE.md §7, "Nono's version" on-disk DB corruption bug).
+        # Patch FIFA memory only, for the current session, through three
+        # independent, best-effort mechanisms that don't depend on each other
+        # (see CLAUDE.md §7 Part 3's live findings on which one actually
+        # affects the pre-match screen):
         if chosen_stadium:
-            # Resolve the display name from scoreboardstdname ini key
-            if app.settings_ini.key_exists(chosen_stadium, "scoreboardstdname"):
-                raw_std = app.settings_ini.read(chosen_stadium, "scoreboardstdname")
-                display_name = raw_std.split(",")[0].strip()
-                std_name = display_name if display_name else chosen_stadium
-            else:
-                std_name = chosen_stadium
-            # Avoid patching fifa_ng_db.db on disk. That change can survive the match
-            # lifecycle and leave the game crashing on the next launch.
-            # Patch FIFA memory only for the current session.
-            patch_match_string(app, std_name)
-            # Also pre-write to memory for the scoreboard.
-            if app.memory.is_open():
-                try:
-                    app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, app.offsets.STDNAMEOFFSET176, "_" + std_name)
-                    app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, app.offsets.STDNAMEOFFSET261, "_" + std_name)
-                    app.log(f"Stadium name pre-written to memory: _{std_name}")
-                except Exception as exc:
-                    app.log(f"Failed to pre-write stadium name to memory", exc)
+            std_name = self.resolve_scoreboard_display_name(chosen_stadium)
+            if self.write_active_stad_name(std_name):
+                app.log(f"Stadium name pre-written to memory: {std_name}")
+            # HID/AID aren't resolved yet this early in the flow (this runs
+            # before refresh_live_context's own read of them for the new
+            # match), so this mostly seeds the coordinator's context for the
+            # request from finish_stadium_apply()/the TV-bumper transition to
+            # reuse; if HID/AID do happen to already be set (re-roll of the
+            # same match) it can patch immediately in the background.
+            app.match_string_patcher.request(std_name)
+            # The mechanism confirmed live to actually be worth pursuing:
+            # rewrite FIFA's own loaded fifa_ng_db.db stadium-name text for
+            # this slot. injid is already known here (unlike HID/AID above).
+            self.request_db_name_patch(injid, std_name)
 
         # NOTE: the injection slot ID is intentionally NOT pre-written here.
         # Writing it before the background copy job has cleared/populated the
@@ -571,16 +692,16 @@ class StadiumRuntime:
             if app.settings_ini.key_exists(stad_name, "scoreboardstdname"):
                 scoreboard_display_name = app.settings_ini.read(stad_name, "scoreboardstdname").split(",")[0].strip()
 
-            # Write stadium name to memory to both slots for consistency.
-            std_offsets_176 = app.offsets.STDNAMEOFFSET176
-            std_offsets_261 = app.offsets.STDNAMEOFFSET261
-            std_name = "_" + (scoreboard_display_name if scoreboard_display_name else stad_name)
-            try:
-                app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, std_offsets_176, std_name)
-                app.memory.write_string_with_offsets(app.offsets.STDNAMEBASE, std_offsets_261, std_name)
+            # Write the stadium name through all three independent, best-
+            # effort mechanisms -- see StadiumRuntime.write_active_stad_name,
+            # MatchStringPatchCoordinator and StadiumDbNamePatchCoordinator
+            # (CLAUDE.md §7 Part 3 for which one is actually confirmed live
+            # to affect this screen).
+            std_name = scoreboard_display_name if scoreboard_display_name else stad_name
+            if self.write_active_stad_name(std_name):
                 app.log(f"Stadium name written to memory: {std_name}")
-            except Exception as exc:
-                app.log(f"Failed to write stadium name to memory", exc)
+            app.match_string_patcher.request(std_name)
+            self.request_db_name_patch(payload["injid"], std_name)
             app.CCount = inc_count(0, app.CCount)
             app.injID = payload["injid"]
             app.StadName = stad_name

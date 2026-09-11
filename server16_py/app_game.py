@@ -11,6 +11,14 @@ import tkinter as tk
 from .memory_access import Memory, MemoryAccessError
 from .substitution_runtime import POLL_TIMEOUT_SECOND_SIDE_MS
 
+# How long, in wall-clock seconds after the "TV/bumper" transition, to keep
+# re-requesting StadiumDbNamePatchCoordinator every ~900ms. See
+# _schedule_db_name_patch_retry's docstring for why this must be a time
+# budget, not a fixed tick count -- one real scan attempt can take 1.5-2.5s+,
+# so a short window can run out of wall-clock time well before the
+# coordinator's own MAX_SCAN_ATTEMPTS is reached.
+DB_NAME_PATCH_RETRY_WINDOW_SECONDS = 60.0
+
 
 class GameMixin:
     """Game process polling, live context reading, and stats loop — part of Server16App via multiple inheritance."""
@@ -226,20 +234,184 @@ class GameMixin:
                 self.bumperpagechange = True
                 self.skillgamechange = True
                 self.tv_bumper_page()
-                # Patch the match string in memory now that the bumper is loading
-                # — this is the last moment before FIFA renders the stadium name
+                # Re-request the stadium-name patch now that the bumper is
+                # loading — the last moment before FIFA renders the stadium
+                # name, and by now HID/AID are reliably resolved (unlike the
+                # earlier request from start_stadium_task, which can fire
+                # before refresh_live_context has captured them for a brand
+                # new match). This re-arms the same background coordinator;
+                # it no-ops instantly if the earlier request already patched
+                # this exact match's string.
                 if self.curstad:
-                    if self.settings_ini.key_exists(self.curstad, "scoreboardstdname"):
-                        raw = self.settings_ini.read(self.curstad, "scoreboardstdname")
-                        std_name = raw.split(",")[0].strip() or self.curstad
-                    else:
-                        std_name = self.curstad
-                    from .match_string_patcher import patch_match_string
-                    patch_match_string(self, std_name)
+                    std_name = self.stadium_runtime.resolve_scoreboard_display_name(self.curstad)
+                    self.stadium_runtime.write_active_stad_name(std_name)
+                    self.match_string_patcher.request(std_name)
+                    self.stadium_runtime.request_db_name_patch(self.injID, std_name)
+                    self._start_scoreboard_name_progress(self.injID, std_name)
             return
         self.pagechange = False
         self.bumperpagechange = False
         self.skillgamechange = False
+
+    def _start_scoreboard_name_progress(self, injid: str, std_name: str) -> None:
+        """Show a loading bar for the scoreboardstdname patch and drive it
+        to completion once StadiumDbNamePatchCoordinator actually confirms
+        the name is live -- so the user can SEE the attempt happening
+        instead of only finding out (or not) from the log.
+
+        Reuses the same D3D-overlay loading bar StadiumRuntime's own
+        file-copy job shows (StadiumRuntime.start_stadium_task /
+        _show_stadium_loading_modal) -- it's the only progress-bar widget
+        this app has, and by the time "TV/bumper" fires (well after the
+        match's own menus/team-select, not during stadium loading) that
+        earlier instance is long since closed, so this opens a fresh one
+        rather than fighting over an already-visible one.
+
+        Ticks are tagged with the current `_kickoff_generation` (bumped only
+        on a genuine new KickOffHub visit -- the same "advances exactly once
+        per real new match" signal TeamEntranceRuntime already relies on for
+        this exact class of bug, CLAUDE.md §5.5 Part 9) so a stale chain from
+        an abandoned/superseded match can never fight a newer match's own
+        chain over this one shared bar -- e.g. by hiding it right after the
+        new chain just showed it.
+        """
+        self._show_stadium_loading_modal(std_name, "Applying scoreboard name...", progress=0)
+        started_at = time.monotonic()
+        # Captured BEFORE the first request of this cycle so a later tick can
+        # tell "the coordinator actually wrote something new" apart from
+        # "still showing whatever was already there" -- see
+        # _db_name_patch_retry_tick's own success check for why an exact
+        # match to `std_name` alone isn't enough (a real, expected buffer-
+        # capacity limit can mean only a TRUNCATED name ever lands, e.g.
+        # CLAUDE.md §7 Part 10's "Campos de Sport de El Sardinero" -> "Campos
+        # de S" for FIFA's 12-byte slot-176 name buffer -- confirmed live
+        # again 2026-09-10 for the same team/stadium).
+        baseline_name = self.stadium_db_name_patcher.get_current_name(injid)
+        self._schedule_db_name_patch_retry(
+            injid, std_name, baseline_name, self._kickoff_generation,
+            started_at, started_at + DB_NAME_PATCH_RETRY_WINDOW_SECONDS
+        )
+
+    def _finish_scoreboard_name_progress(self, std_name: str, actual_name: str | None) -> None:
+        if actual_name is None:
+            text = "Scoreboard name not confirmed"
+        elif actual_name == std_name:
+            text = f"Scoreboard name applied: {actual_name}"
+        else:
+            # A real, expected limit of FIFA's own buffer for this slot (not
+            # a bug in this write path) -- see the note in
+            # _start_scoreboard_name_progress above. Surfacing the actually-
+            # applied text here, instead of always echoing back the full
+            # requested name, is what makes this honest instead of silently
+            # claiming a success the screen doesn't actually show.
+            text = f"Scoreboard name applied (shortened): {actual_name}"
+        self._update_stadium_loading_modal(100, text)
+        self._hide_stadium_loading_modal(delay_ms=1200)
+
+    def _schedule_db_name_patch_retry(
+        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float
+    ) -> None:
+        """Re-request StadiumDbNamePatchCoordinator every ~900ms until
+        `deadline` (a time.monotonic() timestamp) or an earlier confirmed
+        success, after the bumper starts -- covering the pre-match
+        presentation screen's actual display window (see the "TV/bumper"
+        handler above for why the very first request there can easily fire
+        too early). Also drives the loading bar opened by
+        _start_scoreboard_name_progress, proportionally to how far into the
+        window this retry chain has gotten.
+
+        A fixed *tick count* (this used to be attempts_left=19, one fewer per
+        call) is the wrong unit here: it silently assumes each tick
+        corresponds to roughly one real scan. That was true when the
+        coordinator could skip scanning once something was already cached,
+        but not since StadiumDbNamePatchCoordinator was changed (2026-09-10)
+        to keep searching for MORE copies on every attempt instead of
+        stopping at the first success -- each real scan now reliably takes
+        1.5-2.5s+ (three search modes every time), so a 19-tick/~17s budget
+        only ever bought room for ~9-10 real scans, well short of
+        MAX_SCAN_ATTEMPTS=20, and the retry chain would simply run out of
+        ticks with no error and no log line, looking exactly like a silent
+        failure. A wall-clock deadline decouples "how long to keep trying"
+        from "how fast a single scan happens to be" -- ticks past the point
+        the coordinator has already exhausted its own MAX_SCAN_ATTEMPTS are
+        cheap no-op cache reverifications, not wasted full scans, so a
+        generous window costs little.
+        """
+        if self._closing:
+            return
+        # A newer match has since started (a real KickOffHub visit) -- this
+        # chain's own bar may already have been overwritten by that match's
+        # own fresh _start_scoreboard_name_progress call. Stop touching the
+        # shared widget entirely rather than racing it (e.g. hiding it right
+        # after the new chain just showed it).
+        if self._kickoff_generation != generation:
+            return
+        if time.monotonic() >= deadline:
+            self._finish_scoreboard_name_progress(std_name, None)
+            return
+        self.after(
+            900,
+            lambda: self._db_name_patch_retry_tick(injid, std_name, baseline_name, generation, started_at, deadline),
+        )
+
+    def _db_name_patch_retry_tick(
+        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float
+    ) -> None:
+        if self._closing or self._kickoff_generation != generation:
+            return
+        # Stop early if a different stadium has since taken over this slot --
+        # a stale retry for an old match would just be a wasted scan. Kept
+        # alongside the generation check above (which catches the common
+        # case) as a second guard for the "no assignment" match branch,
+        # which intentionally never writes injID (see StadiumRuntime /
+        # CLAUDE.md §5.1) -- injID could otherwise coincidentally still
+        # match a genuinely different match attempt.
+        if self.injID != injid:
+            self.log(
+                f"Stadium DB name patch retry stopped early: injID changed "
+                f"from {injid!r} to {self.injID!r}"
+            )
+            self._finish_scoreboard_name_progress(std_name, None)
+            return
+        # get_current_name() only ever reports a name this coordinator
+        # itself write-verified or read-confirmed live -- never optimistic
+        # (see StadiumDbNamePatchCoordinator's own docstring) -- so a change
+        # here is a real completion signal, not just "a request was sent".
+        # Deliberately NOT requiring an exact match to `std_name`: FIFA's own
+        # buffer for a slot can be too small to hold the full requested text
+        # (a real, expected limit, not a bug -- CLAUDE.md §7 Part 10), in
+        # which case the coordinator still confirms a TRUNCATED value that
+        # will never equal `std_name`. Treating that as "never confirmed"
+        # used to burn the entire retry window and then falsely report
+        # failure, even though the coordinator succeeded (with a shortened
+        # name) on its very first attempt. `current != baseline_name` is
+        # what actually proves something changed as a result of THIS
+        # request; the exact-match check alongside it covers the case where
+        # the slot was already showing the right name before this cycle
+        # even started (nothing to change, so nothing would ever differ from
+        # the baseline).
+        current = self.stadium_db_name_patcher.get_current_name(injid)
+        if current is not None and (current == std_name or current != baseline_name):
+            self._finish_scoreboard_name_progress(std_name, current)
+            return
+        # A retry chain silently dying from an unexpected exception here
+        # would look identical to the injID-mismatch case above (no further
+        # log lines, ever) -- catch and log instead of letting Tkinter's
+        # default callback-exception handling swallow it and kill the rest
+        # of the scheduled window.
+        try:
+            self.stadium_runtime.request_db_name_patch(injid, std_name)
+        except Exception as exc:
+            self.log("Stadium DB name patch retry tick error", exc)
+        elapsed = time.monotonic() - started_at
+        total = max(1.0, deadline - started_at)
+        # Capped short of 100 -- only an actual confirmed success (above) is
+        # allowed to show a full bar; a bar that reaches 100% on its own
+        # while still just guessing would misreport an unresolved patch as
+        # done.
+        progress = min(95.0, (elapsed / total) * 100.0)
+        self._update_stadium_loading_modal(progress, "Applying scoreboard name...")
+        self._schedule_db_name_patch_retry(injid, std_name, baseline_name, generation, started_at, deadline)
 
     def _clear_live_context(self) -> None:
         self._kit_cycle_index = {}

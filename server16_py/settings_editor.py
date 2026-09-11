@@ -1520,8 +1520,7 @@ def stadium_specs() -> list[SectionSpec]:
         SectionSpec("comp", "Competition Stadiums", kind="stadium", directory="StadiumGBD"),
         SectionSpec("stadiumnetname", "Net By Stadium Name", kind="net", directory="StadiumGBD"),
         SectionSpec("stadiumnetid", "Net By Stadium ID", kind="net"),
-        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name (slot 176)", kind="scoreboardstdname", directory="StadiumGBD"),
-        SectionSpec("scoreboardstdnamem", "Scoreboard Stadium Name (slot 261)", kind="scoreboardstdname", directory="StadiumGBD"),
+        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD"),
         SectionSpec("exclude", "Excluded Competitions", kind="exclude"),
     ]
 
