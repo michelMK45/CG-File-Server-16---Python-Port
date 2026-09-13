@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import tkinter as tk
 import unicodedata
 import webbrowser
@@ -11,6 +12,8 @@ from PIL import Image, ImageTk
 from .file_tools import (
     discover_stadium_names,
     resolve_asset_thumbnail_path,
+    resolve_goalpost_model_preview_path,
+    resolve_goalpost_texture_rx3_path,
     resolve_stadium_preview_path,
     stadium_country_code,
     stadium_country_counts,
@@ -380,6 +383,11 @@ class StadiumDialog(BaseDialog):
         # previously this held the translated pattern name (e.g. "German"),
         # which looked inconsistent next to that editor showing plain "4".
         self.selectedpolice = tk.StringVar(value="1")
+        # Model (shape, e.g. specificgoalpost_18_0.rx3) and texture/color
+        # (e.g. specificnetsupportpost_0_0_textures.rx3) are independent,
+        # separately selectable packs -- see StadiumRuntime.resolve_goalpost_sources.
+        self.selectedgoalpost = tk.StringVar(value="None")
+        self.selectedgoalposttexture = tk.StringVar(value="None")
         self.selectedstadium = tk.StringVar()
         # Which (comp, section) assignment targets this dialog session has
         # already pre-loaded the existing selection for (see
@@ -398,6 +406,8 @@ class StadiumDialog(BaseDialog):
         self.pitch_source = self._first_existing(exedir / "FSW" / "Images" / "PitchMowPattern", exedir / "FSW" / "PitchMowPattern")
         self.net_source = self._first_existing(exedir / "FSW" / "Images" / "Nets", exedir / "FSW" / "Nets")
         self.police_source = self._first_existing(exedir / "FSW" / "Images" / "Police", exedir / "FSW" / "Police")
+        self.goalpost_model_source = exedir / "FSW" / "Goalpost" / "GoalpostModel"
+        self.goalpost_texture_source = exedir / "FSW" / "Goalpost" / "GoalpostColor"
         self._all_stadiums = ["None"]
         self._country_group_labels = {"All Countries": self.tr("dialog.stadium.all_countries")}
         self._all_stadiums.extend(discover_stadium_names(self.stadium_source))
@@ -513,7 +523,8 @@ class StadiumDialog(BaseDialog):
             "<Configure>",
             lambda event: right_canvas.itemconfigure(right_window, width=event.width),
         )
-        self._bind_mousewheel_target(right_canvas, right_body, scroll_callback=lambda steps: right_canvas.yview_scroll(steps, "units"))
+        self._right_canvas = right_canvas
+        self._right_body = right_body
 
         selected_card = tk.Frame(right_body, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
         selected_card.grid(row=0, column=0, sticky="ew", pady=(0, 14))
@@ -557,6 +568,55 @@ class StadiumDialog(BaseDialog):
         )
         self._build_preview(preview_bottom, 0, self.tr("dialog.stadium.preview.police"), "police", image_size=(360, 220), row=2)
 
+        # Optional overrides, separate from GoalpostGBD/the police/pitch/net
+        # triple above: [stadiumgoalpost] (model) and [stadiumgoalposttexture]
+        # (net/post color), each keyed by stadium name (see
+        # StadiumRuntime.resolve_goalpost_sources). "None" means no override
+        # for that category -- vanilla for it, or (if BOTH stay "None") the
+        # stadium keeps using its own bundled GoalpostGBD folder as a whole.
+        # Side-by-side (like pitch_wrap/net_wrap above), not stacked, so both
+        # previews sit at the same height.
+        goalpost_row = tk.Frame(preview_bottom, bg=self.card)
+        goalpost_row.grid(row=3, column=0, sticky="nsew", pady=(12, 0))
+        goalpost_row.grid_columnconfigure(0, weight=1)
+        goalpost_row.grid_columnconfigure(1, weight=1)
+
+        goalpost_model_wrap = tk.Frame(goalpost_row, bg=self.card)
+        goalpost_model_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        goalpost_model_wrap.grid_columnconfigure(0, weight=1)
+        self._combo(
+            goalpost_model_wrap,
+            0,
+            self.tr("dialog.stadium.goalpost_model"),
+            self._folder_names(self.goalpost_model_source),
+            self.selectedgoalpost,
+            self._on_goalpost_model_changed,
+        )
+        self._build_preview(goalpost_model_wrap, 0, self.tr("dialog.stadium.preview.goalpost_model"), "goalpost_model", image_size=(155, 135), row=2)
+
+        goalpost_texture_wrap = tk.Frame(goalpost_row, bg=self.card)
+        goalpost_texture_wrap.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        goalpost_texture_wrap.grid_columnconfigure(0, weight=1)
+        self._combo(
+            goalpost_texture_wrap,
+            0,
+            self.tr("dialog.stadium.goalpost_texture"),
+            self._folder_names(self.goalpost_texture_source),
+            self.selectedgoalposttexture,
+            self._on_goalpost_texture_changed,
+        )
+        self._build_preview(goalpost_texture_wrap, 0, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(155, 135), row=2)
+
+        # <MouseWheel> only fires on the exact widget under the cursor, not
+        # its ancestors -- binding just right_canvas/right_body (as before)
+        # left the wheel dead over almost the whole panel, since that's
+        # covered by descendant labels/combos/frames. Bind every descendant
+        # too, now that the full subtree exists (Listbox instances are
+        # skipped so the left-panel stadium list, if ever nested in here,
+        # keeps its own native per-widget wheel scrolling instead of being
+        # hijacked into scrolling this canvas).
+        self._bind_mousewheel_recursive(self._right_canvas, scroll_callback=lambda steps: self._right_canvas.yview_scroll(steps, "units"))
+
         action_bar = tk.Frame(self, bg=self.bg)
         action_bar.grid(row=2, column=0, columnspan=2, sticky="ew", padx=14, pady=(0, 14))
         action_bar.grid_columnconfigure(0, weight=1)
@@ -567,6 +627,8 @@ class StadiumDialog(BaseDialog):
         self._on_pitch_changed()
         self._on_net_changed()
         self._on_police_changed()
+        self._on_goalpost_model_changed()
+        self._on_goalpost_texture_changed()
 
     def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None) -> None:
         self._dark_label(parent, label, muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 12, 0))
@@ -591,10 +653,33 @@ class StadiumDialog(BaseDialog):
         for widget in widgets:
             widget.bind("<MouseWheel>", on_mousewheel)
 
+    def _bind_mousewheel_recursive(self, widget: tk.Misc, scroll_callback) -> None:
+        """Like _bind_mousewheel_target, but walks the whole already-built
+        subtree instead of a fixed widget list -- <MouseWheel> only ever
+        fires on the exact widget directly under the cursor, so binding just
+        a scrollable canvas/body leaves the wheel dead over any of its many
+        descendant labels/combos/frames, which is most of the visible area.
+        Skips tk.Listbox so a listbox with its own many rows (e.g. this
+        dialog's own stadium picker) keeps its native per-widget wheel
+        scrolling instead of being hijacked into scrolling this canvas.
+        Call once, after the full subtree already exists -- widgets added
+        later won't be covered."""
+        if isinstance(widget, tk.Listbox):
+            return
+        self._bind_mousewheel_target(widget, scroll_callback=scroll_callback)
+        for child in widget.winfo_children():
+            self._bind_mousewheel_recursive(child, scroll_callback)
+
     def _file_stems(self, folder: Path) -> list[str]:
         if not folder.exists():
             return ["0"]
         return [item.stem for item in sorted(folder.iterdir()) if item.is_file()]
+
+    def _folder_names(self, folder: Path) -> list[str]:
+        names = ["None"]
+        if folder.exists():
+            names.extend(sorted(item.name for item in folder.iterdir() if item.is_dir()))
+        return names
 
     def _country_code_for_stadium(self, stadium_name: str) -> str:
         return stadium_country_code(stadium_name)
@@ -750,6 +835,23 @@ class StadiumDialog(BaseDialog):
             self.selectedpitch.set(pitch)
         if net:
             self.selectednet.set(net)
+        # [stadiumgoalpost]/[stadiumgoalposttexture] are separate sections
+        # keyed by stadium name (see StadiumRuntime.resolve_goalpost_sources),
+        # not part of this comma-joined value -- same "first assigned
+        # stadium's own values" accepted limitation _parse_assignment's own
+        # docstring already notes for police/pitch/net above.
+        if self.app.settings_ini.key_exists(stadiums[0], "stadiumgoalpost"):
+            existing_goalpost = self.app.settings_ini.read(stadiums[0], "stadiumgoalpost").strip()
+            self.selectedgoalpost.set(existing_goalpost or "None")
+        if self.app.settings_ini.key_exists(stadiums[0], "stadiumgoalposttexture"):
+            existing_texture = self.app.settings_ini.read(stadiums[0], "stadiumgoalposttexture").strip()
+            self.selectedgoalposttexture.set(existing_texture or "None")
+        # .set() alone doesn't fire <<ComboboxSelected>> -- refresh both
+        # goalpost previews explicitly, same as pitch/net/police already
+        # need to right after this same preload elsewhere in this class.
+        if getattr(self, "_ui_ready", False):
+            self._on_goalpost_model_changed()
+            self._on_goalpost_texture_changed()
         self._update_stadium_preview()
 
     def _refresh_selection(self) -> None:
@@ -865,6 +967,51 @@ class StadiumDialog(BaseDialog):
         image_path = self.police_source / f"{police_id}.png"
         self._update_preview("police", image_path, police_id)
 
+    def _on_goalpost_model_changed(self, _event=None) -> None:
+        # Static image, unlike the texture side below -- see the "preview"
+        # convention documented on resolve_goalpost_model_preview_path.
+        name = self.selectedgoalpost.get().strip()
+        image_path = resolve_goalpost_model_preview_path(self.goalpost_model_source, name) if name and name != "None" else None
+        self._update_preview("goalpost_model", image_path, self.tr("placeholder.no_preview"))
+
+    def _on_goalpost_texture_changed(self, _event=None) -> None:
+        # Unlike every other preview in this dialog (all plain image files),
+        # a GoalpostColor pack has no preview image convention -- the
+        # preview is rendered from the pack's own .rx3 texture via the
+        # 32-bit FifaLibrary bridge (StadiumRuntime.
+        # render_goalpost_texture_preview), so this has to run off the UI
+        # thread and guard against a newer selection superseding a still-
+        # running render, same pattern app_ui.py's Kit Mixer preview uses.
+        name = self.selectedgoalposttexture.get().strip()
+        self._goalpost_texture_preview_generation = getattr(self, "_goalpost_texture_preview_generation", 0) + 1
+        generation = self._goalpost_texture_preview_generation
+        if not name or name == "None":
+            self._update_preview("goalpost_texture", None, self.tr("placeholder.no_preview"))
+            return
+        source_rx3 = resolve_goalpost_texture_rx3_path(self.goalpost_texture_source, name)
+        if source_rx3 is None:
+            self._update_preview("goalpost_texture", None, self.tr("placeholder.no_preview"))
+            return
+        self._update_preview("goalpost_texture", None, self.tr("dialog.kitmix.loading"))
+
+        def worker() -> None:
+            try:
+                png_path = self.app.stadium_runtime.render_goalpost_texture_preview(source_rx3, cache_key=name)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - surfaced as a preview placeholder
+                png_path, error = None, exc
+            self.after(0, lambda: self._apply_goalpost_texture_preview_result(generation, png_path, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_goalpost_texture_preview_result(self, generation: int, png_path, error) -> None:
+        if getattr(self, "_goalpost_texture_preview_generation", 0) != generation:
+            return  # a newer selection superseded this one while the worker ran
+        if error is not None or png_path is None:
+            self._update_preview("goalpost_texture", None, self.tr("dialog.kitmix.preview_error"))
+            return
+        self._update_preview("goalpost_texture", png_path, self.tr("dialog.kitmix.preview_error"))
+
     def _submit(self) -> None:
         selected = [self.stadiums.get(i) for i in self.stadiums.curselection()]
         police_id = self.selectedpolice.get().strip() or "1"
@@ -875,6 +1022,8 @@ class StadiumDialog(BaseDialog):
             "selectedpitch": self.selectedpitch.get(),
             "selectednet": self.selectednet.get(),
             "selectedpolice": police_id,
+            "selectedgoalpost": self.selectedgoalpost.get(),
+            "selectedgoalposttexture": self.selectedgoalposttexture.get(),
         }
         self.close_ok(payload)
 

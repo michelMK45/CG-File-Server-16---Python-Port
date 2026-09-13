@@ -63,6 +63,7 @@
 //   {"t":"error","msg":"fatal message"}
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -337,8 +338,13 @@ internal static class Program
             // filename-then-export idiom "kitui" uses for its thumbnail. One
             // file per team (not per kittype), so it bypasses the kittype loop
             // below entirely.
+            // "leaguelogo" exports data/ui/imgAssets/league/{light,dark}/l<id>.dds
+            // per league ID (the league logos shown in the Team Picker's league
+            // preview box, app_ui.py's _resolve_league_logo_path) — nothing
+            // team-indexed, so it takes 0 of the per-team slots below and gets
+            // its own one-shot pass further down instead.
             string assetMode = Environment.GetEnvironmentVariable("KITEXTRACTOR_ASSET") ?? "kit";
-            int itemsPerTeam = (assetMode == "kitnumbers") ? 8 : (assetMode == "crest") ? 1 : 4;
+            int itemsPerTeam = (assetMode == "kitnumbers") ? 8 : (assetMode == "crest") ? 1 : (assetMode == "leaguelogo") ? 0 : 4;
 
             int teamStart = 0;
             int teamCount = teams.Count;
@@ -349,7 +355,18 @@ internal static class Program
             teamStart = Math.Max(0, Math.Min(teamStart, teams.Count));
             int teamEnd = Math.Max(teamStart, Math.Min(teamStart + teamCount, teams.Count));
 
-            Emit("{\"t\":\"ready\",\"teams\":" + teams.Count + ",\"batch_start\":" + teamStart + ",\"batch_end\":" + teamEnd + "}");
+            // "leaguelogo" has nothing to batch by team at all — report zero
+            // teams so the Python-side batch loop
+            // (_run_kit_asset_extraction_blocking in app_ui.py) only ever
+            // invokes this exe once for this mode, and skip the per-team loop
+            // below entirely instead of iterating a whole batch doing nothing.
+            int reportedTeamCount = (assetMode == "leaguelogo") ? 0 : teams.Count;
+            if (assetMode == "leaguelogo")
+            {
+                teamEnd = teamStart;
+            }
+
+            Emit("{\"t\":\"ready\",\"teams\":" + reportedTeamCount + ",\"batch_start\":" + teamStart + ",\"batch_end\":" + teamEnd + "}");
 
             NumberFontList numberFonts = null;
             int numberFontCount = 0;
@@ -359,7 +376,60 @@ internal static class Program
                 numberFontCount = numberFonts != null ? numberFonts.Count : 0;
             }
 
-            int total = teams.Count * itemsPerTeam + numberFontCount;
+            // League IDs for "leaguelogo" come from the same "leagues" table
+            // db_worker.py already reads via a plain FifaLibrary.DbFile — there
+            // is no FifaLibrary "League" object exposing a logo filename the
+            // way Team.Crest50DdsFileName() does for crests (nothing in this
+            // repo's own usage of FifaLibrary16.dll, nor the symbol surface
+            // documented in CLAUDE.md §4, evidences one), so this opens a
+            // second, independent, read-only DbFile handle onto the same
+            // fifa_ng_db.db FifaEnvironment.OpenFifaDb() already opened above.
+            // Untested whether a second handle onto the same file is safe
+            // against the real closed-source DLL — if DbFile.Load() throws
+            // here (e.g. a sharing violation), the whole run fails loudly via
+            // the catch below rather than silently skipping league logos.
+            List<string> leagueIds = new List<string>();
+            if (assetMode == "leaguelogo" && teamStart == 0)
+            {
+                try
+                {
+                    string metaPath = Path.Combine(gameDir, Path.Combine("data", Path.Combine("db", "fifa_ng_db-meta.xml")));
+                    DbFile leagueDb = new DbFile(dbPath, metaPath);
+                    if (leagueDb.Load())
+                    {
+                        var table = leagueDb.GetTable("leagues");
+                        if (table != null)
+                        {
+                            var desc = table.TableDescriptor;
+                            string idField = null;
+                            for (int fi = 0; fi < desc.NFields; fi++)
+                            {
+                                string fieldName = desc.FieldDescriptors[fi].FieldName;
+                                if (string.Equals(fieldName, "leagueid", StringComparison.OrdinalIgnoreCase) ||
+                                    string.Equals(fieldName, "id", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    idField = fieldName;
+                                    break;
+                                }
+                            }
+                            if (idField != null)
+                            {
+                                for (int ri = 0; ri < table.NValidRecords; ri++)
+                                {
+                                    leagueIds.Add(table.Records[ri].GetIntField(idField).ToString());
+                                }
+                            }
+                        }
+                    }
+                }
+                catch (Exception exc)
+                {
+                    Emit("{\"t\":\"error\",\"msg\":\"Failed to read leagues table: " + JsonEscape(exc.Message) + "\"}");
+                    return 1;
+                }
+            }
+
+            int total = teams.Count * itemsPerTeam + numberFontCount + leagueIds.Count * 2;
             int i = numberFontCount + teamStart * itemsPerTeam;
             int ok = 0;
             int failed = 0;
@@ -396,6 +466,66 @@ internal static class Program
                     }
                     sbf.Append("}");
                     Emit(sbf.ToString());
+                }
+            }
+
+            if (assetMode == "leaguelogo" && teamStart == 0)
+            {
+                foreach (string leagueId in leagueIds)
+                {
+                    foreach (string theme in new[] { "light", "dark" })
+                    {
+                        i++;
+                        bool exportedLogo = false;
+                        string errorLogo = null;
+                        try
+                        {
+                            // Lowercase "imgassets" -- confirmed by grepping the raw
+                            // BIG4 index of a real install's data_front_end(.big/_extra.big)
+                            // (CLAUDE.md §3.1: entries are plain NUL-terminated ASCII, so a
+                            // raw string search is directly readable), which only ever
+                            // stores this path as "data/ui/imgassets/league/{light,dark}/
+                            // l<id>.dds" -- never the mixed-case "imgAssets" the loose,
+                            // already-extracted file on disk uses (app_ui.py's
+                            // _resolve_img_asset_id_path). IsArchivedFilePresent's lookup
+                            // is case-sensitive against that index: passing "imgAssets"
+                            // here silently matched nothing for any league/theme (0 ok, 84
+                            // failed, live-confirmed 2026-09-13) even though every one of
+                            // these entries genuinely exists in the archive.
+                            string fname = "data/ui/imgassets/league/" + theme + "/l" + leagueId + ".dds";
+                            // Not every league necessarily has both a light and
+                            // a dark variant — check presence first (same
+                            // pattern the per-team SpecificNumberFont pass above
+                            // uses) so a missing theme variant doesn't spin up
+                            // the external decompressor for nothing; it still
+                            // counts toward "failed" below, same accepted
+                            // "high failure count is expected here" convention
+                            // as that pass.
+                            bool present = fat != null && (fat.IsArchivedFilePresent(fname) || fat.IsPhisycalFilePresent(fname));
+                            if (present)
+                            {
+                                exportedLogo = FifaEnvironment.ExportFileFromZdata(fname, gameDir);
+                            }
+                        }
+                        catch (Exception exc)
+                        {
+                            errorLogo = exc.Message;
+                        }
+                        if (exportedLogo) ok++; else failed++;
+
+                        var sbl = new StringBuilder();
+                        sbl.Append("{\"t\":\"progress\",\"i\":").Append(i)
+                           .Append(",\"total\":").Append(total)
+                           .Append(",\"league\":").Append(leagueId)
+                           .Append(",\"theme\":\"").Append(theme).Append("\"")
+                           .Append(",\"ok\":").Append(exportedLogo ? "true" : "false");
+                        if (errorLogo != null)
+                        {
+                            sbl.Append(",\"error\":\"").Append(JsonEscape(errorLogo)).Append("\"");
+                        }
+                        sbl.Append("}");
+                        Emit(sbl.ToString());
+                    }
                 }
             }
 

@@ -128,6 +128,57 @@ def _find_worker(name: str = "kit_worker.py") -> Optional[Path]:
     return None
 
 
+def run_fifalibrary_worker(config: dict, worker_name: str = "kit_worker.py") -> dict:
+    """Spawns the given 32-bit worker script (kit_worker.py, kit_preview_worker.py,
+    ...) against FifaLibrary16.dll with `config` as its newline-delimited-JSON
+    input, and returns its parsed `{"ok": true, ...}` result. Raises on any
+    failure (missing DLL/interpreter/worker, no output, invalid JSON, or an
+    explicit `{"ok": false, "error": ...}`). Module-level (not a KitMixRuntime
+    method) so any feature needing this same DLL bridge can reuse it without
+    routing through KitMixRuntime — e.g. StadiumRuntime.
+    render_goalpost_texture_preview reuses kit_preview_worker.py's
+    role="rx3_texture" this way for a goalpost texture pack, not a kit."""
+    dll = _find_dll()
+    if dll is None:
+        raise FileNotFoundError("FifaLibrary16.dll not found in bin/")
+    python32 = _find_python32()
+    if python32 is None:
+        raise FileNotFoundError(
+            "32-bit Python not found in bin/python32/. Run scripts/setup_python32.bat to set it up."
+        )
+    worker = _find_worker(worker_name)
+    if worker is None:
+        raise FileNotFoundError(f"{worker_name} not found")
+
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as fh:
+        json.dump(config, fh)
+        config_path = fh.name
+
+    try:
+        result = subprocess.run(
+            [str(python32), str(worker), str(dll), config_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    finally:
+        Path(config_path).unlink(missing_ok=True)
+
+    raw = (result.stdout or "").strip()
+    if not raw:
+        raise RuntimeError(f"{worker_name} produced no output. stderr: {(result.stderr or '')[:300]}")
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"{worker_name} returned invalid JSON: {exc}. stdout: {raw[:300]}") from exc
+
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", f"{worker_name} failed with no error message"))
+    return data
+
+
 def kit_filename(team_id: str, kittype: str, tourn_id: str = "0") -> str:
     return f"kit_{team_id}_{kittype}_{tourn_id}.rx3"
 
@@ -332,45 +383,7 @@ class KitMixRuntime:
         )
 
     def _run_worker(self, config: dict, worker_name: str = "kit_worker.py") -> dict:
-        dll = _find_dll()
-        if dll is None:
-            raise FileNotFoundError("FifaLibrary16.dll not found in bin/")
-        python32 = _find_python32()
-        if python32 is None:
-            raise FileNotFoundError(
-                "32-bit Python not found in bin/python32/. Run scripts/setup_python32.bat to set it up."
-            )
-        worker = _find_worker(worker_name)
-        if worker is None:
-            raise FileNotFoundError(f"{worker_name} not found")
-
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False, encoding="utf-8") as fh:
-            json.dump(config, fh)
-            config_path = fh.name
-
-        try:
-            result = subprocess.run(
-                [str(python32), str(worker), str(dll), config_path],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-        finally:
-            Path(config_path).unlink(missing_ok=True)
-
-        raw = (result.stdout or "").strip()
-        if not raw:
-            raise RuntimeError(f"{worker_name} produced no output. stderr: {(result.stderr or '')[:300]}")
-        try:
-            data = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"{worker_name} returned invalid JSON: {exc}. stdout: {raw[:300]}") from exc
-
-        if not data.get("ok"):
-            raise RuntimeError(data.get("error", f"{worker_name} failed with no error message"))
-        return data
+        return run_fifalibrary_worker(config, worker_name)
 
     def apply_mix(self, team_id: str, kittype: str, jersey: dict, shorts: dict, crest: dict | None = None) -> dict:
         """jersey/shorts/crest are {"mode": "keep"|"rx3"|"img", "path": "..."} dicts.

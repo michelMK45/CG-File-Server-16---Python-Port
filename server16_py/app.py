@@ -593,6 +593,18 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
 
     # ── Runtime delegation ─────────────────────────────────────────────────────
 
+    def stadium_picker_awaiting_selection(self) -> bool:
+        """True while the manual in-game stadium picker (see
+        StadiumRuntime._open_stadium_picker/apply_stadium_runtime) is open and the
+        player hasn't made a choice yet. Checked by AssetRuntime's toast helpers
+        (and the Adboard queued-toast call site, which bypasses them for threading
+        reasons) so every OTHER asset's "applied" notification stays quiet while the
+        picker is on screen, instead of popping up underneath it before the user has
+        picked a stadium -- the stadium's own bcgameplay/goalpost toasts don't need
+        the same guard since they only ever fire from run_stadium_copy_job, which
+        can't start until a stadium has actually been resolved."""
+        return bool(self._stadium_picker_pending and not self._stadium_picker_resolved)
+
     def apply_all_runtime(self) -> None:
         self.log(f"Applying runtime HID={self.HID} AID={self.AID} TOUR={self.TOURNAME} ROUND={self.TOURROUNDID} STAD={self.STADID}")
         self._set_progress(5, "Applying runtime")

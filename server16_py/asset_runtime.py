@@ -17,12 +17,16 @@ class AssetRuntime:
 
     def _show_asset_toast(self, title: str, body: str, duration_ms: int = 3500, icon: str = "") -> None:
         app = self.app
+        if app.stadium_picker_awaiting_selection():
+            return
         slot = app._show_toast_notification(title, body, icon=icon)
         if slot != -1:
             app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
 
     def _show_warning_toast(self, title: str, body: str, duration_ms: int = 5000, icon: str = "") -> None:
         app = self.app
+        if app.stadium_picker_awaiting_selection():
+            return
         slot = app._show_toast_notification(title, body, style=1, icon=icon)
         if slot != -1:
             app.after(duration_ms, lambda s=slot: app._hide_toast_notification(s))
@@ -538,13 +542,18 @@ class AssetRuntime:
                     app.log(f"Adboard folder not found: {adboards_dir}")
 
         app._active_adboard_injected_files = copied_files
-        if copied_files:
+        if copied_files and not app.stadium_picker_awaiting_selection():
             # Routed through the worker queue rather than called directly:
             # this may be running on the AdboardWaitStadium background thread,
             # and Tk calls (app.after, used by _show_asset_toast) aren't safe
             # off the main thread -- same reason stadium_runtime.py's own
             # background copy steps queue their toasts instead of calling
-            # _show_toast_notification directly.
+            # _show_toast_notification directly. Also skipped entirely while
+            # the manual stadium picker is still awaiting a choice, same as
+            # the other asset toasts in this file (see
+            # app.stadium_picker_awaiting_selection's docstring) -- reread here
+            # rather than captured at the top of this method, since this may
+            # run well after AdboardWaitStadium's own wait loop.
             app._worker_queue.put(("toast", app.tr("notify.adboard_loaded"), source_label, 3500, ""))
 
     def tv_bumper_page(self) -> None:

@@ -201,6 +201,47 @@ def resolve_stadium_preview_path(stadium_gbd: str | Path, stadium_name: str) -> 
     return None
 
 
+def resolve_goalpost_model_preview_path(goalpost_model_dir: str | Path, name: str) -> Path | None:
+    """Looks for FSW/Goalpost/GoalpostModel/<name>/preview.<ext> -- the
+    convention for a model pack's own preview image. Unlike stadium previews
+    (resolve_stadium_preview_path), there's no fuzzy any-image-in-the-folder
+    fallback here: a model folder holds exactly one .rx3 plus, by
+    convention, a file literally named "preview" -- a pack that hasn't been
+    renamed to that convention yet just shows no preview, rather than
+    guessing which other image in the folder might be it. The net/post
+    texture side has no equivalent (see StadiumRuntime.
+    render_goalpost_texture_preview, which renders one from the .rx3 itself
+    instead)."""
+    name = (name or "").strip()
+    if not name or name == "None":
+        return None
+    folder = Path(goalpost_model_dir) / name
+    if not folder.is_dir():
+        return None
+    for suffix in sorted(STADIUM_PREVIEW_SUFFIXES):
+        candidate = folder / f"preview{suffix}"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def resolve_goalpost_texture_rx3_path(goalpost_color_dir: str | Path, name: str) -> Path | None:
+    """The .rx3 to render a preview from for a GoalpostColor pack (see
+    StadiumRuntime.render_goalpost_texture_preview) -- the first .rx3 file
+    in the pack's folder, sorted, rather than assuming a fixed filename like
+    "specificnetsupportpost_0_0_textures.rx3" (a real pack does use that
+    name, but nothing enforces it, and copy_goalpost_sources itself already
+    copies whatever's there under any name)."""
+    name = (name or "").strip()
+    if not name or name == "None":
+        return None
+    folder = Path(goalpost_color_dir) / name
+    if not folder.is_dir():
+        return None
+    candidates = sorted(folder.glob("*.rx3"))
+    return candidates[0] if candidates else None
+
+
 def discover_stadium_names(stadium_gbd: str | Path) -> list[str]:
     root = Path(stadium_gbd)
     names: dict[str, str] = {}
@@ -369,6 +410,33 @@ def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path, fsw_goalnet
         rel = item.relative_to(src_dir)
         _copy_file_if_needed(item, dst_dir / rel)
         copied.append(str(rel))
+    if copied:
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest_path.write_text("\n".join(copied), encoding="utf-8")
+
+
+def copy_goalpost_sources(src_dirs: list[Path], dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
+    """Like copy_goalpost, but merges files from several independent source
+    directories (e.g. a GoalpostModel pack and a separate GoalpostColor/
+    texture pack, each selected on its own -- see
+    StadiumRuntime.resolve_goalpost_sources) into dst_dir under ONE shared
+    manifest, so clear_goalpost can evict every copied file together
+    regardless of which source directory it came from. A src_dir that
+    doesn't exist is silently skipped (same tolerance copy_goalpost already
+    has for a single missing source)."""
+    clear_goalpost(dst_dir, manifest_path, fsw_goalnet_dir)
+    copied: list[str] = []
+    for src_dir in src_dirs:
+        if not src_dir.is_dir():
+            continue
+        for item in src_dir.rglob("*"):
+            if not item.is_file() or item.suffix.lower() == ".png":
+                continue
+            rel = item.relative_to(src_dir)
+            _copy_file_if_needed(item, dst_dir / rel)
+            rel_str = str(rel)
+            if rel_str not in copied:
+                copied.append(rel_str)
     if copied:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text("\n".join(copied), encoding="utf-8")

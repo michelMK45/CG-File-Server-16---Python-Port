@@ -5,7 +5,8 @@ Must be run with a 32-bit Python interpreter — the DLL is x86-only.
 Usage: python db_worker.py <dll_path> <db_path> <xml_path>
 
 Stdout: single JSON object
-  {"teams": {"id": "name", ...}, "stadiums": {"id": "name", ...}}
+  {"teams": {"id": "name", ...}, "stadiums": {"id": "name", ...},
+   "leagues": {"id": "name", ...}, "team_league": {"teamid": "leagueid", ...}}
   or {"error": "message"} on failure
 """
 
@@ -102,7 +103,40 @@ def main() -> None:
     except Exception as exc:
         pass  # stadiums are optional
 
-    print(json.dumps({"teams": teams, "stadiums": stadiums}))
+    leagues: dict = {}
+    team_league: dict = {}
+
+    try:
+        table = db.GetTable("leagues")
+        if table is not None:
+            desc = table.TableDescriptor
+            fields = [desc.FieldDescriptors[i].FieldName for i in range(desc.NFields)]
+            id_f   = _pick_field(fields, ["leagueid", "id"])
+            name_f = _pick_field(fields, ["leaguename", "name"])
+            if id_f and name_f:
+                for i in range(table.NValidRecords):
+                    rec = table.Records[i]
+                    name = rec.GetStringField(name_f)
+                    if name:
+                        leagues[str(rec.GetIntField(id_f))] = name
+    except Exception:
+        pass  # leagues are optional
+
+    try:
+        table = db.GetTable("leagueteamlinks")
+        if table is not None:
+            desc = table.TableDescriptor
+            fields = [desc.FieldDescriptors[i].FieldName for i in range(desc.NFields)]
+            team_f   = _pick_field(fields, ["teamid"])
+            league_f = _pick_field(fields, ["leagueid"])
+            if team_f and league_f:
+                for i in range(table.NValidRecords):
+                    rec = table.Records[i]
+                    team_league[str(rec.GetIntField(team_f))] = str(rec.GetIntField(league_f))
+    except Exception:
+        pass  # league/team links are optional
+
+    print(json.dumps({"teams": teams, "stadiums": stadiums, "leagues": leagues, "team_league": team_league}))
 
 
 if __name__ == "__main__":

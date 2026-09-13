@@ -2,15 +2,18 @@
 32-bit bridge: loads FifaLibrary16.dll and renders a small PNG preview of one
 kit asset (jersey/shorts/crest texture, or a jersey/shorts kit-numbers digit
 sample) so the desktop Kit Mixer dialog can show it without needing its own
-RX3 parsing.
+RX3 parsing. Also reused (role="rx3_texture") by StadiumRuntime.
+render_goalpost_texture_preview to preview an arbitrary single-purpose .rx3
+(e.g. a goalpost net/post color pack) that has no kit-specific jersey/shorts/
+crest roles to classify — just its first embedded bitmap, as-is.
 Must be run with a 32-bit Python interpreter — the DLL is x86-only.
 
 Usage: python kit_preview_worker.py <dll_path> <config_json_path>
 
 config_json_path points to a JSON file:
 {
-  "source": "<path to a kit .rx3, a specifickitnumbers_*.rx3, or a j0_*.dds>",
-  "role": "jersey" | "shorts" | "crest" | "jersey_numbers" | "shorts_numbers" | "kitui",
+  "source": "<path to a kit .rx3, a specifickitnumbers_*.rx3, a j0_*.dds, or any other single-texture .rx3>",
+  "role": "jersey" | "shorts" | "crest" | "jersey_numbers" | "shorts_numbers" | "kitui" | "rx3_texture",
   "output": "<destination .png path>",
   "max_size": 256
 }
@@ -123,7 +126,11 @@ def main() -> None:
             print(json.dumps({"ok": False, "error": "Source has no textures"}))
             sys.exit(1)
 
-        if role in ("jersey", "shorts", "crest"):
+        if role == "rx3_texture":
+            # No kit-specific role to classify -- just the first embedded
+            # bitmap, as-is (see the module docstring).
+            preview_bitmap = bitmaps[0]
+        elif role in ("jersey", "shorts", "crest"):
             roles = _classify_bitmaps(bitmaps)
             idx = roles.get("crest") if role == "crest" else roles.get(f"{role}_diffuse")
             if idx is None:

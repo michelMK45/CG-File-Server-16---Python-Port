@@ -55,6 +55,8 @@ class FifaDatabase:
         self.xml_path  = self.fifa_root / "data" / "db" / "fifa_ng_db-meta.xml"
         self.team_cache: Dict[str, str]    = {}
         self.stadium_cache: Dict[str, str] = {}
+        self.league_cache: Dict[str, str]      = {}
+        self.team_league_cache: Dict[str, str] = {}
         self._is_loaded = False
         self.last_error = ""
 
@@ -124,6 +126,8 @@ class FifaDatabase:
 
         self.team_cache    = data.get("teams", {})
         self.stadium_cache = data.get("stadiums", {})
+        self.league_cache      = data.get("leagues", {})
+        self.team_league_cache = data.get("team_league", {})
         self._is_loaded    = True
         self.last_error    = ""
         print(f" Loaded {len(self.team_cache)} teams, {len(self.stadium_cache)} stadiums from {self.db_path.name}")
@@ -142,6 +146,21 @@ class FifaDatabase:
 
     def get_stadium_name(self, stadium_id: str | int) -> Optional[str]:
         return self.stadium_cache.get(str(stadium_id).strip())
+
+    def get_league_name(self, league_id: str | int) -> Optional[str]:
+        return self.league_cache.get(str(league_id).strip())
+
+    def get_team_league_id(self, team_id: str | int) -> Optional[str]:
+        return self.team_league_cache.get(str(team_id).strip())
+
+    def leagues_sorted(self) -> list[tuple[str, str]]:
+        """(league_id, league_name) pairs, sorted alphabetically by name."""
+        return sorted(self.league_cache.items(), key=lambda pair: pair[1].lower())
+
+    def teams_in_league(self, league_id: str | int) -> set[str]:
+        """Team IDs whose leagueteamlinks entry matches the given league."""
+        league_id = str(league_id).strip()
+        return {team_id for team_id, lid in self.team_league_cache.items() if lid == league_id}
 
     def load_all_teams(self) -> int:
         return len(self.team_cache)

@@ -23,6 +23,7 @@ from .file_tools import (
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
+from .team_picker_dialog import TeamPickerDialog
 from .update_checker import UpdateCheckResult
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
 
@@ -1382,6 +1383,34 @@ class UIMixin:
                 return candidate
         return None
 
+    def _resolve_img_asset_id_path(self, subdir: str, id_value: str):
+        """Resolves `data/ui/imgAssets/<subdir>/{light,dark}/l<id_value>.dds` -- the
+        shared naming convention behind both team crests and league logos.
+        Tries light first (matches the on-screen UI theme), then dark."""
+        id_value = (id_value or "").strip()
+        if not id_value or id_value == "-":
+            return None
+        base = self.exedir / "data" / "ui" / "imgAssets" / subdir
+        for theme in ("light", "dark"):
+            theme_dir = base / theme
+            candidates = [
+                theme_dir / f"l{id_value}.dds",
+                theme_dir / f"L{id_value}.dds",
+                theme_dir / f"l{int(id_value)}.dds" if id_value.isdigit() else None,
+            ]
+            for candidate in candidates:
+                if candidate is not None and candidate.exists():
+                    return candidate
+        return None
+
+    def _resolve_team_crest_path(self, team_id: str):
+        """Larger (256x256) crest than `_resolve_team_logo_path`'s crest50x50 (64x64) --
+        used by the Team Picker's preview panel, not the dashboard's small crest icons."""
+        return self._resolve_img_asset_id_path("crest", team_id)
+
+    def _resolve_league_logo_path(self, league_id: str):
+        return self._resolve_img_asset_id_path("league", league_id)
+
     def _to_overlay_crest_png(self, team_id: str, prefix: str) -> str:
         import tempfile
         import os
@@ -1677,7 +1706,8 @@ class UIMixin:
         search_entry.bind("<FocusIn>", _clear_team_search_placeholder)
         search_entry.bind("<KeyRelease>", self._kitmix_on_team_search)
         ttk.Button(search_row, text=self.tr("button.use_home_team"), command=self._kitmix_use_home_team).pack(side="left", padx=(0, 6))
-        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitmix_use_away_team).pack(side="left")
+        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitmix_use_away_team).pack(side="left", padx=(0, 6))
+        ttk.Button(search_row, text=self.tr("button.pick_team"), command=self._kitmix_pick_team).pack(side="left")
 
         self.kitmix_team_search_results = self._dark_listbox(card, height=4, exportselection=False, font=("Consolas", 9))
         self.kitmix_team_search_results.bind("<<ListboxSelect>>", self._kitmix_on_team_search_select)
@@ -2039,6 +2069,12 @@ class UIMixin:
             return
         self._kitmix_select_team(team_id)
 
+    def _kitmix_pick_team(self) -> None:
+        dialog = TeamPickerDialog(self)
+        self.wait_window(dialog)
+        if dialog.result:
+            self._kitmix_select_team(dialog.result)
+
     def _kitmix_select_team(self, team_id: str) -> None:
         self.kitmix_team_id.set(team_id)
         self.kitmix_team_search_var.set("")
@@ -2368,7 +2404,8 @@ class UIMixin:
         search_row = tk.Frame(scroll_body, bg=self.card)
         search_row.pack(fill="x", pady=(0, 6))
         ttk.Button(search_row, text=self.tr("button.use_home_team"), command=self._kitsimple_use_home_team).pack(side="left", padx=(0, 6))
-        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitsimple_use_away_team).pack(side="left")
+        ttk.Button(search_row, text=self.tr("button.use_away_team"), command=self._kitsimple_use_away_team).pack(side="left", padx=(0, 6))
+        ttk.Button(search_row, text=self.tr("button.pick_team"), command=self._kitsimple_pick_team).pack(side="left")
 
         body = tk.Frame(scroll_body, bg=self.card)
         body.pack(fill="both", expand=True, pady=(0, 6))
@@ -2500,6 +2537,13 @@ class UIMixin:
             return
         self.kitmix_team_id.set(team_id)
         self._kitsimple_refresh_lists()
+
+    def _kitsimple_pick_team(self) -> None:
+        dialog = TeamPickerDialog(self)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.kitmix_team_id.set(dialog.result)
+            self._kitsimple_refresh_lists()
 
     def _kitsimple_on_select(self, _event=None) -> None:
         listbox = self._kitsimple_listbox
@@ -3271,6 +3315,17 @@ class UIMixin:
         if _revmod_var is not None:
             _revmod_var.set(False)
 
+        # Sample Goalpost packs (install_data/FSW/Goalpost) — bundled example
+        # content for the [stadiumgoalpost]/[stadiumgoalposttexture] feature
+        # (CLAUDE.md §7), not required for a working install. Starts unchecked
+        # like revmod_lua above, for the same reason: merging it in would sit
+        # alongside (not overwrite) a user's own FSW/Goalpost packs, but there's
+        # no reason to force it on everyone by default.
+        source_row(right_col, "setup.item.fsw_goalpost", "fsw_goalpost")
+        _goalpost_var = self._setup_install_vars.get("fsw_goalpost")
+        if _goalpost_var is not None:
+            _goalpost_var.set(False)
+
         _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
         self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
         _kit_numbers_row = tk.Frame(right_col, bg=self.card)
@@ -3427,6 +3482,7 @@ class UIMixin:
         section("setup_assets.section.logos")
         hint_label(body, "setup_assets.section.logos.hint", pady=(0, 6))
         check_row("setup_assets.item.team_logos", "setup_assets.item.team_logos.hint", "team_logos")
+        check_row("setup_assets.item.league_logos", "setup_assets.item.league_logos.hint", "league_logos")
 
     # ── Setup notice (dashboard banner) ───────────────────────────────────────
 
@@ -3791,6 +3847,7 @@ class UIMixin:
         do_scoreboard  = install_vars.get("fsw_scoreboard", tk.BooleanVar(value=True)).get()
         do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
         do_revmod_lua  = install_vars.get("revmod_lua",     tk.BooleanVar(value=True)).get()
+        do_goalpost    = install_vars.get("fsw_goalpost",   tk.BooleanVar(value=False)).get()
         do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
@@ -3824,6 +3881,8 @@ class UIMixin:
                             skipped.add("crowdchair")
                         if not do_revmod_lua and p == src / "data" / "fifarna" and "lua" in names:
                             skipped.add("lua")
+                        if not do_goalpost and p.name == "FSW" and "Goalpost" in names:
+                            skipped.add("Goalpost")
                         return skipped
 
                     shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)
@@ -4132,11 +4191,16 @@ class UIMixin:
 
     def _run_kit_asset_extraction_blocking(self, asset_mode: str, exe_path, log_label: str, progress_key: str, batch_size: int = 100) -> tuple:
         """Runs KitExtractorHost.exe in batch_size-team batches for the given
-        asset_mode ("kit", "kitui", "kitnumbers", or "crest"), streaming
-        progress to the log and the Assets Extractor progress bar. Blocking —
-        must be called off the Tk main thread (see _run_extract_selected_kits,
-        which calls this once per checked asset kind). Returns
-        (ok, failed, fatal_error).
+        asset_mode ("kit", "kitui", "kitnumbers", "crest", or "leaguelogo"),
+        streaming progress to the log and the Assets Extractor progress bar.
+        Blocking — must be called off the Tk main thread (see
+        _run_extract_selected_kits, which calls this once per checked asset
+        kind). Returns (ok, failed, fatal_error).
+
+        "leaguelogo" isn't team-indexed at all (it's a single pass over the
+        database's leagues table, see KitExtractorHost.cs) — the exe reports
+        zero teams for it, so this loop's batching runs exactly once
+        regardless of batch_size.
 
         Kit.ExportKitTextures() / the kit-UI / kit-numbers / crest exports all
         spawn an external decompressor per file, and something in that path
@@ -4214,11 +4278,14 @@ class UIMixin:
                             # branch in KitExtractorHost.cs), so both suffixes
                             # collapse to "" for that mode instead of printing
                             # a misleading "kit None".
-                            kittype = msg.get("kittype")
-                            kittype_suffix = f" kit {kittype}" if kittype is not None else ""
-                            slot = msg.get("slot")
-                            slot_suffix = f" ({slot})" if slot else ""
-                            self.log(f"  team {msg.get('team')}{kittype_suffix}{slot_suffix} -> failed: {error}")
+                            if "league" in msg:
+                                self.log(f"  league {msg.get('league')} ({msg.get('theme')}) -> failed: {error}")
+                            else:
+                                kittype = msg.get("kittype")
+                                kittype_suffix = f" kit {kittype}" if kittype is not None else ""
+                                slot = msg.get("slot")
+                                slot_suffix = f" ({slot})" if slot else ""
+                                self.log(f"  team {msg.get('team')}{kittype_suffix}{slot_suffix} -> failed: {error}")
                     total = msg.get("total") or 1
                     i = msg.get("i", 0)
                     if pb:
@@ -4241,7 +4308,7 @@ class UIMixin:
 
     def _run_extract_selected_kits(self) -> None:
         """Runs whichever asset checkboxes are ticked (kit textures / kit UI /
-        kit numbers / team logos) back-to-back in one background thread,
+        kit numbers / team logos / league logos) back-to-back in one background thread,
         sharing the Assets Extractor progress bar/action button. Each asset
         kind still runs through its own _run_kit_asset_extraction_blocking
         call (own batch size, own KITEXTRACTOR_ASSET mode) — only the UI is
@@ -4265,6 +4332,11 @@ class UIMixin:
             # One export call per team (vs. kit/kitui's four), so it stays
             # well under the same per-batch OOM ceiling at the default size.
             jobs.append(("crest", "Extract Team Logos", "progress.setup.extract_logos", 100))
+        if extract_vars.get("league_logos", tk.BooleanVar(value=True)).get():
+            # Not team-indexed at all (see KITEXTRACTOR_ASSET="leaguelogo" in
+            # KitExtractorHost.cs) -- batch_size is irrelevant here since the
+            # exe reports zero teams and this job runs in a single pass.
+            jobs.append(("leaguelogo", "Extract League Logos", "progress.setup.extract_league_logos", 100))
 
         if not jobs:
             messagebox.showinfo(self.tr("button.extract_selected_kits"), self.tr("message.extract_assets.none_selected"))

@@ -147,6 +147,8 @@ class AssignmentRuntime:
         selected_police = dialog.result["selectedpolice"]
         selected_pitch = dialog.result["selectedpitch"]
         selected_net = dialog.result["selectednet"]
+        selected_goalpost = dialog.result["selectedgoalpost"]
+        selected_goalpost_texture = dialog.result["selectedgoalposttexture"]
         multi = dialog.result["multistadium"]
         if not selected_stadium or selected_stadium == "None":
             payload = "None"
@@ -173,6 +175,54 @@ class AssignmentRuntime:
             self.assignstadium_value(comp, payload, "stadium")
         else:
             self.assigncompstadium(comp, payload, "comp")
+        # Goalpost overrides are written in a separate pass, AFTER the main
+        # [stadium]/[comp] assignment above has already been written AND
+        # saved (assignstadium_value/assigncompstadium -> assign_with_delete
+        # always calls settings_ini.save() before returning) -- never
+        # interleaved with it. delete_key() (used inside
+        # _write_stadium_goalpost_overrides whenever a category is left
+        # "None") unconditionally reloads from disk first, which would
+        # silently discard the assignment write above if it hadn't been
+        # saved yet. Sequencing two fully-completed save cycles back to back
+        # instead of merging them avoids that regardless of call order.
+        if payload != "None":
+            names = multi if scope in {"2", "3", "4"} else [selected_stadium]
+            self._write_stadium_goalpost_overrides(
+                names,
+                {"stadiumgoalpost": selected_goalpost, "stadiumgoalposttexture": selected_goalpost_texture},
+            )
+
+    def _write_stadium_goalpost_overrides(self, stadium_names: list[str], overrides: dict[str, str]) -> None:
+        """Persists the Assign Stadium dialog's Goalpost Model/Texture picks
+        into their own sections ([stadiumgoalpost], [stadiumgoalposttexture]
+        -- see `overrides`' keys), keyed by stadium name (see
+        StadiumRuntime.resolve_goalpost_sources) -- separate sections from
+        [stadium]/[comp] itself, same as settings_editor.py's
+        SettingsSectionFrame._write_stadium_goalpost_overrides. This dialog
+        only ever offers ONE shared pick per category per save (same as
+        police/pitch/net above), so every currently-assigned name gets the
+        same value for each category. "None" clears any existing override
+        instead of writing a literal "None" value.
+
+        All delete_key() calls run before ANY write() -- IniFile/
+        SessionIniFile.delete_key() unconditionally reloads from disk first,
+        which would silently discard a not-yet-saved write() made earlier in
+        this same loop (e.g. one stadium's model write, wiped out by a later
+        stadium's texture delete, or vice versa) -- confirmed live
+        2026-09-11 as the cause of goalpost overrides silently not being
+        saved at all. See settings_editor.py's identical fix for the fuller
+        explanation."""
+        app = self.app
+        valid_names = [name for name in stadium_names if name and name != "None"]
+        for name in valid_names:
+            for section, value in overrides.items():
+                if not value or value == "None":
+                    app.settings_ini.delete_key(name, section)
+        for name in valid_names:
+            for section, value in overrides.items():
+                if value and value != "None":
+                    app.settings_ini.write(name, value, section)
+        app.settings_ini.save()
 
     def exclude_competition(self) -> None:
         app = self.app

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -10,8 +11,16 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 from .chants_runtime import MciAudioPlayer
-from .file_tools import discover_stadium_names, resolve_stadium_preview_path, stadium_preview_fallback_path
+from .file_tools import (
+    discover_stadium_names,
+    resolve_goalpost_model_preview_path,
+    resolve_goalpost_texture_rx3_path,
+    resolve_stadium_preview_path,
+    stadium_preview_fallback_path,
+)
+from .stadium_picker_dialog import StadiumPickerDialog
 from .stadium_runtime import StadiumRuntime
+from .team_picker_dialog import TeamPickerDialog
 from .video_preview import MoviePreviewPanel
 
 
@@ -23,6 +32,8 @@ class SectionSpec:
     value_label: str = "Value"
     directory: str | None = None
     recursive: bool = False
+    key_is_team_id: bool = False
+    key_stadium_picker: bool = False
 
 
 class SettingsAreaEditor(tk.Toplevel):
@@ -211,6 +222,16 @@ class SettingsSectionFrame(tk.Frame):
         )
         self.key_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
 
+        if self.spec.key_is_team_id or self.spec.key_stadium_picker:
+            key_buttons = tk.Frame(form, bg=self.app.card)
+            key_buttons.grid(row=0, column=2, sticky="e", padx=(8, 0), pady=(0, 6))
+            if self.spec.key_is_team_id:
+                ttk.Button(key_buttons, text=self.tr("button.use_home_team"), command=self._use_home_team_key).pack(side="left", padx=(0, 4))
+                ttk.Button(key_buttons, text=self.tr("button.use_away_team"), command=self._use_away_team_key).pack(side="left", padx=(0, 4))
+                ttk.Button(key_buttons, text=self.tr("button.pick_team"), command=self._pick_team_key).pack(side="left")
+            elif self.spec.key_stadium_picker:
+                ttk.Button(key_buttons, text=self.tr("button.pick_stadium"), command=self._pick_stadium_key).pack(side="left")
+
         # The editor body (and, for chants/stadium, the preview panel below it)
         # can be taller than the window -- e.g. the stadium preview images only
         # fully fit at a much larger window height than this dialog opens at.
@@ -234,15 +255,6 @@ class SettingsSectionFrame(tk.Frame):
         scroll_content.bind("<Configure>", lambda _e: body_canvas.configure(scrollregion=body_canvas.bbox("all")))
         body_canvas.bind("<Configure>", lambda e: body_canvas.itemconfigure(content_window, width=e.width))
 
-        def _on_body_mousewheel(event):
-            if event.delta == 0:
-                return "break"
-            body_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-            return "break"
-
-        body_canvas.bind("<MouseWheel>", _on_body_mousewheel)
-        scroll_content.bind("<MouseWheel>", _on_body_mousewheel)
-
         self.body = tk.Frame(scroll_content, bg=self.app.card)
         self.body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 8))
         self.body.grid_columnconfigure(0, weight=1)
@@ -257,6 +269,14 @@ class SettingsSectionFrame(tk.Frame):
             self._build_movie_preview_panel(scroll_content)
         elif self.spec.directory in ("ScoreBoardGBD", "TVLogoGBD"):
             self._build_asset_preview_panel(scroll_content)
+
+        # <MouseWheel> only fires on the exact widget under the cursor, not
+        # its ancestors -- binding just body_canvas/scroll_content (as
+        # before) left the wheel dead over almost the whole panel, since
+        # that's covered by self.body's/the preview panel's own descendant
+        # labels/combos/frames. Bind every descendant too, now that the full
+        # subtree (body + whichever preview panel this kind built) exists.
+        self._bind_mousewheel_recursive(body_canvas, scroll_callback=lambda steps: body_canvas.yview_scroll(steps, "units"))
 
         actions = tk.Frame(right_card, bg=self.app.card)
         actions.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 12))
@@ -279,6 +299,28 @@ class SettingsSectionFrame(tk.Frame):
             anchor="w",
             justify="left",
         ).grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
+
+    def _use_home_team_key(self) -> None:
+        self.key_var.set(getattr(self.app, "HID", "") or "")
+
+    def _use_away_team_key(self) -> None:
+        self.key_var.set(getattr(self.app, "AID", "") or "")
+
+    def _pick_team_key(self) -> None:
+        dialog = TeamPickerDialog(self.app)
+        self.app.wait_window(dialog)
+        if dialog.result:
+            self.key_var.set(dialog.result)
+
+    def _pick_stadium_key(self) -> None:
+        exedir = getattr(self.app, "exedir", None)
+        if not exedir:
+            return
+        configured_names = {key for key, _value in self.app.settings_ini.items(self.spec.section)}
+        dialog = StadiumPickerDialog(self.app, exedir, configured_names)
+        self.app.wait_window(dialog)
+        if dialog.result:
+            self.key_var.set(dialog.result)
 
     def _build_editor_body(self) -> None:
         if self.spec.kind == "simple":
@@ -303,6 +345,20 @@ class SettingsSectionFrame(tk.Frame):
         # single row is selected in Assigned is the "active" one the three
         # combos below read from and write into (see _on_assigned_selection_changed).
         self._stadium_params: dict[str, tuple[str, str, str]] = {}
+        # Goalpost model/texture are deliberately NOT part of _stadium_params'
+        # comma-joined tuple -- they're persisted separately, to
+        # [stadiumgoalpost]/[stadiumgoalposttexture], keyed by stadium name,
+        # exactly like StadiumRuntime.resolve_goalpost_sources reads them
+        # (see save_entry -> _save_stadium_goalpost_overrides). Kept in their
+        # own dicts here purely so this UI can show/edit them alongside
+        # Police/Pitch/Net without touching _parse_stadium_entries' own
+        # fragile comma-count heuristic for [stadium]/[comp] itself. Split
+        # into two independent dicts/combos (not one) because a real pack
+        # ships model and texture/color as separate, independently
+        # mix-and-matchable folders (FSW/Goalpost/GoalpostModel/<name>/,
+        # FSW/Goalpost/GoalpostColor/<name>/), not one combined folder.
+        self._stadium_goalpost: dict[str, str] = {}
+        self._stadium_goalpost_texture: dict[str, str] = {}
         self._active_stadium_name: str | None = None
         self.body.grid_columnconfigure(0, weight=1)
         self.body.grid_columnconfigure(1, weight=1)
@@ -470,13 +526,39 @@ class SettingsSectionFrame(tk.Frame):
         self.police_combo = self._add_combo_row(self.body, 2, self.tr("dialog.editor.field.police"), self.police_var, [str(i) for i in range(1, 11)])
         self.pitch_combo = self._add_combo_row(self.body, 3, self.tr("dialog.editor.field.pitch"), self.pitch_var, self._asset_indices(self.app.PitchMowsource))
         self.net_combo = self._add_combo_row(self.body, 4, self.tr("dialog.editor.field.net"), self.net_var, self._asset_indices(self.app.Nsource))
+        self.goalpost_var = tk.StringVar(value="None")
+        self.goalpost_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalpost"))
+        self.goalpost_combo = self._add_combo_row(self.body, 5, self.tr("dialog.editor.field.goalpost_model"), self.goalpost_var, self._available_goalpost_choices("GoalpostModel"))
+        self.goalpost_texture_var = tk.StringVar(value="None")
+        self.goalpost_texture_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalposttexture"))
+        self.goalpost_texture_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.goalpost_texture"), self.goalpost_texture_var, self._available_goalpost_choices("GoalpostColor"))
         self._refresh_stadium_assigned_state()
 
     def _stadium_default_triple(self) -> tuple[str, str, str]:
         return (self.STADIUM_DEFAULTS["police"], self.STADIUM_DEFAULTS["pitch"], self.STADIUM_DEFAULTS["net"])
 
+    def _available_goalpost_choices(self, category: str) -> list[str]:
+        base = self.app.exedir / "FSW" / "Goalpost" / category
+        choices = ["None"]
+        if base.exists():
+            choices.extend(sorted(path.name for path in base.iterdir() if path.is_dir()))
+        return choices
+
+    def _lookup_existing_goalpost_overrides(self, name: str) -> tuple[str, str]:
+        """Reads name's CURRENT [stadiumgoalpost]/[stadiumgoalposttexture]
+        values directly from settings.ini -- used whenever a stadium enters
+        this UI's in-memory dicts for the first time this session (a fresh
+        Add, or the new occupant of a Replace), so an existing global
+        override for that name (e.g. set while it was assigned to a
+        different team) is reflected accurately here instead of defaulting
+        to "None" and then silently deleting it the moment this key is
+        saved (see _save_stadium_goalpost_overrides)."""
+        model = self.app.settings_ini.read(name, "stadiumgoalpost").strip() if self.app.settings_ini.key_exists(name, "stadiumgoalpost") else ""
+        texture = self.app.settings_ini.read(name, "stadiumgoalposttexture").strip() if self.app.settings_ini.key_exists(name, "stadiumgoalposttexture") else ""
+        return model or "None", texture or "None"
+
     def _set_stadium_param_controls_state(self, state: str) -> None:
-        for combo in (self.police_combo, self.pitch_combo, self.net_combo):
+        for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo):
             combo.configure(state=state)
 
     def _on_assigned_selection_changed(self) -> None:
@@ -492,6 +574,8 @@ class SettingsSectionFrame(tk.Frame):
             self.police_var.set(police)
             self.pitch_var.set(pitch)
             self.net_var.set(net)
+            self.goalpost_var.set(self._stadium_goalpost.get(name, "None"))
+            self.goalpost_texture_var.set(self._stadium_goalpost_texture.get(name, "None"))
             self._set_stadium_param_controls_state("normal")
             self.stadium_params_label.configure(text=self.tr("dialog.editor.stadium_multi.editing_params", name=name))
         else:
@@ -505,9 +589,19 @@ class SettingsSectionFrame(tk.Frame):
             self._update_police_preview()
         elif field == "pitch":
             self._update_pitch_preview()
-        else:
+        elif field == "net":
             self._update_net_preview()
-        if self._active_stadium_name is not None:
+        elif field == "goalpost":
+            self._update_goalpost_model_preview()
+        elif field == "goalposttexture":
+            self._update_goalpost_texture_preview()
+        if self._active_stadium_name is None:
+            return
+        if field == "goalpost":
+            self._stadium_goalpost[self._active_stadium_name] = self.goalpost_var.get().strip() or "None"
+        elif field == "goalposttexture":
+            self._stadium_goalpost_texture[self._active_stadium_name] = self.goalpost_texture_var.get().strip() or "None"
+        else:
             self._stadium_params[self._active_stadium_name] = (
                 self.police_var.get().strip(), self.pitch_var.get().strip(), self.net_var.get().strip(),
             )
@@ -546,6 +640,10 @@ class SettingsSectionFrame(tk.Frame):
             # the defaults; one already there (e.g. re-added after Remove)
             # keeps whatever it had rather than resetting it.
             self._stadium_params.setdefault(name, self._stadium_default_triple())
+            if name not in self._stadium_goalpost:
+                model, texture = self._lookup_existing_goalpost_overrides(name)
+                self._stadium_goalpost[name] = model
+                self._stadium_goalpost_texture[name] = texture
             existing.add(name)
             last_added_index = self.assigned_stadium_list.size() - 1
         if last_added_index is not None:
@@ -585,6 +683,21 @@ class SettingsSectionFrame(tk.Frame):
             inherited = self._stadium_params.get(new_name, self._stadium_params.get(current_name, self._stadium_default_triple()))
             self._stadium_params[new_name] = inherited
             self._stadium_params.pop(current_name, None)
+            # Goalpost model/texture are global-by-name (see
+            # _lookup_existing_goalpost_overrides), so the new occupant does
+            # NOT inherit the outgoing stadium's goalpost the way Police/
+            # Pitch/Net does above -- it gets its own already-in-memory value
+            # if this session already touched it, else whatever's currently
+            # configured for it globally.
+            if new_name in self._stadium_goalpost:
+                goalpost_model = self._stadium_goalpost[new_name]
+                goalpost_texture = self._stadium_goalpost_texture.get(new_name, "None")
+            else:
+                goalpost_model, goalpost_texture = self._lookup_existing_goalpost_overrides(new_name)
+            self._stadium_goalpost[new_name] = goalpost_model
+            self._stadium_goalpost_texture[new_name] = goalpost_texture
+            self._stadium_goalpost.pop(current_name, None)
+            self._stadium_goalpost_texture.pop(current_name, None)
         self.assigned_stadium_list.delete(index)
         self.assigned_stadium_list.insert(index, new_name)
         self.assigned_stadium_list.selection_set(index)
@@ -624,7 +737,7 @@ class SettingsSectionFrame(tk.Frame):
         container = tk.Frame(scroll_content, bg=self.app.card)
         container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
         container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(1, weight=1)
+        container.grid_rowconfigure(2, weight=1)
 
         small_row = tk.Frame(container, bg=self.app.card)
         small_row.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
@@ -635,8 +748,15 @@ class SettingsSectionFrame(tk.Frame):
         self._build_stadium_preview_box(small_row, 1, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(170, 140))
         self._build_stadium_preview_box(small_row, 2, self.tr("dialog.stadium.preview.net"), "net", image_size=(170, 140))
 
+        goalpost_row = tk.Frame(container, bg=self.app.card)
+        goalpost_row.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
+        goalpost_row.grid_columnconfigure(0, weight=1)
+        goalpost_row.grid_columnconfigure(1, weight=1)
+        self._build_stadium_preview_box(goalpost_row, 0, self.tr("dialog.stadium.preview.goalpost_model"), "goalpost_model", image_size=(170, 140))
+        self._build_stadium_preview_box(goalpost_row, 1, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(170, 140))
+
         stadium_wrap = tk.Frame(container, bg=self.app.card)
-        stadium_wrap.grid(row=1, column=0, sticky="nsew")
+        stadium_wrap.grid(row=2, column=0, sticky="nsew")
         stadium_wrap.grid_columnconfigure(0, weight=1)
         self._build_stadium_preview_box(stadium_wrap, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(520, 300))
 
@@ -644,6 +764,8 @@ class SettingsSectionFrame(tk.Frame):
         self._update_pitch_preview()
         self._update_net_preview()
         self._update_police_preview()
+        self._update_goalpost_model_preview()
+        self._update_goalpost_texture_preview()
 
     def _build_stadium_preview_box(
         self,
@@ -754,6 +876,60 @@ class SettingsSectionFrame(tk.Frame):
         value = self.police_var.get().strip()
         image_path = self._police_preview_dir / f"{value}.png"
         self._set_preview_image("police", image_path, value or self.tr("dialog.stadium.police_pattern"))
+
+    def _update_goalpost_model_preview(self) -> None:
+        # Static image, unlike the texture side below -- see the "preview"
+        # convention documented on resolve_goalpost_model_preview_path.
+        if "goalpost_model" not in self._preview_labels:
+            return
+        name = self.goalpost_var.get().strip()
+        image_path = None
+        if name and name != "None":
+            image_path = resolve_goalpost_model_preview_path(self.app.exedir / "FSW" / "Goalpost" / "GoalpostModel", name)
+        self._set_preview_image("goalpost_model", image_path, self.tr("placeholder.no_preview"))
+
+    def _update_goalpost_texture_preview(self) -> None:
+        # Unlike every other preview in this panel (all plain image files), a
+        # GoalpostColor pack has no preview image convention -- the preview
+        # is rendered from the pack's own .rx3 texture via the 32-bit
+        # FifaLibrary bridge (StadiumRuntime.render_goalpost_texture_preview),
+        # so this has to run off the UI thread and guard against a newer
+        # selection superseding a still-running render (same pattern
+        # app_ui.py's Kit Mixer preview uses, and dialogs.py's StadiumDialog
+        # goalpost texture preview).
+        if "goalpost_texture" not in self._preview_labels:
+            return
+        name = self.goalpost_texture_var.get().strip()
+        self._goalpost_texture_preview_generation = getattr(self, "_goalpost_texture_preview_generation", 0) + 1
+        generation = self._goalpost_texture_preview_generation
+        if not name or name == "None":
+            self._set_preview_image("goalpost_texture", None, self.tr("placeholder.no_preview"))
+            return
+        source_rx3 = resolve_goalpost_texture_rx3_path(self.app.exedir / "FSW" / "Goalpost" / "GoalpostColor", name)
+        if source_rx3 is None:
+            self._set_preview_image("goalpost_texture", None, self.tr("placeholder.no_preview"))
+            return
+        self._set_preview_image("goalpost_texture", None, self.tr("dialog.kitmix.loading"))
+
+        def worker() -> None:
+            try:
+                png_path = self.app.stadium_runtime.render_goalpost_texture_preview(source_rx3, cache_key=name)
+                error = None
+            except Exception as exc:  # noqa: BLE001 - surfaced as a preview placeholder
+                png_path, error = None, exc
+            self.after(0, lambda: self._apply_goalpost_texture_preview_result(generation, png_path, error))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _apply_goalpost_texture_preview_result(self, generation: int, png_path, error) -> None:
+        if getattr(self, "_destroyed", False):
+            return  # this tab/dialog was closed while the render subprocess was still running
+        if getattr(self, "_goalpost_texture_preview_generation", 0) != generation:
+            return  # a newer selection superseded this one while the worker ran
+        if error is not None or png_path is None:
+            self._set_preview_image("goalpost_texture", None, self.tr("dialog.kitmix.preview_error"))
+            return
+        self._set_preview_image("goalpost_texture", png_path, self.tr("dialog.kitmix.preview_error"))
 
     def _build_net_editor(self) -> None:
         self.down_var = tk.StringVar(value=self.NET_DEFAULTS["down"])
@@ -1145,6 +1321,10 @@ class SettingsSectionFrame(tk.Frame):
         return combo
 
     def _on_destroy(self, _event=None) -> None:
+        # Guards _apply_goalpost_texture_preview_result's self.after(0, ...)
+        # callback -- the 32-bit render subprocess it's waiting on can easily
+        # still be running after this tab/dialog is closed.
+        self._destroyed = True
         if self._refresh_job is not None:
             try:
                 self.after_cancel(self._refresh_job)
@@ -1152,6 +1332,29 @@ class SettingsSectionFrame(tk.Frame):
                 pass
             self._refresh_job = None
         self._stop_preview()
+
+    def _bind_mousewheel_recursive(self, widget: tk.Misc, scroll_callback) -> None:
+        """<MouseWheel> only fires on the exact widget directly under the
+        cursor, so binding just the scrollable canvas/body leaves the wheel
+        dead over any of its many descendant labels/combos/frames, which is
+        most of the visible area. Walks the whole already-built subtree and
+        binds each one, skipping tk.Listbox so a listbox with its own many
+        rows (the Assigned/Available stadium lists) keeps its native
+        per-widget wheel scrolling instead of being hijacked into scrolling
+        this outer canvas. Call once, after the full subtree already exists
+        -- widgets added later won't be covered."""
+        if isinstance(widget, tk.Listbox):
+            return
+
+        def on_mousewheel(event):
+            if event.delta == 0:
+                return "break"
+            scroll_callback(int(-1 * (event.delta / 120)))
+            return "break"
+
+        widget.bind("<MouseWheel>", on_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_mousewheel_recursive(child, scroll_callback)
 
     def _available_choices(self) -> list[str]:
         directory = self.spec.directory
@@ -1245,6 +1448,8 @@ class SettingsSectionFrame(tk.Frame):
         elif self.spec.kind == "stadium":
             self.assigned_stadium_list.delete(0, "end")
             self._stadium_params = {}
+            self._stadium_goalpost = {}
+            self._stadium_goalpost_texture = {}
             self._refresh_stadium_assigned_state()
         elif self.spec.kind == "net":
             self.down_var.set(self.NET_DEFAULTS["down"])
@@ -1293,6 +1498,8 @@ class SettingsSectionFrame(tk.Frame):
     def _load_stadium_value(self, value: str) -> None:
         self.assigned_stadium_list.delete(0, "end")
         self._stadium_params = {}
+        self._stadium_goalpost = {}
+        self._stadium_goalpost_texture = {}
         if value and value != "None":
             entries = StadiumRuntime._parse_stadium_entries(value)
             if not entries:
@@ -1311,6 +1518,13 @@ class SettingsSectionFrame(tk.Frame):
             for name, police, pitch, net in entries:
                 self.assigned_stadium_list.insert("end", name)
                 self._stadium_params[name] = (police, pitch, net)
+                # [stadiumgoalpost]/[stadiumgoalposttexture] are separate
+                # sections keyed by stadium name (see
+                # StadiumRuntime.resolve_goalpost_sources), not part of this
+                # comma-joined value -- read them independently here.
+                model, texture = self._lookup_existing_goalpost_overrides(name)
+                self._stadium_goalpost[name] = model
+                self._stadium_goalpost_texture[name] = texture
         if self.assigned_stadium_list.size() > 0:
             self.assigned_stadium_list.selection_set(0)
             self.assigned_stadium_list.activate(0)
@@ -1430,12 +1644,66 @@ class SettingsSectionFrame(tk.Frame):
         original_key = self.selected_key
         if original_key and original_key != key:
             self.app.settings_ini.delete_key(original_key, self.spec.section)
+        # All delete_key() calls for this save cycle MUST run before ANY
+        # write() -- IniFile/SessionIniFile.delete_key() unconditionally
+        # reloads from disk first (see ini_file.py's own "Force reload from
+        # disk" comment), which silently discards any not-yet-saved write()
+        # made earlier in this same cycle. Confirmed live 2026-09-11: saving
+        # a stadium whose goalpost model/texture combo was left at "None"
+        # (the common case -- most stadiums only override one of the two)
+        # triggered delete_key() for that category, which wiped out the
+        # [stadium]/[comp] write two lines below and/or the OTHER category's
+        # own write, all silently -- nothing in this section ever actually
+        # reached disk. Splitting into a delete-only pass (here, before
+        # anything is written) and a write-only pass (below, after) fixes it
+        # regardless of which categories happen to be set/unset.
+        if self.spec.kind == "stadium":
+            self._clear_stale_stadium_goalpost_overrides()
         self.app.settings_ini.write(key, value, self.spec.section)
+        if self.spec.kind == "stadium":
+            self._write_stadium_goalpost_overrides()
         self.app.settings_ini.save()
         self.selected_key = key
         self.status_var.set(self.tr("dialog.editor.saved", section=self.spec.section, key=key))
         self.reload_entries()
         self._apply_runtime()
+
+    def _clear_stale_stadium_goalpost_overrides(self) -> None:
+        """The delete_key() half of persisting self._stadium_goalpost/
+        _stadium_goalpost_texture into [stadiumgoalpost]/
+        [stadiumgoalposttexture] (see StadiumRuntime.resolve_goalpost_sources)
+        -- kept as its own pass, called before the main [stadium]/[comp]
+        write and before _write_stadium_goalpost_overrides, so its forced
+        disk reloads never discard a write not yet saved this cycle (see the
+        ordering comment in save_entry). Deliberately never deletes an
+        override for a name no longer in this key's assigned list -- the
+        same stadium could still be referenced by another team's own
+        [stadium] assignment, and these sections are shared by name, not
+        owned by any single team's entry (same convention already used by
+        [stadiumnetname]/[scoreboardstdname], which also aren't cleaned up
+        when a team stops referencing a stadium name). _stadium_add_selected/
+        _stadium_replace_selected already seed both dicts from the current
+        on-disk value for any name entering them for the first time this
+        session (_lookup_existing_goalpost_overrides), so a plain "None"
+        reaching this loop for an untouched entry reflects a real absence,
+        not a stale default about to clobber someone else's override."""
+        for name, goalpost in self._stadium_goalpost.items():
+            if not goalpost or goalpost == "None":
+                self.app.settings_ini.delete_key(name, "stadiumgoalpost")
+        for name, texture in self._stadium_goalpost_texture.items():
+            if not texture or texture == "None":
+                self.app.settings_ini.delete_key(name, "stadiumgoalposttexture")
+
+    def _write_stadium_goalpost_overrides(self) -> None:
+        """The write() half -- see _clear_stale_stadium_goalpost_overrides,
+        which must run first in the same save cycle (before this call and
+        before the main [stadium]/[comp] write)."""
+        for name, goalpost in self._stadium_goalpost.items():
+            if goalpost and goalpost != "None":
+                self.app.settings_ini.write(name, goalpost, "stadiumgoalpost")
+        for name, texture in self._stadium_goalpost_texture.items():
+            if texture and texture != "None":
+                self.app.settings_ini.write(name, texture, "stadiumgoalposttexture")
 
     def delete_entry(self) -> None:
         key = self.key_var.get().strip() or self.selected_key
@@ -1516,11 +1784,13 @@ class SettingsSectionFrame(tk.Frame):
 
 def stadium_specs() -> list[SectionSpec]:
     return [
-        SectionSpec("stadium", "Team Stadiums", kind="stadium", directory="StadiumGBD"),
+        SectionSpec("stadium", "Team Stadiums", kind="stadium", directory="StadiumGBD", key_is_team_id=True),
         SectionSpec("comp", "Competition Stadiums", kind="stadium", directory="StadiumGBD"),
-        SectionSpec("stadiumnetname", "Net By Stadium Name", kind="net", directory="StadiumGBD"),
+        SectionSpec("stadiumnetname", "Net By Stadium Name", kind="net", directory="StadiumGBD", key_stadium_picker=True),
         SectionSpec("stadiumnetid", "Net By Stadium ID", kind="net"),
-        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD"),
+        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD", key_stadium_picker=True),
+        SectionSpec("stadiumgoalpost", "dialog.editor.choice.goalpost_models_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True),
+        SectionSpec("stadiumgoalposttexture", "dialog.editor.choice.goalpost_textures_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostColor", key_stadium_picker=True),
         SectionSpec("exclude", "Excluded Competitions", kind="exclude"),
     ]
 
@@ -1529,12 +1799,12 @@ def asset_specs() -> list[SectionSpec]:
     return [
         SectionSpec("Scoreboard", "dialog.editor.choice.competition_scoreboards", kind="simple", directory="ScoreBoardGBD"),
         SectionSpec("TVLogo", "dialog.editor.choice.competition_tvlogos", kind="simple", directory="TVLogoGBD"),
-        SectionSpec("HomeTeamScoreBoard", "dialog.editor.choice.home_team_scoreboards", kind="simple", directory="ScoreBoardGBD"),
-        SectionSpec("HomeTeamTvLogo", "dialog.editor.choice.home_team_tvlogos", kind="simple", directory="TVLogoGBD"),
+        SectionSpec("HomeTeamScoreBoard", "dialog.editor.choice.home_team_scoreboards", kind="simple", directory="ScoreBoardGBD", key_is_team_id=True),
+        SectionSpec("HomeTeamTvLogo", "dialog.editor.choice.home_team_tvlogos", kind="simple", directory="TVLogoGBD", key_is_team_id=True),
         SectionSpec("movies", "dialog.editor.choice.competition_movies", kind="simple", directory="MoviesGBD"),
-        SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD"),
+        SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD", key_is_team_id=True),
         SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD"),
-        SectionSpec("kitsid", "dialog.editor.choice.kits_ids", kind="simple", directory="FSW\\Kits"),
+        SectionSpec("kitsid", "dialog.editor.choice.kits_ids", kind="simple", directory="FSW\\Kits", key_is_team_id=True),
         SectionSpec("ball", "dialog.editor.choice.competition_balls", kind="simple", directory="FSW\\balls"),
         SectionSpec("referee", "dialog.editor.choice.competition_referees", kind="simple", directory="FSW\\referee"),
         SectionSpec("wipe", "dialog.editor.choice.competition_wipes", kind="simple", directory="FSW\\wipe"),

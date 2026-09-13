@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
-from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
+from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost_sources, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
+from .kit_mixer import run_fifalibrary_worker
 
 if TYPE_CHECKING:
     from .app import Server16App
@@ -205,6 +206,79 @@ class StadiumRuntime:
     @staticmethod
     def _build_task_request_key(section_name: str, section_id: str, raw_value: str) -> tuple[str, str, str]:
         return section_name, section_id, raw_value
+
+    @staticmethod
+    def _read_goalpost_override_names(app, stad_name: str) -> tuple[str, str]:
+        """The raw [stadiumgoalpost]/[stadiumgoalposttexture] override values for stad_name,
+        each empty when unset. Shared by resolve_goalpost_sources (to build the actual source
+        paths) and the goalpost-loaded toast notification (to name which specific pack was
+        applied, instead of the already-known stadium name)."""
+        model = ""
+        if app.settings_ini.key_exists(stad_name, "stadiumgoalpost"):
+            model = app.settings_ini.read(stad_name, "stadiumgoalpost").strip()
+        texture = ""
+        if app.settings_ini.key_exists(stad_name, "stadiumgoalposttexture"):
+            texture = app.settings_ini.read(stad_name, "stadiumgoalposttexture").strip()
+        return model, texture
+
+    @staticmethod
+    def resolve_goalpost_sources(app, stad: Path, stad_name: str) -> list[Path]:
+        """Resolve where this stadium's goalpost assets come from. Deliberately keyed by
+        stad_name (the already-resolved, single stadium folder -- see finish_stadium_apply's
+        identical [scoreboardstdname] lookup) rather than any new field on [stadium]/[comp],
+        so this never has to touch _parse_stadium_entries' own fragile comma-count heuristics
+        for a team with several assigned stadiums.
+
+        Model (the goalpost shape, e.g. specificgoalpost_18_0.rx3) and texture (the net/post
+        color, e.g. specificnetsupportpost_0_0_textures.rx3) are independent, separately
+        selectable packs -- a real-world pack ships them as sibling FSW/Goalpost/GoalpostModel/
+        <name>/ and FSW/Goalpost/GoalpostColor/<name>/ folders, not one combined folder, since
+        the same model is commonly paired with several different color variants and vice versa.
+        [stadiumgoalpost] holds the model override, [stadiumgoalposttexture] the texture/color
+        override -- both keyed by stad_name, independently optional.
+
+        No override of EITHER kind for stad_name keeps the legacy behavior: the stadium pack's
+        own bundled GoalpostGBD folder (mixed model+texture+whatever, arbitrary filenames), as
+        a single source. The moment either override is set, GoalpostGBD is NOT also mixed in --
+        only the explicit override source(s) are used, so there's never an ambiguous case where
+        both a legacy file and an override file claim the same destination filename. A category
+        left unset while the other IS overridden simply keeps whatever restore_goalnet_defaults
+        already restored to vanilla for it (copy_goalpost_sources always clears+restores first)."""
+        model, texture = StadiumRuntime._read_goalpost_override_names(app, stad_name)
+        if not model and not texture:
+            return [stad / "GoalpostGBD"]
+        sources: list[Path] = []
+        if model:
+            sources.append(app.exedir / "FSW" / "Goalpost" / "GoalpostModel" / model)
+        if texture:
+            sources.append(app.exedir / "FSW" / "Goalpost" / "GoalpostColor" / texture)
+        return sources
+
+    def goalpost_texture_preview_dir(self) -> Path:
+        return self.app.base_dir / "runtime" / "goalpost_texture_previews"
+
+    def render_goalpost_texture_preview(self, source_rx3: Path, cache_key: str, max_size: int = 220) -> Path:
+        """Renders a small PNG preview of a GoalpostColor pack's .rx3 texture
+        (there's no dedicated preview-image convention on that side, unlike
+        GoalpostModel's preview.<ext> -- see file_tools.
+        resolve_goalpost_model_preview_path) via the same 32-bit
+        kit_preview_worker.py bridge KitMixRuntime already uses for kit
+        textures, role="rx3_texture" (no kit-specific jersey/shorts/crest
+        classification -- a goalpost net/post texture has no such roles,
+        just its first embedded bitmap). cache_key should be the pack name
+        (e.g. "Azul") -- the same pack always renders to the same output
+        file, reused across every dialog that previews it. Blocking -- call
+        from a background thread when used from the UI, same convention as
+        KitMixRuntime.render_preview."""
+        output_path = self.goalpost_texture_preview_dir() / f"{cache_key}.png"
+        config = {
+            "source": str(source_rx3),
+            "role": "rx3_texture",
+            "output": str(output_path),
+            "max_size": max_size,
+        }
+        result = run_fifalibrary_worker(config, worker_name="kit_preview_worker.py")
+        return Path(result["output"])
 
     @staticmethod
     def _looks_like_stadium_dir(path: Path) -> bool:
@@ -613,10 +687,15 @@ class StadiumRuntime:
                 ("Applying pitch setup", lambda: extra_setup(app.PitchMowsource, app.PitchMowdest, pitch, "pitchmowpattern", "0")),
             ]
         )
-        goalpost_src = stad / "GoalpostGBD"
+        goalpost_model, goalpost_texture = self._read_goalpost_override_names(app, stad_name)
+        goalpost_sources = self.resolve_goalpost_sources(app, stad, stad_name)
+        _goalpost_overrides_root = app.exedir / "FSW" / "Goalpost"
+        for _gp_src in goalpost_sources:
+            if _gp_src.parent.parent == _goalpost_overrides_root and not _gp_src.is_dir():
+                app.log(f"Goalpost pack not found for {stad_name}: {_gp_src}")
         _goalpost_manifest = app.exedir / "FSW" / ".goalpost_manifest"
         _fsw_goalnet_dir = app.exedir / "FSW" / "GoalNet"
-        steps.append(("Applying goalpost models", lambda: copy_goalpost(goalpost_src, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir)))
+        steps.append(("Applying goalpost models", lambda: copy_goalpost_sources(goalpost_sources, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir)))
         if no_seats.exists():
             steps.append(("Applying crowd chairs", lambda: copy_if_exists(no_seats, app.exedir / "data" / "sceneassets" / "crowdchair" / f"specificchair_0_{injid}.rx3")))
         else:
@@ -636,7 +715,25 @@ class StadiumRuntime:
         _bcgp_dir = stad / "GameplayCamGBD"
         if _bcgp_dir.is_dir() and any((_bcgp_dir / n).exists() for n in ("bcgameplay_176.dat", "bcgameplay_261.dat")):
             app._worker_queue.put(("toast", app.tr("notify.bcgameplay_loaded"), stad_name, 3500, ""))
-        if goalpost_src.is_dir() and next((f for f in goalpost_src.rglob("*") if f.is_file() and f.suffix.lower() != ".png"), None) is not None:
+
+        def _goalpost_src_has_files(src: Path) -> bool:
+            return src.is_dir() and next((f for f in src.rglob("*") if f.is_file() and f.suffix.lower() != ".png"), None) is not None
+
+        if goalpost_model or goalpost_texture:
+            # Independent model/texture overrides -- name the actual pack applied in each
+            # toast instead of the stadium name, which the user already knows and which no
+            # longer says anything about which goalpost look is active (see
+            # resolve_goalpost_sources' docstring). goalpost_sources is built in this same
+            # model-then-texture order, only including whichever of the two is set, so it
+            # can be consumed positionally here.
+            _gp_srcs = iter(goalpost_sources)
+            if goalpost_model and _goalpost_src_has_files(next(_gp_srcs)):
+                app._worker_queue.put(("toast", app.tr("notify.goalpost_model_loaded"), goalpost_model, 3500, "goalpost"))
+            if goalpost_texture and _goalpost_src_has_files(next(_gp_srcs)):
+                app._worker_queue.put(("toast", app.tr("notify.goalpost_texture_loaded"), goalpost_texture, 3500, "goalpost"))
+        elif any(_goalpost_src_has_files(src) for src in goalpost_sources):
+            # Legacy: goalpost assets bundled with the stadium pack's own GoalpostGBD folder --
+            # keep the original single notification naming the stadium.
             app._worker_queue.put(("toast", app.tr("notify.goalpost_loaded"), stad_name, 3500, "goalpost"))
 
         stadmovie = (stad / "StadiumMovie.vp8").exists() and (stad / "StadiumBumper.big").exists()
