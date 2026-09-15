@@ -312,15 +312,13 @@ static Rml::Element *g_heroMuteIcon = nullptr;
 static wchar_t        g_heroMuteIconPathLoaded[MAX_IMG] = {};
 static Rml::Element *g_heroMuteGpIcon = nullptr;
 static wchar_t        g_heroMuteGpIconLoaded[MAX_IMG] = {};
-// .hero-highlight mirrors real mouse :hover while in gamepad mode (there's
-// no meaningful mouse position to actually hover it with a controller —
-// the real cursor is just wherever it was last left resting on screen), so
-// the button still visibly reads as "this is what A activates". .hero-
-// pressed mirrors real mouse :active for the keyboard/gamepad "activate"
-// inputs (Enter/A), which never touch RmlUi's own :active pseudo-class
-// since they're not a mouse button. Both cached to avoid redundant
+// .hero-pressed mirrors real mouse :active for the keyboard/gamepad
+// "activate" inputs (Enter/A), which never touch RmlUi's own :active
+// pseudo-class since they're not a mouse button. Cached to avoid redundant
 // SetClass calls, same pattern as g_tabActiveCache/g_tabOnGliderCache.
-static bool g_heroHighlightCache = false;
+// (There used to also be a .hero-highlight, forcing a permanent :hover-like
+// glow for the whole time gamepadMode was true — removed 2026-09-15, see
+// the fuller comment at its former SetClass call site further down.)
 static bool g_heroPressedCache = false;
 // Floating "press A/Enter" icon for tabs with no hero button (Movies is the
 // only one left, see showSplit) — attached to whichever row is hovered
@@ -1506,13 +1504,23 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         } else {
             SetIconSrcCached(g_heroBtnIcon, g_heroBtnIconLoaded, MAX_IMG, keyDir, kKeyIconFiles[KEY_ENTER]);
         }
-        // Grow/press feedback for input methods that don't drive RmlUi's own
-        // :hover/:active pseudo-classes — see g_heroHighlightCache's comment.
+        // Press feedback for input methods that don't drive RmlUi's own
+        // :active pseudo-class — see g_heroPressedCache's comment. Used to
+        // also force a permanent .hero-highlight (mirroring :hover) for the
+        // whole time gamepadMode was true, tied to "is a gamepad the active
+        // input method at all" rather than any real per-frame hover/focus
+        // signal — reported live 2026-09-15 as looking wrong: the button sat
+        // permanently grown/glowing from the moment the menu opened, with no
+        // in/out transition ever visible, unlike keyboard/mouse where the
+        // button sits flat until a real :hover actually happens (which is
+        // rare — the resting look IS the normal look there). Removed rather
+        // than fixed-to-be-transient: with a gamepad there's no cursor to
+        // meaningfully hover in the first place, so there was no real event
+        // to gate it on other than "gamepad connected" — reusing that read
+        // exactly reproduced the reported bug. The on-screen A/Enter icon
+        // (g_heroBtnIcon, just above) already conveys "this is what
+        // activates" without an always-on glow.
         if (g_heroBtn) {
-            if (gamepadMode != g_heroHighlightCache) {
-                g_heroBtn->SetClass("hero-highlight", gamepadMode);
-                g_heroHighlightCache = gamepadMode;
-            }
             bool activateDown = RmlOverlay_MenuActivateDown();
             if (activateDown != g_heroPressedCache) {
                 g_heroBtn->SetClass("hero-pressed", activateDown);

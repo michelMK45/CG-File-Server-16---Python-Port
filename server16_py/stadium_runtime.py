@@ -419,6 +419,17 @@ class StadiumRuntime:
                         return  # still waiting on the player; don't re-show, don't re-roll
                     desired_stadium = app._stadium_picker_chosen or self._random_stadium_choice(app.curstad, valid_stadiums)
                     app._stadium_picker_pending = False
+                    app._stadium_picker_decided_signature = stadium_signature
+                    app._stadium_picker_decided_stadium = desired_stadium
+                elif app._stadium_picker_decided_signature == stadium_signature:
+                    # Already asked-and-answered for this exact assignment
+                    # this match (picker resolved, or closed/cancelled ->
+                    # random fallback) -- a later re-entrant call for the
+                    # SAME stadium_signature must reuse that decision rather
+                    # than popping a brand-new picker on top of one the
+                    # player already closed. See _stadium_picker_decided_signature's
+                    # own comment (app.py) for the concrete trigger.
+                    desired_stadium = app._stadium_picker_decided_stadium
                 else:
                     self._open_stadium_picker(valid_stadiums, stadium_signature)
                     return

@@ -13,6 +13,7 @@ from PIL import Image, ImageTk
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
 from .file_tools import (
+    clear_generated_cache,
     gamepad_button_icon_dir,
     keyboard_button_icon_dir,
     kit_ui_placeholder_path,
@@ -1411,7 +1412,7 @@ class UIMixin:
     def _resolve_league_logo_path(self, league_id: str):
         return self._resolve_img_asset_id_path("league", league_id)
 
-    def _to_overlay_crest_png(self, team_id: str, prefix: str) -> str:
+    def _to_overlay_crest_png(self, team_id: str, prefix: str, large: bool = False) -> str:
         import tempfile
         import os
         attr = f"_crest_tmp_{prefix}"
@@ -1422,7 +1423,7 @@ class UIMixin:
             except OSError:
                 pass
         setattr(self, attr, "")
-        dds_path = self._resolve_team_logo_path(team_id)
+        dds_path = self._resolve_team_crest_path(team_id) if large else self._resolve_team_logo_path(team_id)
         if not dds_path:
             return ""
         try:
@@ -1436,32 +1437,51 @@ class UIMixin:
             return ""
 
     def _update_team_logo(self, prefix: str, team_id: str) -> None:
+        # Called every stats_loop tick (250ms, app_game.py's refresh_live_context)
+        # for as long as HID/AID are resolved -- i.e. continuously from the team-
+        # select screen onward, not just once per match. Both branches below used
+        # to redo their full work (disk read + PIL decode/resize + a brand-new
+        # PhotoImage, and -- worse -- a delete+open+re-encode+disk-write PNG
+        # round-trip via _to_overlay_crest_png, x2 per side for the small/large
+        # variant) on every single tick even though team_id is essentially always
+        # unchanged tick-to-tick. That's real, continuous work on the Tk main
+        # thread, which also drives window resize handling and the overlay's own
+        # after()-scheduled poll tick -- reported live as overlay input/resize
+        # sluggishness starting exactly at team-select. Gate each branch on the
+        # team_id actually having changed since it last ran.
         label = self._team_logo_labels.get(prefix)
         if label is None:
             return
-        image_ref: ImageTk.PhotoImage | None = None
-        logo_path = self._resolve_team_logo_path(team_id)
-        if logo_path is not None:
-            try:
-                image = Image.open(logo_path).convert("RGBA")
-                image.thumbnail((116, 72))
-                image_ref = ImageTk.PhotoImage(image)
-            except Exception as exc:
-                self.log(f"Failed to load team crest {logo_path}", exc, exc_info=sys.exc_info())
-        if image_ref is None:
-            image_ref = self._build_logo_placeholder_image()
-            label.configure(text=self.tr("placeholder.logo"), compound="center")
-        else:
-            label.configure(text="", compound="center")
-        label.configure(image=image_ref)
-        self._team_logo_images[prefix] = image_ref
+        if team_id != self._team_logo_last_id.get(prefix):
+            image_ref: ImageTk.PhotoImage | None = None
+            logo_path = self._resolve_team_logo_path(team_id)
+            if logo_path is not None:
+                try:
+                    image = Image.open(logo_path).convert("RGBA")
+                    image.thumbnail((116, 72))
+                    image_ref = ImageTk.PhotoImage(image)
+                except Exception as exc:
+                    self.log(f"Failed to load team crest {logo_path}", exc, exc_info=sys.exc_info())
+            if image_ref is None:
+                image_ref = self._build_logo_placeholder_image()
+                label.configure(text=self.tr("placeholder.logo"), compound="center")
+            else:
+                label.configure(text="", compound="center")
+            label.configure(image=image_ref)
+            self._team_logo_images[prefix] = image_ref
+            self._team_logo_last_id[prefix] = team_id
         inj = self._d3d_injector
         if inj and inj.is_ready():
-            png = self._to_overlay_crest_png(team_id, prefix)
-            if prefix == "home":
-                self._home_crest_png = png
-            else:
-                self._away_crest_png = png
+            if team_id != self._team_crest_pushed_id.get(prefix):
+                png = self._to_overlay_crest_png(team_id, prefix)
+                large_png = self._to_overlay_crest_png(team_id, f"{prefix}_large", large=True)
+                if prefix == "home":
+                    self._home_crest_png = png
+                    self._home_crest_png_large = large_png
+                else:
+                    self._away_crest_png = png
+                    self._away_crest_png_large = large_png
+                self._team_crest_pushed_id[prefix] = team_id
             inj.set_team_crests(self._home_crest_png, self._away_crest_png)
 
     def _build_matchup_card(self, parent: tk.Misc, row: int) -> None:
@@ -2743,7 +2763,15 @@ class UIMixin:
             variable=self.keep_open_var,
             command=self._toggle_keep_open,
         )
-        self.keep_open_switch.pack(anchor="w", padx=12, pady=(0, 10))
+        self.keep_open_switch.pack(anchor="w", padx=12, pady=(0, 4))
+
+        self.clean_cache_button = ttk.Button(
+            card,
+            text=self.tr("button.clean_cache"),
+            command=self._clean_generated_cache,
+        )
+        self.clean_cache_button.pack(anchor="w", padx=12, pady=(0, 10))
+        self._add_tooltip(self.clean_cache_button, "tooltip.clean_cache")
 
     def _build_overlay_settings_card(self, parent: tk.Misc) -> None:
         card = self._card(parent, "card.overlay_settings.title", "card.overlay_settings.subtitle")
@@ -2823,6 +2851,36 @@ class UIMixin:
         self.settings.keep_open_on_game_close = self.keep_open_var.get()
         self.settings.save()
 
+    def _clean_generated_cache(self) -> None:
+        """Deletes the goalpost/kit preview PNG caches and converted kit-UI
+        import files under runtime/ (file_tools.clear_generated_cache) --
+        all of it is re-rendered on demand, never required state, so this is
+        safe to run at any time, including mid-session."""
+        if not messagebox.askyesno(
+            self.tr("message.clean_cache_title"),
+            self.tr("message.clean_cache_confirm"),
+        ):
+            return
+        try:
+            bytes_freed, folders_removed = clear_generated_cache(self.base_dir)
+        except Exception as exc:
+            self.log("Error clearing generated cache", exc, exc_info=sys.exc_info())
+            messagebox.showerror(self.tr("message.clean_cache_title"), self.tr("message.clean_cache_error", error=exc))
+            return
+
+        if folders_removed == 0:
+            self.log("Clean cache: nothing to clean")
+            messagebox.showinfo(self.tr("message.clean_cache_title"), self.tr("message.clean_cache_empty"))
+            return
+
+        size_mb = bytes_freed / (1024 * 1024)
+        size_text = f"{size_mb:.1f} MB" if size_mb >= 0.1 else f"{bytes_freed} B"
+        self.log(f"Clean cache: removed {folders_removed} folder(s), freed {size_text}")
+        messagebox.showinfo(
+            self.tr("message.clean_cache_title"),
+            self.tr("message.clean_cache_done", size=size_text, count=folders_removed),
+        )
+
     def _toggle_overlay_performance_mode(self) -> None:
         self.settings.overlay_performance_mode = self.overlay_performance_mode_var.get()
         self.settings.save()
@@ -2866,6 +2924,11 @@ class UIMixin:
     def _toggle_kit_hotkeys(self) -> None:
         self.settings.kit_hotkeys_enabled = self.kit_hotkeys_var.get()
         self.settings.save()
+        if not self.kit_hotkeys_var.get() and not self.show_overlay_var.get():
+            # Mirrors _toggle_overlay_enabled's own symmetric check — only
+            # tear down the shared F12/kit-hotkey poll thread once neither
+            # feature needs it.
+            self._uninstall_hotkey_poll_thread()
 
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
@@ -2877,6 +2940,17 @@ class UIMixin:
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
+        if not self.show_overlay_var.get() and not self.kit_hotkeys_var.get():
+            # Kit hotkeys (F7-F11) install this same poll thread
+            # independently in _sync_kit_hotkeys and would just respawn it
+            # on the very next tick if it's still enabled — only tear down
+            # once neither feature needs it.
+            self._uninstall_hotkey_poll_thread()
+        if not self.show_overlay_var.get():
+            # The gamepad poll thread is only ever installed from
+            # _sync_d3d_menu_input (kit hotkeys have no gamepad equivalent),
+            # so it can be torn down unconditionally here.
+            self._uninstall_gamepad_poll_thread()
         # The stadium picker is deliberately NOT stranded/cancelled here —
         # it no longer depends on this toggle at all (see
         # _sync_d3d_menu_input's show_overlay_var gate and

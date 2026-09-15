@@ -5,6 +5,7 @@ import unittest
 from pathlib import Path
 
 from server16_py.file_tools import (
+    clear_generated_cache,
     copy_goalpost_sources,
     resolve_goalpost_model_preview_path,
     resolve_goalpost_texture_rx3_path,
@@ -137,6 +138,55 @@ class ResolveGoalpostTextureRx3PathTests(unittest.TestCase):
         pack.mkdir()
         (pack / "goalpost_cm.png").write_bytes(b"img")
         self.assertIsNone(resolve_goalpost_texture_rx3_path(self.color_root, "Empty"))
+
+
+class ClearGeneratedCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base_dir = Path(self._tmp.name)
+        self.runtime_dir = self.base_dir / "runtime"
+        self.runtime_dir.mkdir()
+
+    def test_removes_known_cache_subdirs_and_reports_freed_bytes(self) -> None:
+        for name in ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports"):
+            d = self.runtime_dir / name
+            d.mkdir()
+            (d / "a.png").write_bytes(b"x" * 10)
+
+        bytes_freed, folders_removed = clear_generated_cache(self.base_dir)
+
+        self.assertEqual(bytes_freed, 30)
+        self.assertEqual(folders_removed, 3)
+        for name in ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports"):
+            self.assertFalse((self.runtime_dir / name).exists())
+
+    def test_removes_orphaned_stadium_extraction_temp_folders(self) -> None:
+        leftover = self.runtime_dir / "server16_stad_ab12cd"
+        leftover.mkdir()
+        (leftover / "model.rx3").write_bytes(b"data")
+
+        bytes_freed, folders_removed = clear_generated_cache(self.base_dir)
+
+        self.assertEqual(bytes_freed, 4)
+        self.assertEqual(folders_removed, 1)
+        self.assertFalse(leftover.exists())
+
+    def test_never_touches_log_or_settings_files(self) -> None:
+        (self.runtime_dir / "server16.log").write_text("log")
+        (self.runtime_dir / "settings.json").write_text("{}")
+
+        clear_generated_cache(self.base_dir)
+
+        self.assertTrue((self.runtime_dir / "server16.log").exists())
+        self.assertTrue((self.runtime_dir / "settings.json").exists())
+
+    def test_missing_runtime_dir_is_a_no_op(self) -> None:
+        empty_base = self.base_dir / "no_runtime_here"
+        self.assertEqual(clear_generated_cache(empty_base), (0, 0))
+
+    def test_no_cache_subdirs_present_is_a_no_op(self) -> None:
+        self.assertEqual(clear_generated_cache(self.base_dir), (0, 0))
 
 
 if __name__ == "__main__":

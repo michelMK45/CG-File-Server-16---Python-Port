@@ -761,3 +761,45 @@ def inc_count(_count1: int, current: str) -> str:
 
 def set_inj_id(counter: str) -> tuple[str, str]:
     return ("176", "4") if counter == "0" else ("261", "9")
+
+
+# Every one of these is a rendered/converted-on-demand cache under
+# <base_dir>/runtime -- safe to delete outright, since the code that fills
+# them (StadiumRuntime.render_goalpost_texture_preview, KitMixRuntime.
+# render_preview/convert_image_to_kitui) always re-renders unconditionally
+# rather than skipping a cache hit. Never includes server16.log,
+# server16.previous.log, or settings.json, which also live under runtime/.
+GENERATED_CACHE_SUBDIRS = ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports")
+
+
+def clear_generated_cache(base_dir: str | Path) -> tuple[int, int]:
+    """Deletes every generated-cache folder under <base_dir>/runtime
+    (GENERATED_CACHE_SUBDIRS), plus any orphaned server16_stad_* archive-
+    extraction temp folders -- stadium_runtime.py's own stadium-load path
+    always removes its temp dir when it finishes (successfully or not), so
+    one surviving here only ever means a prior run was killed mid-extraction
+    before that cleanup could run. Returns (bytes_freed, folders_removed);
+    a missing runtime/ folder or no matching subfolders is (0, 0), not an
+    error."""
+    runtime_dir = Path(base_dir) / "runtime"
+    if not runtime_dir.is_dir():
+        return 0, 0
+
+    targets = [runtime_dir / name for name in GENERATED_CACHE_SUBDIRS]
+    targets.extend(p for p in runtime_dir.glob("server16_stad_*") if p.is_dir())
+
+    bytes_freed = 0
+    folders_removed = 0
+    for target in targets:
+        if not target.is_dir():
+            continue
+        for path in target.rglob("*"):
+            if path.is_file():
+                try:
+                    bytes_freed += path.stat().st_size
+                except OSError:
+                    pass
+        shutil.rmtree(target, ignore_errors=True)
+        if not target.exists():
+            folders_removed += 1
+    return bytes_freed, folders_removed

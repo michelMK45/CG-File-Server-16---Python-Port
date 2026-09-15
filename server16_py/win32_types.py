@@ -130,6 +130,9 @@ WH_MOUSE_LL = 14
 WH_KEYBOARD_LL = 13
 HC_ACTION = 0
 
+# GetAncestor flags
+GA_ROOT = 2
+
 # Mouse messages
 WM_MOUSEMOVE = 0x0200
 WM_LBUTTONDOWN = 0x0201

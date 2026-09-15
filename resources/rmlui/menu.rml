@@ -497,21 +497,27 @@ body {
     /* :hover/:active are real RmlUi pseudo-classes here (unlike #tab-glider's
        left/width, these ARE stylesheet-definition changes, so `transition`
        genuinely animates them — see cgfs16_rmlui_menu.cpp's glider comments
-       for the contrasting case where it doesn't). .hero-highlight/.hero-
-       pressed are the same two states, just driven by C++ instead, for
-       gamepad/keyboard input that never touches a real mouse button — see
-       g_heroHighlightCache's comment in cgfs16_rmlui_menu.cpp. */
+       for the contrasting case where it doesn't). .hero-pressed is the
+       :active equivalent, just driven by C++ instead, for the keyboard/
+       gamepad "activate" input (Enter/A), which never touches a real mouse
+       button — see g_heroPressedCache's comment in cgfs16_rmlui_menu.cpp.
+       There used to also be a .hero-highlight mirroring :hover, forced on
+       for the entire time a gamepad was the active input method (no cursor
+       to really hover with) — removed 2026-09-15: it left the button
+       permanently grown/glowing from the moment the menu opened, with the
+       transition never actually visible in motion, unlike keyboard/mouse
+       where the resting (ungrown) look is the normal one. */
     transform: scale(1);
     transition: transform 0.15s cubic-out;
 }
-#hero-btn:hover, #hero-btn.hero-highlight {
+#hero-btn:hover {
     decorator: horizontal-gradient(#14B39F #45FF97);
     box-shadow: 0px 6px 18px #38EF7DA8;
     transform: scale(1.03);
 }
-/* Listed after :hover/.hero-highlight so a press while already hovered
-   (the normal mouse-click sequence) wins the cascade and shrinks instead
-   of staying grown. */
+/* Listed after :hover so a press while already hovered (the normal
+   mouse-click sequence) wins the cascade and shrinks instead of staying
+   grown. */
 #hero-btn:active, #hero-btn.hero-pressed {
     transform: scale(0.92);
 }

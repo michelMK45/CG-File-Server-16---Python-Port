@@ -1129,6 +1129,41 @@ class StadiumDbNamePatchCoordinatorTests(unittest.TestCase):
 
         mock_scan.assert_called_once()
 
+    def test_worker_forgets_stale_current_name_when_cached_candidate_no_longer_holds_it(self) -> None:
+        # Real bug found live 2026-09-13 (server16.log): a stadium was
+        # successfully renamed in one match ("Waldstadion" -> a custom name),
+        # then the SAME container slot was reused by a later match with a
+        # DIFFERENT custom name. FIFA resets the slot's own name buffer back
+        # to its vanilla text between matches -- the buffer's ADDRESS stays
+        # process-lifetime-stable (this class's own design assumption), but
+        # its CONTENT does not. request_db_name_patch() kept resolving
+        # old_name via the stale get_current_name() (the previous match's
+        # custom name), which was never actually there again, so every one
+        # of the full 20 scan attempts searched for text that didn't exist
+        # -- the name never got applied for that match. Once a cached
+        # candidate fails to revalidate, the worker must forget the stale
+        # confirmed name so the *next* retry (app_game.py's ~900ms tick)
+        # re-resolves the slot's real current (vanilla) name instead of
+        # repeating the same doomed search.
+        text = "Waldstadion".encode("utf-8")  # buffer reset back to vanilla
+        capacity = len(text) + 8
+        memory = FakeMemory(text + b"\x00" * 8, base_address=0x75000)
+        app = make_db_app(memory)
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        key = coordinator._key("176")
+        coordinator._cache[key] = [(memory.base_address, capacity, "utf-8")]
+        # Stale: the PREVIOUS match's custom name, still "confirmed" from
+        # last time, even though the buffer no longer holds it.
+        coordinator._current_name[key] = "PER - Estadio Union Tarma"
+        coordinator._pending[key] = ("PER - Estadio Union Tarma", "Another Custom Name")
+        coordinator._running.add(key)
+
+        with patch.object(coordinator, "_scan_and_patch", return_value=None):
+            coordinator._worker(key, allow_scan=True, is_rename=True)
+
+        self.assertIsNone(coordinator.get_current_name("176"))
+        self.assertTrue(any("no longer live" in line for line in app.logs))
+
     def test_worker_still_scans_first_discovery_even_with_is_rename_unset(self) -> None:
         # is_rename defaults to False -- a slot's very first discovery this
         # session (nothing confirmed yet) must always keep its full scan

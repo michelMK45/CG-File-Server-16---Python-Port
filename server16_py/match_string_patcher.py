@@ -721,6 +721,34 @@ class StadiumDbNamePatchCoordinator:
                             self._cache[key] = still_valid
                         else:
                             self._cache.pop(key, None)
+                            # `is_rename` trusted get_current_name()'s belief
+                            # that this slot's buffer still held `old_name`
+                            # (the last name WE wrote here, in a previous
+                            # match) -- but _patch_one just found the buffer
+                            # no longer holds it. Confirmed live 2026-09-13:
+                            # FIFA resets this container slot's own name text
+                            # back to something else (its vanilla DB name)
+                            # between matches, so the "process-lifetime-
+                            # stable content" assumption behind the rename
+                            # shortcut (CLAUDE.md §7 Part 15) only holds for
+                            # the buffer's ADDRESS, not what's currently
+                            # written there. Leaving _current_name[key] stale
+                            # here made every remaining attempt for this
+                            # match keep scanning for the wrong (previous
+                            # match's) text, never finding it -- exhausting
+                            # the full 20-attempt budget with the name never
+                            # applied. Clearing it lets the next
+                            # request_db_name_patch() call (the ~900ms retry
+                            # tick in app_game.py) fall back to resolving the
+                            # slot's current vanilla DB name instead.
+                            if self._current_name.pop(key, None) is not None:
+                                app.log(
+                                    f"Stadium DB name patcher: slot {key[1]}'s "
+                                    f"previously-confirmed name is no longer "
+                                    f"live at its known address(es) -- "
+                                    f"forgetting it so the next attempt "
+                                    f"re-resolves the current vanilla name"
+                                )
                     cached = still_valid or None
                     # `is_rename` (decided once, at request()'s spawn time --
                     # see its docstring) means this slot's address(es) were

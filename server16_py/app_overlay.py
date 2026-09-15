@@ -18,7 +18,7 @@ from .win32_types import (
     VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_MENU, VK_RETURN, VK_LBUTTON,
     VK_F7, VK_F8, VK_F9, VK_F10, VK_F11,
     KEYEVENTF_KEYUP,
-    WH_MOUSE_LL, WH_KEYBOARD_LL, HC_ACTION,
+    WH_MOUSE_LL, WH_KEYBOARD_LL, HC_ACTION, GA_ROOT,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_QUIT,
@@ -51,6 +51,19 @@ from .kit_mixer import KIT_TYPES
 # highlighted cell visibly walked diagonally). See _filter_grid_cols().
 _FILTER_GRID_COLS_FALLBACK = 7
 
+# Overlay input/render poll cadence. Was a hardcoded 80ms (12.5Hz) tick for a
+# long time — held-navigation repeat and every edge-detected press (F12,
+# Enter/A, arrows, ...) were bounded by this tick regardless of how fast
+# their own internal repeat/hold timers said they could go (e.g. the 0.03s
+# held-repeat interval in _sync_d3d_menu_input could never actually fire
+# faster than once per tick, since the next opportunity to check it is this
+# same 80ms poll). Lowered to improve perceived responsiveness/navigation
+# fluidity — the tick body is a handful of cheap Win32 reads (GetAsyncKeyState
+# fallbacks aside, mostly just reading already-hook-captured state and a
+# shared-memory struct), not real work, so this is expected to have
+# negligible CPU cost, but has not been profiled live.
+_OVERLAY_POLL_MS = 40
+
 
 class OverlayMixin:
     """D3D in-game overlay menu, input hooks, and FIFA window tracking — part of Server16App via multiple inheritance."""
@@ -68,7 +81,7 @@ class OverlayMixin:
         except Exception as exc:
             self.log("Kit hotkey loop error", exc, exc_info=sys.exc_info())
         if not self._closing:
-            self._overlay_job = self.after(80, self.overlay_loop)
+            self._overlay_job = self.after(_OVERLAY_POLL_MS, self.overlay_loop)
 
     def _refresh_fifa_hwnd_if_needed(self, now: float) -> None:
         hwnd = self._fifa_hwnd
@@ -130,9 +143,20 @@ class OverlayMixin:
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
+            self._uninstall_hotkey_poll_thread()
+            self._uninstall_gamepad_poll_thread()
             return
         now = perf_counter()
         self._refresh_fifa_hwnd_if_needed(now)
+        # F12/kit-hotkey reliability fix — see _hotkey_poll_thread_func's own
+        # docstring for why this is a plain polling thread and not a
+        # WH_KEYBOARD_LL hook (a hook was tried here 2026-09-14 and reverted
+        # the same day, CLAUDE.md §7). Idempotent: a cheap no-op once the
+        # poll thread is already alive.
+        self._install_hotkey_poll_thread()
+        # Same reliability fix, applied to gamepad buttons/DPAD — see
+        # _install_gamepad_poll_thread's own docstring.
+        self._install_gamepad_poll_thread()
         foreground = int(self.user32.GetForegroundWindow() or 0)
         overlay_hwnd = 0
         overlay_vw = 0
@@ -149,7 +173,7 @@ class OverlayMixin:
         if not self._d3d_menu_visible and not self._stadium_picker_pending:
             # This used to clear on every tick the general menu was closed,
             # full stop — while only the picker was pending that ran EVERY
-            # ~80ms tick and wiped out whatever _keyboard_proc's own hook
+            # poll tick and wiped out whatever _keyboard_proc's own hook
             # thread had just captured a moment earlier, before
             # _is_overlay_key_down below ever got a chance to read it. Net
             # effect: the hook still ate the keystroke (blocked from
@@ -160,6 +184,7 @@ class OverlayMixin:
             # condition) — this one just hid behind those two until they
             # were fixed.
             self._overlay_blocked_key_down.clear()
+            self._overlay_key_edge_pending.clear()
 
         if overlay_visible_rows > 0:
             # Authoritative: cgfs16_rmlui_menu.cpp's own RCSS-derived layout
@@ -193,7 +218,6 @@ class OverlayMixin:
         if self._d3d_menu_visible:
             self._handle_rmlui_menu_event(inj, now)
 
-        f12_down = self._is_overlay_key_down(VK_F12, menu_input_fg)
         key_up_down = self._is_overlay_key_down(VK_UP, menu_input_fg)
         key_down_down = self._is_overlay_key_down(VK_DOWN, menu_input_fg)
         key_left_down = self._is_overlay_key_down(VK_LEFT, menu_input_fg)
@@ -204,7 +228,13 @@ class OverlayMixin:
         key_home_down = self._is_overlay_key_down(VK_HOME, menu_input_fg)
         key_end_down = self._is_overlay_key_down(VK_END, menu_input_fg)
         key_enter_down = self._is_overlay_key_down(VK_RETURN, menu_input_fg)
-        gamepad_buttons, _stick_rx, stick_ry, stick_ly = self._get_gamepad_snapshot()
+        # gp_edge_buttons: every button seen down since the last tick
+        # (possibly already released again) — used ONLY to detect a NEW
+        # press below, never as a "currently held" state. gamepad_buttons
+        # is this instant's live level, exactly as before this fix, for
+        # every hold/repeat/release/deadzone check. See
+        # _consume_gamepad_state's own docstring.
+        gp_edge_buttons, gamepad_buttons, _stick_rx, stick_ry, stick_ly, stick_lx = self._consume_gamepad_state()
         start_down = bool(gamepad_buttons & XINPUT_GAMEPAD_START)
         back_down = bool(gamepad_buttons & XINPUT_GAMEPAD_BACK)
         left_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
@@ -224,6 +254,7 @@ class OverlayMixin:
             gamepad_buttons != 0
             or abs(int(stick_ry)) > STICK_ACTIVITY_DEADZONE
             or abs(int(stick_ly)) > STICK_ACTIVITY_DEADZONE
+            or abs(int(stick_lx)) > STICK_ACTIVITY_DEADZONE
         )
         keyboard_key_active = (
             key_up_down or key_down_down or key_left_down or key_right_down
@@ -236,10 +267,10 @@ class OverlayMixin:
             self._overlay_input_mode = "keyboard"
 
         prev_buttons = self._overlay_gp_prev_buttons
-        start_edge = start_down and not bool(prev_buttons & XINPUT_GAMEPAD_START)
-        back_edge = back_down and not bool(prev_buttons & XINPUT_GAMEPAD_BACK)
-        left_shoulder_edge = left_shoulder_down and not bool(prev_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
-        right_shoulder_edge = right_shoulder_down and not bool(prev_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
+        start_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_START) and not bool(prev_buttons & XINPUT_GAMEPAD_START)
+        back_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_BACK) and not bool(prev_buttons & XINPUT_GAMEPAD_BACK)
+        left_shoulder_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) and not bool(prev_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
+        right_shoulder_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) and not bool(prev_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
 
         if start_edge:
             self._overlay_gp_start_pressed_at = now
@@ -264,21 +295,48 @@ class OverlayMixin:
         # open on top of it would be confusing and was never intended.
         can_toggle = (menu_input_fg or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at and not self._stadium_picker_pending
 
-        f12_toggle = f12_down and not self._overlay_f12_down
-        key_escape_edge = key_escape_down and not self._overlay_escape_down
-        key_left_edge = key_left_down and not self._overlay_left_down
-        key_right_edge = key_right_down and not self._overlay_right_down
-        key_up_edge = key_up_down and not self._overlay_up_down
-        key_down_edge = key_down_down and not self._overlay_down_down
-        key_pgup_edge = key_pgup_down and not self._overlay_pgup_down
-        key_pgdn_edge = key_pgdn_down and not self._overlay_pgdn_down
-        key_home_edge = key_home_down and not self._overlay_home_down
-        key_end_edge = key_end_down and not self._overlay_end_down
-        key_enter_edge = key_enter_down and not getattr(self, "_overlay_enter_down", False)
-        a_edge = a_down and not bool(prev_buttons & XINPUT_GAMEPAD_A)
-        b_edge = b_down and not bool(prev_buttons & XINPUT_GAMEPAD_B)
-        x_edge = x_down and not bool(prev_buttons & XINPUT_GAMEPAD_X)
-        y_edge = y_down and not bool(prev_buttons & XINPUT_GAMEPAD_Y)
+        # Each key edge below is OR'd with its hook-latched counterpart
+        # (_consume_overlay_key_edge) — see that method's docstring: a plain
+        # "down this tick, not down last tick" level comparison alone can
+        # miss a press whose whole down+up cycle completes inside one Tk
+        # gap. f12_toggle uses the equivalent latch for the hotkey-poll/hook
+        # combo (_consume_hotkey_edge) instead of a level comparison at all,
+        # since F12 has no "held" behavior to preserve.
+        #
+        # Each _consume_overlay_key_edge(...) call below is stored in its
+        # own variable and always evaluated, never folded into an
+        # `a or b`/`b or a` expression — `or` short-circuits, and skipping
+        # the call on a tick where the level check already fired would
+        # leave that key's latch un-consumed, ready to fire a SECOND, stale
+        # edge on some later, unrelated tick once the level check happens
+        # to read False.
+        f12_toggle = self._consume_hotkey_edge(VK_F12)
+        escape_latched = self._consume_overlay_key_edge(VK_ESCAPE)
+        left_latched = self._consume_overlay_key_edge(VK_LEFT)
+        right_latched = self._consume_overlay_key_edge(VK_RIGHT)
+        up_latched = self._consume_overlay_key_edge(VK_UP)
+        down_latched = self._consume_overlay_key_edge(VK_DOWN)
+        pgup_latched = self._consume_overlay_key_edge(VK_PRIOR)
+        pgdn_latched = self._consume_overlay_key_edge(VK_NEXT)
+        home_latched = self._consume_overlay_key_edge(VK_HOME)
+        end_latched = self._consume_overlay_key_edge(VK_END)
+        enter_latched = self._consume_overlay_key_edge(VK_RETURN)
+        key_escape_edge = (key_escape_down and not self._overlay_escape_down) or escape_latched
+        key_left_edge = (key_left_down and not self._overlay_left_down) or left_latched
+        key_right_edge = (key_right_down and not self._overlay_right_down) or right_latched
+        key_up_edge = (key_up_down and not self._overlay_up_down) or up_latched
+        key_down_edge = (key_down_down and not self._overlay_down_down) or down_latched
+        key_pgup_edge = (key_pgup_down and not self._overlay_pgup_down) or pgup_latched
+        key_pgdn_edge = (key_pgdn_down and not self._overlay_pgdn_down) or pgdn_latched
+        key_home_edge = (key_home_down and not self._overlay_home_down) or home_latched
+        key_end_edge = (key_end_down and not self._overlay_end_down) or end_latched
+        key_enter_edge = (
+            key_enter_down and not getattr(self, "_overlay_enter_down", False)
+        ) or enter_latched
+        a_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_A) and not bool(prev_buttons & XINPUT_GAMEPAD_A)
+        b_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_B) and not bool(prev_buttons & XINPUT_GAMEPAD_B)
+        x_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_X) and not bool(prev_buttons & XINPUT_GAMEPAD_X)
+        y_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_Y) and not bool(prev_buttons & XINPUT_GAMEPAD_Y)
         y_up_edge = (not y_down) and bool(prev_buttons & XINPUT_GAMEPAD_Y)
         start_hold_toggle = False
 
@@ -462,8 +520,8 @@ class OverlayMixin:
         if self._d3d_menu_visible and self._overlay_filter_phase and self._overlay_item_count > 0:
             dpad_left_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
             dpad_right_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
-            dpad_left_edge = dpad_left_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
-            dpad_right_edge = dpad_right_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            dpad_left_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_LEFT) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_RIGHT) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
             grid_left_down = left_shoulder_down or key_left_down or dpad_left_down
             grid_right_down = right_shoulder_down or key_right_down or dpad_right_down
             if left_shoulder_edge or key_left_edge or dpad_left_edge:
@@ -476,6 +534,25 @@ class OverlayMixin:
                 self._navigate_menu_items(-1 if grid_left_down else 1)
                 self._overlay_tab_ready_at = now + 0.03
 
+            # Left stick X axis, same cell: reported live 2026-09-15 that the
+            # stick could move up/down (see the LY-axis block further below)
+            # but never left/right in this grid — root cause was that
+            # sThumbLX was never read anywhere in the gamepad pipeline at
+            # all (_get_gamepad_snapshot only ever pulled RX/RY/LY), not a
+            # deadzone/threshold bug. Same entered-zone-then-repeat pattern
+            # as the LY-axis block uses for up/down.
+            lstick_left_down = stick_lx < -STICK_ACTIVITY_DEADZONE
+            lstick_right_down = stick_lx > STICK_ACTIVITY_DEADZONE
+            lstick_lr_in_zone = lstick_left_down or lstick_right_down
+            lstick_lr_entered_zone = lstick_lr_in_zone and not self._overlay_gp_lstick_lr_prev_in_zone
+            self._overlay_gp_lstick_lr_prev_in_zone = lstick_lr_in_zone
+            if lstick_lr_entered_zone:
+                self._navigate_menu_items(-1 if lstick_left_down else 1)
+                self._overlay_gp_lstick_lr_repeat_at = now + 0.40
+            elif lstick_lr_in_zone and now >= self._overlay_gp_lstick_lr_repeat_at:
+                self._navigate_menu_items(-1 if lstick_left_down else 1)
+                self._overlay_gp_lstick_lr_repeat_at = now + 0.03
+
         # DPAD up/down: navigate list items (with initial delay + repeat).
         # In the Stadiums filter bubble's grid layout, one "line" is
         # _filter_grid_cols() items — see that method's own comment — so
@@ -485,8 +562,8 @@ class OverlayMixin:
             nav_step = self._filter_grid_cols() if self._overlay_filter_phase else 1
             dpad_up   = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_UP)
             dpad_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
-            dpad_up_edge   = dpad_up   and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
-            dpad_down_edge = dpad_down and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            dpad_up_edge   = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_UP)   and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_DOWN) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
             nav_up = dpad_up or key_up_down
             nav_down = dpad_down or key_down_down
             if dpad_up_edge or key_up_edge:
@@ -589,8 +666,8 @@ class OverlayMixin:
         if self._stadium_picker_pending:
             dpad_up_p = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_UP)
             dpad_down_p = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
-            dpad_up_edge_p = dpad_up_p and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
-            dpad_down_edge_p = dpad_down_p and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+            dpad_up_edge_p = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_UP) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down_edge_p = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_DOWN) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_DOWN)
             nav_up_p = dpad_up_p or key_up_down
             nav_down_p = dpad_down_p or key_down_down
             if inj is not None:
@@ -658,7 +735,6 @@ class OverlayMixin:
                 self._stadium_picker_gp_cancel_pending = False
                 self._resolve_stadium_picker(None)
 
-        self._overlay_f12_down = f12_down
         self._overlay_up_down = key_up_down
         self._overlay_down_down = key_down_down
         self._overlay_left_down = key_left_down
@@ -689,6 +765,10 @@ class OverlayMixin:
         if self._stadium_picker_pending and not self._fifa_hwnd:
             self._resolve_stadium_picker(None)
 
+        if not self._fifa_hwnd:
+            self._uninstall_hotkey_poll_thread()
+            self._uninstall_gamepad_poll_thread()
+
     def _load_xinput_dll(self):
         for dll_name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
             try:
@@ -702,9 +782,9 @@ class OverlayMixin:
         self.log("XInput unavailable; gamepad overlay controls disabled")
         return None
 
-    def _get_gamepad_snapshot(self) -> tuple[int, int, int, int]:
+    def _get_gamepad_snapshot(self) -> tuple[int, int, int, int, int]:
         if self._xinput is None:
-            return 0, 0, 0, 0
+            return 0, 0, 0, 0, 0
         indices = [self._active_gamepad_index] + [i for i in range(4) if i != self._active_gamepad_index]
         for index in indices:
             state = XINPUT_STATE()
@@ -719,13 +799,103 @@ class OverlayMixin:
                     int(state.Gamepad.sThumbRX),
                     int(state.Gamepad.sThumbRY),
                     int(state.Gamepad.sThumbLY),
+                    int(state.Gamepad.sThumbLX),
                 )
         self._active_gamepad_index = 0
-        return 0, 0, 0, 0
+        return 0, 0, 0, 0, 0
 
     def _get_gamepad_buttons(self) -> int:
-        buttons, _rx, _ry, _ly = self._get_gamepad_snapshot()
+        buttons, _rx, _ry, _ly, _lx = self._get_gamepad_snapshot()
         return buttons
+
+    def _install_gamepad_poll_thread(self) -> None:
+        """Continuous XInput polling thread — same "poll fast on a
+        dedicated thread, latch for the slower Tk-tick consumer" pattern as
+        _install_hotkey_poll_thread, applied to the D3D menu's gamepad
+        buttons/DPAD. Reported live 2026-09-14: gamepad navigation (and,
+        separately, keyboard) sometimes needed several presses before one
+        registered. Root cause: every gamepad edge in _sync_d3d_menu_input
+        used to be computed from a single XInputGetState() sample taken
+        once per ~40ms Tk tick, compared against the previous tick's sample
+        — a press-and-release cycle (a fast D-pad tap, or any tick merely
+        delayed by other work on the Tk main thread) that completed
+        entirely inside one tick's gap was never observed as "down" on
+        either sampled tick, so the whole press vanished with no edge ever
+        firing. This thread polls at ~100Hz, independent of the Tk tick,
+        and OR-accumulates every button seen down into a latch consumed
+        once per Tk tick (see _consume_gamepad_state) — a transient press
+        between two Tk polls is still captured. Idempotent: a cheap no-op
+        if the thread is already alive."""
+        if self._gamepad_poll_thread is not None and self._gamepad_poll_thread.is_alive():
+            return
+        self._gamepad_poll_stop.clear()
+        t = threading.Thread(target=self._gamepad_poll_thread_func, name="gamepad-poll", daemon=True)
+        t.start()
+        self._gamepad_poll_thread = t
+
+    def _gamepad_poll_thread_func(self) -> None:
+        while not self._gamepad_poll_stop.is_set():
+            try:
+                buttons, rx, ry, ly, lx = self._get_gamepad_snapshot()
+            except Exception:
+                buttons, rx, ry, ly, lx = 0, 0, 0, 0, 0
+            with self._gamepad_poll_lock:
+                self._overlay_gp_latched_buttons |= buttons
+                self._overlay_gp_raw_buttons = buttons
+                self._overlay_gp_raw_rx = rx
+                self._overlay_gp_raw_ry = ry
+                self._overlay_gp_raw_ly = ly
+                self._overlay_gp_raw_lx = lx
+            self._gamepad_poll_stop.wait(0.01)
+        with self._gamepad_poll_lock:
+            self._overlay_gp_latched_buttons = 0
+            self._overlay_gp_raw_buttons = 0
+            self._overlay_gp_raw_rx = 0
+            self._overlay_gp_raw_ry = 0
+            self._overlay_gp_raw_ly = 0
+            self._overlay_gp_raw_lx = 0
+
+    def _uninstall_gamepad_poll_thread(self) -> None:
+        self._gamepad_poll_stop.set()
+        t = self._gamepad_poll_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._gamepad_poll_thread = None
+        with self._gamepad_poll_lock:
+            self._overlay_gp_latched_buttons = 0
+            self._overlay_gp_raw_buttons = 0
+
+    def _consume_gamepad_state(self) -> tuple[int, int, int, int, int, int]:
+        """Returns (edge_buttons, raw_buttons, stick_rx, stick_ry, stick_ly, stick_lx).
+
+        edge_buttons is the OR of every button the poll thread saw down
+        since the last call — it may include a button already released by
+        now, so it must only ever be used to detect a NEW press
+        (edge_buttons & BIT and not prev_raw & BIT), never as a "currently
+        held" state. raw_buttons is this instant's live snapshot, for
+        level/hold/release checks exactly as before this fix (deadzones,
+        "still held" repeat-scroll, B/A release-latching, gamepad_active
+        for the input-mode hint). Falls back to a direct single sample —
+        the pre-fix behavior — if the poll thread isn't running."""
+        if self._gamepad_poll_thread is None or not self._gamepad_poll_thread.is_alive():
+            raw, rx, ry, ly, lx = self._get_gamepad_snapshot()
+            return raw, raw, rx, ry, ly, lx
+        with self._gamepad_poll_lock:
+            edge_buttons = self._overlay_gp_latched_buttons
+            raw_buttons = self._overlay_gp_raw_buttons
+            rx, ry, ly, lx = (
+                self._overlay_gp_raw_rx,
+                self._overlay_gp_raw_ry,
+                self._overlay_gp_raw_ly,
+                self._overlay_gp_raw_lx,
+            )
+            # Reset the latch baseline to the live level: a still-held
+            # button stays represented for the next consume, but a bit that
+            # was only transiently seen and has since released isn't
+            # carried forward indefinitely — it already did its one job,
+            # this edge.
+            self._overlay_gp_latched_buttons = raw_buttons
+        return edge_buttons, raw_buttons, rx, ry, ly, lx
 
     def _set_overlay_tab(self, index: int, source: str) -> None:
         if not self._overlay_tab_names:
@@ -1415,6 +1585,20 @@ class OverlayMixin:
     def _build_overlay_dashboard_lines(self) -> list[str]:
         _label_text = self._overlay_label_text
 
+        if self._overlay_wizard_phase == "kittype":
+            # Kits' own single-step wizard (picking Home/Away/Keeper/Third)
+            # used to fall through to the stadium wizard's block below,
+            # showing "STADIUM CONFIG"/Police/Pitch/Net while the player was
+            # just choosing a kit type -- unrelated to anything on screen.
+            team_label = "Home Team" if self._overlay_selected_scope == "home" else "Away Team"
+            return [
+                "-- KIT SELECTION --",
+                f"Team: {team_label}",
+                ">> Select Kit Type <<",
+                "",
+                "B / Esc = back",
+            ]
+
         if self._overlay_wizard_phase is not None:
             phase = self._overlay_wizard_phase
             phase_labels = {"police": "Police", "pitch": "Pitch Pattern", "net": "Net Pattern"}
@@ -1483,10 +1667,16 @@ class OverlayMixin:
             # currently playing.
             self.movie_preview_runtime.stop()
         if phase == "kittype" and selected_item:
-            # Reuses the already-converted crest PNGs app_ui.py maintains for
-            # the dashboard panel (self._home_crest_png/_away_crest_png,
-            # refreshed whenever HID/AID changes) — no new rendering needed.
-            preview_path = (self._home_crest_png if self._overlay_selected_scope == "home" else self._away_crest_png) or ""
+            # Uses the larger (256x256 "crest") PNG app_ui.py converts
+            # alongside the small crest50x50 one used for the persistent
+            # dashboard icons (self._home_crest_png_large/_away_crest_png_large,
+            # refreshed whenever HID/AID changes) — matches the Team Picker's
+            # own preview size instead of the small dashboard icon. Falls back
+            # to the small crest if no larger asset exists for this team.
+            if self._overlay_selected_scope == "home":
+                preview_path = self._home_crest_png_large or self._home_crest_png or ""
+            else:
+                preview_path = self._away_crest_png_large or self._away_crest_png or ""
         elif phase is not None and selected_item:
             exedir = getattr(self, "exedir", None)
             if exedir:
@@ -1512,16 +1702,34 @@ class OverlayMixin:
         elif self._overlay_filter_phase:
             pass
         elif tab_name == "stadiums" and selected_item and not self.overlay_performance_mode_var.get():
-            try:
-                path = self._resolve_stadium_preview_path_or_default(selected_item)
-                preview_path = str(path) if path else ""
-            except Exception:
-                pass
+            # Reuses the same per-name cache _resolve_stadium_row_thumbs
+            # already warms a few lines earlier in _navigate_menu_items (via
+            # _refresh_d3d_window) — the selected item is always inside the
+            # visible window, so this is normally a pure dict hit. Without
+            # this cache, holding a direction key to scroll called
+            # _resolve_stadium_preview_path_or_default() uncached on every
+            # single repeat tick; when a stadium's preview file doesn't match
+            # one of the fast direct-filename candidates, that function falls
+            # back to a full iterdir()+sorted() scan of the whole preview
+            # folder (file_tools.resolve_stadium_preview_path) — repeating
+            # that scan every ~80ms while parked on such a stadium is exactly
+            # what produced the reported "advances, stalls, advances" stutter
+            # during a held hold, confirmed live 2026-09-14.
+            cache = self._overlay_stadium_thumb_cache
+            cached = cache.get(selected_item)
+            if cached is None:
+                try:
+                    path = self._resolve_stadium_preview_path_or_default(selected_item)
+                except Exception:
+                    path = None
+                cached = str(path) if path else ""
+                cache[selected_item] = cached
+            preview_path = cached
         elif tab_name == "kits" and selected_item:
             preview_path = self._resolve_kits_menu_preview()
-        elif tab_name == "scoreboards" and selected_item and not self.overlay_performance_mode_var.get():
+        elif tab_name == "scoreboards" and selected_item:
             preview_path = self._resolve_scoreboard_or_tvlogo_preview("scoreboard", "scoreboard", getattr(self, "ScoreBoard", None), selected_item)
-        elif tab_name == "tvlogos" and selected_item and not self.overlay_performance_mode_var.get():
+        elif tab_name == "tvlogos" and selected_item:
             preview_path = self._resolve_scoreboard_or_tvlogo_preview("tvlogo", "tv", getattr(self, "TVLogo", None), selected_item)
         elif tab_name == "movies" and selected_item:
             preview_path = self._resolve_movies_menu_preview(selected_item)
@@ -1585,15 +1793,18 @@ class OverlayMixin:
         entry: the pack's own `render/thumbnail/<thumb_key>.*` image (same
         convention/helper the Setup tab's assignment dialog already uses,
         see dialogs.py's _update_preview_for), or the bundled generic
-        rmlui/icons/<icon_name>.png icon when the pack has none of its own —
-        never blank, unlike the stadiums/kits branches above which can leave
-        preview_path empty for a genuinely unassigned/disabled slot."""
-        if not root or not selected_item:
-            return ""
-        try:
-            path = resolve_asset_thumbnail_path(Path(root) / selected_item, thumb_key)
-        except Exception:
-            path = None
+        rmlui/icons/<icon_name>.png icon when the pack has none of its own,
+        performance mode is on (skips the per-pack thumbnail lookup, mirroring
+        why _resolve_movies_menu_preview skips video decode in performance
+        mode — the bundled icon is a fixed, cheap resource either way), or
+        `root`/`selected_item` is unset — never blank, matching the Movies
+        tab's own "always show something" behavior."""
+        path = None
+        if root and selected_item and not self.overlay_performance_mode_var.get():
+            try:
+                path = resolve_asset_thumbnail_path(Path(root) / selected_item, thumb_key)
+            except Exception:
+                path = None
         if path is not None:
             return str(path)
         fallback = rmlui_icon_path(icon_name)
@@ -1998,7 +2209,7 @@ class OverlayMixin:
                         # Gate on the CLIENT rect only (the actual render
                         # surface the RmlUi overlay draws into), not the
                         # whole top-level window. WindowFromPoint+GetAncestor
-                        # used to be used here, but that's true anywhere in
+                        # used to be used here alone, but that's true anywhere in
                         # FIFA's window rect INCLUDING its non-client chrome
                         # (title bar minimize/maximize/close buttons, resize
                         # borders) when FIFA isn't running exclusive
@@ -2020,7 +2231,40 @@ class OverlayMixin:
                             top = origin.y
                             right = left + (client_rect.right - client_rect.left)
                             bottom = top + (client_rect.bottom - client_rect.top)
-                            over_fifa = (left <= mouse_x < right) and (top <= mouse_y < bottom)
+                            in_fifa_client_rect = (left <= mouse_x < right) and (top <= mouse_y < bottom)
+                            if in_fifa_client_rect:
+                                # The rect check above is purely geometric —
+                                # it can't tell "hovering FIFA/the overlay"
+                                # apart from "hovering a totally unrelated
+                                # window that happens to overlap this same
+                                # screen region" (e.g. FIFA running
+                                # borderless-windowed with a browser/Discord
+                                # window open on top, on the same monitor).
+                                # Without this check, that other window's
+                                # mouse wheel got silently eaten by this hook
+                                # the whole time the F12 menu was open —
+                                # confirmed live 2026-09-14. WindowFromPoint
+                                # finds whichever window is ACTUALLY topmost
+                                # at this exact point; only trust the rect
+                                # match once its top-level ancestor really is
+                                # FIFA's own window or the swapchain's output
+                                # window (which can differ from _fifa_hwnd —
+                                # same overlay_hwnd fallback
+                                # _is_overlay_input_foreground already uses).
+                                pt = POINT()
+                                pt.x = mouse_x
+                                pt.y = mouse_y
+                                hwnd_at_point = self.user32.WindowFromPoint(pt)
+                                root = int(self.user32.GetAncestor(hwnd_at_point, GA_ROOT) or 0) if hwnd_at_point else 0
+                                over_fifa = root == fifa_hwnd
+                                if not over_fifa and root:
+                                    inj = self._d3d_injector
+                                    if inj is not None:
+                                        try:
+                                            overlay_hwnd, _vw, _vh, _rows = inj.get_menu_metrics()
+                                            over_fifa = bool(overlay_hwnd) and root == int(overlay_hwnd)
+                                        except Exception:
+                                            pass
                 except Exception:
                     pass
                 if msg == WM_MOUSEWHEEL and over_fifa:
@@ -2102,9 +2346,29 @@ class OverlayMixin:
         self._overlay_mouse_left_hook_down = False
 
     def _install_keyboard_hook(self) -> None:
-        if self._keyboard_hook is not None:
+        # Dedicated Win32 message-pump thread, same reasoning as
+        # _install_mouse_wheel_hook/_mouse_hook_thread_func: a WH_*_LL hook's
+        # callback only gets invoked promptly while the thread that installed
+        # it keeps pumping its own message queue. This hook used to be
+        # installed straight on the Tk main thread with no pump of its own —
+        # if that thread was ever briefly busy (rendering the menu list, a
+        # settings read, ...) right when a key was released, the matching
+        # WM_KEYUP could be delayed past that busy window and never reach
+        # _keyboard_proc, leaving the key permanently "down" in
+        # _overlay_blocked_key_down and the held-navigation repeat loop
+        # (_sync_d3d_menu_input's nav_up/nav_down handling) scrolling forever
+        # in that direction until the menu was closed. Confirmed live
+        # 2026-09-14: holding an arrow key to navigate kept scrolling after
+        # release. Giving this hook its own thread, exactly like the mouse
+        # hook already has, closes the same class of gap.
+        if self._keyboard_hook_thread is not None and self._keyboard_hook_thread.is_alive():
             return
+        t = threading.Thread(target=self._keyboard_hook_thread_func, name="keyboard-hook", daemon=True)
+        t.start()
+        self._keyboard_hook_thread = t
 
+    def _keyboard_hook_thread_func(self) -> None:
+        """Dedicated Win32 message-pump thread for WH_KEYBOARD_LL."""
         hook_type = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
         blocked_keys = {
             VK_F12,
@@ -2143,6 +2407,14 @@ class OverlayMixin:
                             if self._is_overlay_input_foreground():
                                 if msg in (WM_KEYDOWN, WM_SYSKEYDOWN):
                                     self._overlay_blocked_key_down.add(vk)
+                                    # Latched separately from the level set
+                                    # above -- never cleared by WM_KEYUP,
+                                    # only by whoever consumes it
+                                    # (_consume_overlay_key_edge) -- so a
+                                    # press is never lost even if its own
+                                    # WM_KEYUP arrives before the next Tk
+                                    # tick gets a chance to look.
+                                    self._overlay_key_edge_pending.add(vk)
                                 elif msg in (WM_KEYUP, WM_SYSKEYUP):
                                     self._overlay_blocked_key_down.discard(vk)
                                 return 1
@@ -2152,28 +2424,211 @@ class OverlayMixin:
                                 self._overlay_blocked_key_down.discard(vk)
                     except Exception:
                         pass
-            return int(self.user32.CallNextHookEx(self._keyboard_hook, n_code, w_param, l_param))
+            return int(self.user32.CallNextHookEx(self._keyboard_hook or 0, n_code, w_param, l_param))
 
-        self._keyboard_hook_proc = hook_type(_keyboard_proc)
+        proc = hook_type(_keyboard_proc)
+        self._keyboard_hook_proc = proc
         module_handle = self.kernel32.GetModuleHandleW(None)
         try:
-            self._keyboard_hook = self.user32.SetWindowsHookExW(WH_KEYBOARD_LL, self._keyboard_hook_proc, module_handle, 0)
+            hook = self.user32.SetWindowsHookExW(WH_KEYBOARD_LL, proc, module_handle, 0)
         except Exception:
-            self._keyboard_hook = None
+            hook = None
+        self._keyboard_hook = hook
+        self._keyboard_hook_thread_id = self.kernel32.GetCurrentThreadId()
         # Seed state for keys already held when the hook is installed.
         for vk in blocked_keys:
             if bool(self.user32.GetAsyncKeyState(vk) & 0x8000):
                 self._overlay_blocked_key_down.add(vk)
 
-    def _uninstall_keyboard_hook(self) -> None:
-        if self._keyboard_hook is not None:
+        win_msg = MSG()
+        while self.user32.GetMessageW(ctypes.byref(win_msg), None, 0, 0) > 0:
+            self.user32.TranslateMessage(ctypes.byref(win_msg))
+            self.user32.DispatchMessageW(ctypes.byref(win_msg))
+
+        if hook:
             try:
-                self.user32.UnhookWindowsHookEx(self._keyboard_hook)
+                self.user32.UnhookWindowsHookEx(hook)
             except Exception:
                 pass
-            self._keyboard_hook = None
+        self._keyboard_hook = None
         self._keyboard_hook_proc = None
+        self._keyboard_hook_thread_id = 0
         self._overlay_blocked_key_down.clear()
+        self._overlay_key_edge_pending.clear()
+
+    def _uninstall_keyboard_hook(self) -> None:
+        tid = self._keyboard_hook_thread_id
+        if tid:
+            self.user32.PostThreadMessageW(tid, WM_QUIT, 0, 0)
+        t = self._keyboard_hook_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._keyboard_hook_thread = None
+        self._overlay_blocked_key_down.clear()
+        self._overlay_key_edge_pending.clear()
+
+    def _install_hotkey_poll_thread(self) -> None:
+        """Reliability fix for F12 (opens the overlay) and the F7-F11 Kit
+        Mixer hotkeys, which — unlike navigation once the menu is already
+        open — need to be read while the menu is CLOSED, so they can't use
+        the WH_KEYBOARD_LL hook above (that hook only runs while the
+        menu/picker is open, by design — see its own docstring history).
+
+        A continuously-installed WH_KEYBOARD_LL hook was tried here instead
+        on 2026-09-14 and reverted the same day: live testing showed it made
+        FIFA's own menu navigation feel sluggish/sticky specifically on the
+        team-select and pre-kickoff screens, where the player is doing the
+        most native arrow-key/gamepad navigation. Root cause (see CLAUDE.md
+        §7): a low-level keyboard hook is synchronous and system-wide —
+        Windows blocks delivery of EVERY keystroke, to every app, until the
+        hook callback returns — and a Python callback has to reacquire the
+        GIL for every single invocation, so if this process's other threads
+        (the Tk main loop, worker threads) are holding the GIL when a key is
+        pressed, that keystroke's delivery to FIFA itself is delayed, not
+        just whatever the hook intentionally blocks via `return 1`. This is
+        a well-documented AutoHotkey/game-overlay-tool failure mode, not
+        specific to this codebase.
+
+        A plain polling thread has none of that risk: GetAsyncKeyState only
+        ever reads an OS-maintained snapshot, outside the actual input
+        delivery pipeline, so no matter how delayed this thread's own
+        Python-side processing gets, it can never delay delivery of a
+        keystroke to FIFA — it can only ever read a slightly stale snapshot
+        on its next iteration. Runs at ~100Hz (independent of the ~40ms Tk
+        overlay tick, see _OVERLAY_POLL_MS) specifically so a brief tap is
+        very unlikely to land entirely inside the gap between two Tk-side
+        reads. Idempotent: a cheap no-op if the poll thread is already
+        alive."""
+        if self._hotkey_poll_thread is not None and self._hotkey_poll_thread.is_alive():
+            return
+        self._hotkey_poll_stop.clear()
+        t = threading.Thread(target=self._hotkey_poll_thread_func, name="hotkey-poll", daemon=True)
+        t.start()
+        self._hotkey_poll_thread = t
+
+    def _hotkey_poll_thread_func(self) -> None:
+        vks = (VK_F12, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11)
+        # Per-key "was it down on the LAST poll iteration" state, local to
+        # this thread. Bug fixed 2026-09-15 (see _consume_hotkey_edge's own
+        # docstring for the full live report/repro): this loop used to add a
+        # key to _overlay_hotkey_edge_pending on EVERY iteration it saw that
+        # key down — not just the down-transition — so for as long as F12
+        # stayed physically held (an ordinary keypress routinely lasts
+        # 100-500ms, well beyond this thread's ~10ms cadence), it kept
+        # re-latching a "press" over and over, including the entire time the
+        # menu was already open and being tracked by the keyboard hook
+        # instead. That re-latching had nothing to stop it from surviving
+        # right through the close and past _overlay_toggle_ready_at's 0.22s
+        # cooldown, at which point it got consumed as if it were a BRAND NEW
+        # press the instant the menu closed by any means (Escape, the
+        # on-screen Close button, ...), reopening it with no further input.
+        # Tracking the previous sample per key and only latching on a
+        # genuine not-down -> down transition means one physical press can
+        # only ever arm the pending set once, no matter how long it's held
+        # afterward — the same guarantee a real "key just went down" event
+        # would give, without needing OS keyboard events on this thread at
+        # all.
+        prev_down = {vk: False for vk in vks}
+        while not self._hotkey_poll_stop.is_set():
+            for vk in vks:
+                try:
+                    down = bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
+                    if down and not prev_down[vk]:
+                        # Latched, never cleared here -- only
+                        # _consume_hotkey_edge clears it. A tap that fully
+                        # completes between two ~40ms Tk ticks would
+                        # otherwise never be observed as "down" by a plain
+                        # once-per-tick level check, even though this thread
+                        # (polling every ~10ms) saw it happen.
+                        self._overlay_hotkey_edge_pending.add(vk)
+                    prev_down[vk] = down
+                except Exception:
+                    pass
+            self._hotkey_poll_stop.wait(0.01)
+
+    def _uninstall_hotkey_poll_thread(self) -> None:
+        self._hotkey_poll_stop.set()
+        t = self._hotkey_poll_thread
+        if t is not None:
+            t.join(timeout=1.0)
+            self._hotkey_poll_thread = None
+        self._overlay_hotkey_edge_pending = set()
+
+    def _consume_hotkey_edge(self, vk: int) -> bool:
+        """Edge-triggered check for F12/F7-F11: True the first time `vk` is
+        checked after being seen pressed, even if it's already been
+        released again by then.
+
+        F12/kit-hotkey presses need reliable detection while the D3D menu
+        is CLOSED — the one state the WH_KEYBOARD_LL hook never runs in
+        (see _install_keyboard_hook's own docstring for why that hook isn't
+        just left installed all the time) — so _hotkey_poll_thread_func
+        polls GetAsyncKeyState on a dedicated ~100Hz thread instead and
+        OR-accumulates every press it sees into _overlay_hotkey_edge_pending,
+        latched until this method consumes it. A plain level comparison
+        (down this Tk tick, not down last Tk tick) can miss a press whose
+        whole down+up cycle completes inside one ~40ms Tk gap — reported
+        live 2026-09-14 as needing several tries before one registers.
+
+        BUT: F12 is also how an ALREADY-OPEN menu gets closed, and while the
+        menu is open the keyboard hook IS installed and already reliably
+        tracks/eats F12 — the same proven mechanism every other blocked key
+        (arrows/Enter/Esc) relies on (see _consume_overlay_key_edge). A
+        first version of this method ignored that and always went through
+        the poll thread, which broke closing the menu entirely (regression
+        found live 2026-09-14, same day as the hook-vs-poll rework) — while
+        the menu is open, GetAsyncKeyState-based polling is exactly the API
+        this whole feature exists to work around, so routing F12-to-close
+        through it too was a straight downgrade from the hook it used to
+        use. Hook state takes priority whenever it's actually tracking this
+        key (F7-F11 are never in the hook's blocked_keys, so this never
+        applies to them — they always use the poll thread's latch).
+
+        Bug fixed 2026-09-15 (reported live: closing the menu via Escape or
+        the on-screen Close button made it reopen itself moments later):
+        _hotkey_poll_thread_func keeps running, and keeps polling
+        GetAsyncKeyState, the WHOLE time the menu is open — it has no idea
+        the hook branch above is the one actually being consulted. So for
+        as long as the SAME physical F12 press that opened the menu is
+        still held down (routinely 100-500ms for an ordinary keypress, and
+        this codebase's own history is full of users holding F12 a beat
+        longer than that out of doubt it registered — CLAUDE.md §7's whole
+        "Overlay input reliability" saga), the poll thread keeps adding it
+        to _overlay_hotkey_edge_pending — and nothing ever drains that,
+        since every tick while the menu stays open takes the hook branch
+        instead, which only ever touches _overlay_key_edge_pending. The
+        stale entry then sits there until the menu is closed by ANY means
+        (Escape, a mouse click on Close, gamepad B, ...), at which point
+        this method starts taking the branch below again and discovers it —
+        misread as a BRAND NEW press. If that discovery happens to land
+        after the close's own 0.22s _overlay_toggle_ready_at cooldown has
+        already elapsed (e.g. the close happened quickly after opening, or
+        the original F12 press was simply held a while), the toggle fires
+        immediately and reopens the menu with no further input at all.
+        Confirmed by direct simulation: an F12 hold as ordinary as ~300ms,
+        combined with closing the menu within ~100ms of opening it, is
+        already enough to reproduce this every time.
+
+        Fix: drain _overlay_hotkey_edge_pending for F12 every time this
+        branch runs (every tick the menu is open), not just when the poll
+        branch itself is consulted — so a same-press re-latch from the
+        still-running poll thread can never survive past the moment the
+        hook stops being the active tracker. A GENUINELY new F12 press,
+        arriving after the menu has already closed, still populates the
+        poll-based set fresh and is still caught correctly, since the poll
+        thread never stops running."""
+        if (
+            vk == VK_F12
+            and (self._d3d_menu_visible or self._stadium_picker_pending)
+            and self._keyboard_hook is not None
+        ):
+            self._overlay_hotkey_edge_pending.discard(vk)
+            return self._consume_overlay_key_edge(vk)
+        pending = self._overlay_hotkey_edge_pending
+        if vk in pending:
+            pending.discard(vk)
+            return True
+        return False
 
     def _is_overlay_key_down(self, vk: int, menu_input_fg: bool) -> bool:
         # The stadium picker (see _open_stadium_picker in stadium_runtime.py)
@@ -2184,6 +2639,20 @@ class OverlayMixin:
         if (self._d3d_menu_visible or self._stadium_picker_pending) and self._keyboard_hook is not None:
             return vk in self._overlay_blocked_key_down
         return bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
+
+    def _consume_overlay_key_edge(self, vk: int) -> bool:
+        """Edge-triggered latch for the WH_KEYBOARD_LL-hooked navigation
+        keys (arrows/Enter/Esc/PgUp/PgDn/Home/End) — same reasoning as
+        _consume_hotkey_edge, just fed by the keyboard hook instead of the
+        poll thread: _keyboard_proc adds a vk to _overlay_key_edge_pending
+        on WM_KEYDOWN and never removes it there — only this consumer does
+        — so a press is captured even if its matching WM_KEYUP arrives
+        before the next Tk tick reads it."""
+        pending = self._overlay_key_edge_pending
+        if vk in pending:
+            pending.discard(vk)
+            return True
+        return False
 
     def _sync_kit_hotkeys(self) -> None:
         """F7/F8 = home prev/next, F9/F10 = away prev/next — cycles the
@@ -2207,38 +2676,38 @@ class OverlayMixin:
             return
         if not self._fifa_hwnd:
             return
+        # Independent of show_overlay_var's own install call in
+        # _sync_d3d_menu_input — kit hotkeys work even with the general
+        # overlay disabled, so they need their own guarantee the poll
+        # thread exists. Idempotent no-op if already running either way.
+        self._install_hotkey_poll_thread()
         if not self._page_can_have_match_context(self.lastpagename):
             return
 
-        home_prev_down = self._is_overlay_key_down(VK_F7, False)
-        home_next_down = self._is_overlay_key_down(VK_F8, False)
-        away_prev_down = self._is_overlay_key_down(VK_F9, False)
-        away_next_down = self._is_overlay_key_down(VK_F10, False)
-        kit_type_down = self._is_overlay_key_down(VK_F11, False)
-
         now = time.monotonic()
         if now >= self._kit_hotkey_ready_at:
-            if home_prev_down and not self._kit_home_prev_down:
+            # Latched edges (_consume_hotkey_edge), not a level comparison —
+            # see that method's docstring: a plain "down this tick, not down
+            # last tick" check can miss a press whose whole down+up cycle
+            # completes inside one Tk gap. Each call only touches its own
+            # vk's entry in the shared pending set, so chaining them in one
+            # if/elif (rather than combining with `or`) is safe here, unlike
+            # the keyboard-nav edges in _sync_d3d_menu_input.
+            if self._consume_hotkey_edge(VK_F7):
                 self._trigger_kit_cycle("home", -1)
                 self._kit_hotkey_ready_at = now + 0.25
-            elif home_next_down and not self._kit_home_next_down:
+            elif self._consume_hotkey_edge(VK_F8):
                 self._trigger_kit_cycle("home", 1)
                 self._kit_hotkey_ready_at = now + 0.25
-            elif away_prev_down and not self._kit_away_prev_down:
+            elif self._consume_hotkey_edge(VK_F9):
                 self._trigger_kit_cycle("away", -1)
                 self._kit_hotkey_ready_at = now + 0.25
-            elif away_next_down and not self._kit_away_next_down:
+            elif self._consume_hotkey_edge(VK_F10):
                 self._trigger_kit_cycle("away", 1)
                 self._kit_hotkey_ready_at = now + 0.25
-            elif kit_type_down and not self._kit_type_cycle_down:
+            elif self._consume_hotkey_edge(VK_F11):
                 self._cycle_kit_type()
                 self._kit_hotkey_ready_at = now + 0.25
-
-        self._kit_home_prev_down = home_prev_down
-        self._kit_home_next_down = home_next_down
-        self._kit_away_prev_down = away_prev_down
-        self._kit_away_next_down = away_next_down
-        self._kit_type_cycle_down = kit_type_down
 
     def _cycle_kit_type(self) -> None:
         keys = list(KIT_TYPES.keys())  # ["home", "away", "keeper", "third"], stable insertion order

@@ -118,10 +118,19 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._attached_once = False
         self._logs_visible = False
         self._kickoff_generation = 0
+        # Tracks whether the scoreboardstdname loading notification
+        # (app_game.py's _start_scoreboard_name_progress /
+        # _finish_scoreboard_name_progress) is currently showing, so the
+        # Team Entrance trigger (see _start_team_entrance below) can hide it
+        # the instant it fires -- reaching that trigger means we're already
+        # in the stadium/walkout scene, so the notification has nothing
+        # left worth reporting on screen.
+        self._scoreboard_name_progress_active = False
+        self._scoreboard_name_progress_std_name: str | None = None
+        self._scoreboard_name_progress_injid: str | None = None
         self._active_ball_runtime: dict | None = None
         self._active_adboard_injected_files: list[str] = []
         self._entrance_sequence = 0
-        self._overlay_f12_down = False
         self._overlay_up_down = False
         self._overlay_down_down = False
         self._overlay_left_down = False
@@ -144,11 +153,6 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # the DLL via D3DOverlayInjector.set_input_mode().
         self._overlay_input_mode = "keyboard"
         self._overlay_mouse_last_pos: tuple[int, int] | None = None
-        self._kit_home_prev_down = False
-        self._kit_home_next_down = False
-        self._kit_away_prev_down = False
-        self._kit_away_next_down = False
-        self._kit_type_cycle_down = False
         self._kit_hotkey_ready_at = 0.0
         self._kit_cycle_index: dict[tuple[str, str], int] = {}
         self._kit_cycle_task_running = False
@@ -178,11 +182,50 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._mouse_hook_thread_id = 0
         self._keyboard_hook = None
         self._keyboard_hook_proc = None
+        self._keyboard_hook_thread: threading.Thread | None = None
+        self._keyboard_hook_thread_id = 0
+        # Edge latch for the keyboard hook's navigation keys (arrows/Enter/
+        # Esc/PgUp/PgDn/Home/End) — _keyboard_proc adds a vk here on
+        # WM_KEYDOWN and never removes it; only _consume_overlay_key_edge
+        # (its consumer) clears it. Needed alongside the plain level set
+        # above (_overlay_blocked_key_down) because a level comparison
+        # (down this Tk tick, not down last Tk tick) can miss a press
+        # entirely if its whole down+up cycle completes inside one ~40ms Tk
+        # gap — reported live 2026-09-14 as needing several presses before
+        # one registers.
+        self._overlay_key_edge_pending: set[int] = set()
+        # Lightweight, hook-free reliability fix for F12 (open the overlay)
+        # and the F7-F11 kit hotkeys — see _hotkey_poll_thread_func in
+        # app_overlay.py. Deliberately NOT a WH_KEYBOARD_LL hook: an
+        # always-installed low-level hook was tried first (2026-09-14) and
+        # reverted the same day after live testing showed it made FIFA's own
+        # menu navigation feel sluggish on team-select/pre-kickoff screens —
+        # see CLAUDE.md §7.
+        self._hotkey_poll_thread: threading.Thread | None = None
+        self._hotkey_poll_stop = threading.Event()
+        # Same edge-latch reasoning as _overlay_key_edge_pending above, fed
+        # by the poll thread instead of the keyboard hook — see
+        # _consume_hotkey_edge.
+        self._overlay_hotkey_edge_pending: set[int] = set()
         self._overlay_b_close_pending = False
         self._overlay_toggle_ready_at = 0.0
         self._overlay_tab_ready_at = 0.0
         self._overlay_combo_latched = False
         self._overlay_gp_prev_buttons = 0
+        # Continuous-poll gamepad thread + latch (see
+        # _install_gamepad_poll_thread in app_overlay.py) — same reliability
+        # fix as the hotkey poll thread above, applied to the D3D menu's
+        # gamepad buttons/DPAD, which used to be sampled only once per Tk
+        # tick with no latching at all.
+        self._gamepad_poll_thread: threading.Thread | None = None
+        self._gamepad_poll_stop = threading.Event()
+        self._gamepad_poll_lock = threading.Lock()
+        self._overlay_gp_latched_buttons = 0
+        self._overlay_gp_raw_buttons = 0
+        self._overlay_gp_raw_rx = 0
+        self._overlay_gp_raw_ry = 0
+        self._overlay_gp_raw_ly = 0
+        self._overlay_gp_raw_lx = 0
         self._overlay_gp_start_pressed_at = 0.0
         self._overlay_gp_back_pressed_at = 0.0
         self._overlay_gp_left_pressed_at = 0.0
@@ -197,6 +240,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_rstick_repeat_at = 0.0
         self._overlay_gp_lstick_repeat_at = 0.0
         self._overlay_gp_lstick_prev_in_zone = False
+        # Left stick X axis, filter-grid left/right — same entered-zone-then-
+        # repeat pattern as the Y axis above, kept in its own state since it
+        # tracks a different axis/direction pair.
+        self._overlay_gp_lstick_lr_repeat_at = 0.0
+        self._overlay_gp_lstick_lr_prev_in_zone = False
         self._active_gamepad_index = 0
         self._overlay_tab_names = ["scoreboards", "stadiums", "movies", "tvlogos", "kits"]
         self._overlay_tab_index = 0
@@ -259,6 +307,19 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_picker_signature = None
         self._stadium_picker_resolved = False
         self._stadium_picker_chosen: str | None = None
+        # Remembers the last stadium_signature actually decided by the
+        # picker (picked, or closed/cancelled -> random fallback) plus what
+        # was decided for it -- unlike _stadium_picker_pending/_resolved
+        # (one-shot flags cleared the moment apply_stadium_runtime consumes
+        # them), this survives so a LATER re-entrant apply_stadium_runtime
+        # call for the exact same signature (e.g. app_game.py's KickOffHub
+        # retry loop re-triggering apply_all_runtime as AID keeps resolving
+        # after HID already has, changing the (HID,AID,TOUR,ROUND) tuple
+        # refresh_live_context gates on even though stadium_signature itself
+        # -- which excludes AID -- is unchanged) reuses that decision instead
+        # of popping a brand-new picker on top of one the player just closed.
+        self._stadium_picker_decided_signature = None
+        self._stadium_picker_decided_stadium: str | None = None
         self._stadium_picker_candidates: list[str] = []
         self._stadium_picker_index = 0
         self._stadium_picker_nav_repeat_at = 0.0
@@ -353,6 +414,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._d3d_overlay_hide_job = None
         self._home_crest_png: str = ""
         self._away_crest_png: str = ""
+        self._home_crest_png_large: str = ""
+        self._away_crest_png_large: str = ""
         self._stadium_loading_hide_job = None
         self.status_pill = None
         self.dashboard_canvas = None
@@ -362,6 +425,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._audio_details: dict[str, str] = {}
         self._team_logo_labels: dict[str, tk.Label] = {}
         self._team_logo_images: dict[str, ImageTk.PhotoImage | None] = {}
+        self._team_logo_last_id: dict[str, str] = {}
+        self._team_crest_pushed_id: dict[str, str] = {}
         self._stadium_preview_label = None
         self._stadium_preview_image: ImageTk.PhotoImage | None = None
         self.stadium_loading_preview = None
@@ -465,6 +530,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.user32.ClientToScreen.restype = wintypes.BOOL
         self.user32.GetClientRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
         self.user32.GetClientRect.restype = wintypes.BOOL
+        self.user32.WindowFromPoint.argtypes = [POINT]
+        self.user32.WindowFromPoint.restype = wintypes.HWND
+        self.user32.GetAncestor.argtypes = [wintypes.HWND, ctypes.c_uint]
+        self.user32.GetAncestor.restype = wintypes.HWND
         self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
         self.user32.IsWindowVisible.restype = wintypes.BOOL
         self.user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(RECT)]
@@ -510,6 +579,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._install_exception_hook()
         self._build_stadium_loading_modal()
         self.setuppaths()
+        if not self._check_fifa_location():
+            return
         self._update_setup_notice()
         self.refresh_camera_catalog()
         self.refresh_modules()
@@ -704,6 +775,15 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.chants_runtime.start_chants_runtime()
 
     def _start_team_entrance(self) -> bool:
+        # Requested live 2026-09-14: whether or not this call actually spins
+        # up a new entrance worker (it can no-op for an already-started
+        # match, a disabled module, or a missing per-team track), reaching
+        # this trigger at all means the walkout/stadium scene has begun --
+        # the pre-match presentation screen the scoreboardstdname loading
+        # notification exists to report on is already gone, so hide it here
+        # unconditionally rather than waiting on its own confirmation/
+        # kick-off-detection/deadline logic to eventually catch up.
+        self._hide_scoreboard_name_progress_for_stadium_scene()
         return self.entrance_runtime.start_for_match()
 
     def _reset_chants_state(self) -> None:
@@ -864,6 +944,14 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         except Exception:
             pass
         try:
+            self._uninstall_hotkey_poll_thread()
+        except Exception:
+            pass
+        try:
+            self._uninstall_gamepad_poll_thread()
+        except Exception:
+            pass
+        try:
             self.memory.close()
         except Exception:
             pass
@@ -887,4 +975,11 @@ def main() -> None:
     except Exception:
         pass
     app = Server16App()
+    # __init__ returns early (skipping the rest of its own setup) when the user chose to
+    # close the app from the FIFA-location-mismatch warning (see
+    # _check_fifa_location / on_close, app_settings.py) -- on_close() already
+    # destroyed the window in that case, so entering mainloop() here would just operate on
+    # a dead Tcl interpreter.
+    if app._closing:
+        return
     app.mainloop()

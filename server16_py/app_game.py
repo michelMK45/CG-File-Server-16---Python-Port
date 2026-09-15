@@ -19,6 +19,29 @@ from .substitution_runtime import POLL_TIMEOUT_SECOND_SIDE_MS
 # coordinator's own MAX_SCAN_ATTEMPTS is reached.
 DB_NAME_PATCH_RETRY_WINDOW_SECONDS = 60.0
 
+# Reported live 2026-09-14: the "Applying scoreboard name..." loading bar can
+# stay on screen for the full 60s window above regardless of whether the
+# match has already kicked off -- the retry chain is only ever stopped by a
+# confirmed patch or the wall-clock deadline, never by the pre-match
+# presentation screen itself having already come and gone. Once real
+# gameplay is running the screen this patch targets is no longer even
+# visible, so continuing to show a loading notification over live play (for
+# up to a minute) is just noise, not a useful "still working" signal.
+# Mirrors the exact kick-off heuristic already proven live elsewhere in this
+# codebase (ChantsRuntime._play_goal_track, TeamEntranceRuntime's own
+# kick-off detection, CLAUDE.md §5.5): sustained match-clock movement
+# (timer delta >= 1 at >= 6x real-time speed, 3 consecutive ~900ms-spaced
+# hits) rather than trusting GAMESTARTEDBINARY/matchstarted alone, which can
+# read true well before kick-off (confirmed live -- "matchstarted=True" logs
+# within ~6s of the bumper starting, long before the pre-match screen with
+# the stadium name has even finished showing).
+DB_NAME_PATCH_KICKOFF_SPEED_THRESHOLD = 6.0
+DB_NAME_PATCH_KICKOFF_HITS_REQUIRED = 3
+# Same 6s grace period ChantsRuntime uses before trusting clock-speed reads
+# at all -- the pre-match presentation/walkout can itself show brief, non-
+# representative clock jitter right after the bumper starts.
+DB_NAME_PATCH_KICKOFF_PROTECTION_SECONDS = 6.0
+
 
 class GameMixin:
     """Game process polling, live context reading, and stats loop — part of Server16App via multiple inheritance."""
@@ -287,12 +310,50 @@ class GameMixin:
         # de S" for FIFA's 12-byte slot-176 name buffer -- confirmed live
         # again 2026-09-10 for the same team/stadium).
         baseline_name = self.stadium_db_name_patcher.get_current_name(injid)
+        # Mutable, per-cycle kick-off clock-speed tracking state (see
+        # _db_name_patch_kickoff_detected) -- threaded through every tick of
+        # this one cycle so the loading bar stops itself the moment real
+        # gameplay starts, instead of sitting on screen for the full
+        # DB_NAME_PATCH_RETRY_WINDOW_SECONDS regardless of match state
+        # (reported live 2026-09-14: "Applying scoreboard name..." still
+        # showing well into an already-live match).
+        speed_state: dict = {}
+        self._scoreboard_name_progress_active = True
+        self._scoreboard_name_progress_std_name = std_name
+        self._scoreboard_name_progress_injid = injid
         self._schedule_db_name_patch_retry(
             injid, std_name, baseline_name, self._kickoff_generation,
-            started_at, started_at + DB_NAME_PATCH_RETRY_WINDOW_SECONDS
+            started_at, started_at + DB_NAME_PATCH_RETRY_WINDOW_SECONDS, speed_state,
         )
 
+    def _hide_scoreboard_name_progress_for_stadium_scene(self) -> None:
+        """Hide the scoreboardstdname loading notification the instant Team
+        Entrance's own trigger fires (see _start_team_entrance in app.py,
+        called from here and from ChantsRuntime._resolve_pending_entrance_arm).
+
+        Requested live 2026-09-14: reaching that trigger means we're already
+        past the pre-match presentation screen this notification exists to
+        report on -- we're in the stadium/walkout scene -- so there is
+        nothing left worth showing it for, independent of whether the patch
+        itself ever gets confirmed within its own retry window. This only
+        touches the shared UI widget; StadiumDbNamePatchCoordinator's own
+        background retries are untouched (same as the kick-off-detection
+        stop above) -- the very next scheduled tick, if any, will also see
+        `_scoreboard_name_progress_active` already False and simply return.
+        """
+        if not self._scoreboard_name_progress_active:
+            return
+        std_name = self._scoreboard_name_progress_std_name
+        injid = self._scoreboard_name_progress_injid
+        current = self.stadium_db_name_patcher.get_current_name(injid) if injid is not None else None
+        self.log(
+            f"Scoreboard name progress hidden: Team entrance trigger fired "
+            f"(already in the stadium scene) for slot {injid!r}"
+        )
+        self._finish_scoreboard_name_progress(std_name or "", current)
+
     def _finish_scoreboard_name_progress(self, std_name: str, actual_name: str | None) -> None:
+        self._scoreboard_name_progress_active = False
         if actual_name is None:
             text = "Scoreboard name not confirmed"
         elif actual_name == std_name:
@@ -308,8 +369,53 @@ class GameMixin:
         self._update_stadium_loading_modal(100, text)
         self._hide_stadium_loading_modal(delay_ms=1200)
 
+    def _db_name_patch_kickoff_detected(self, speed_state: dict, started_at: float) -> bool:
+        """True once real, sustained match-clock movement is observed --
+        i.e. the pre-match presentation screen this patch targets has
+        already been shown (or missed) and actual gameplay is underway.
+
+        Mirrors the exact heuristic already proven live elsewhere in this
+        codebase for telling "genuinely kicked off" apart from FIFA's own
+        started/ran_time flags reading true too early (ChantsRuntime.
+        _play_goal_track, TeamEntranceRuntime -- CLAUDE.md §5.5): sustained
+        timer movement (delta >= 1 at >= 6x real-time speed) across
+        DB_NAME_PATCH_KICKOFF_HITS_REQUIRED consecutive ticks, only trusted
+        after DB_NAME_PATCH_KICKOFF_PROTECTION_SECONDS have passed since the
+        bumper (matching ChantsRuntime's own 6s protection window) so brief
+        clock jitter during the walkout itself can't trigger a false
+        positive. `speed_state` is a plain dict the caller owns for the
+        whole retry cycle -- mutated in place each call, never reset except
+        by starting a brand new cycle.
+        """
+        now = time.monotonic()
+        try:
+            game_time = self.memory.get_int(self.offsets.GAMESTATSBASE, self.offsets.GAMERANTIME)
+        except Exception:
+            game_time = None
+        if now - started_at < DB_NAME_PATCH_KICKOFF_PROTECTION_SECONDS or game_time is None:
+            speed_state["last_game_time"] = game_time
+            speed_state["last_real_time"] = now
+            speed_state["hits"] = 0
+            return False
+        last_game_time = speed_state.get("last_game_time")
+        last_real_time = speed_state.get("last_real_time")
+        speed_state["last_game_time"] = game_time
+        speed_state["last_real_time"] = now
+        if last_game_time is None or last_real_time is None:
+            speed_state["hits"] = 0
+            return False
+        real_delta = max(0.001, now - last_real_time)
+        timer_delta = abs(game_time - last_game_time)
+        speed = timer_delta / real_delta
+        if timer_delta >= 1 and speed >= DB_NAME_PATCH_KICKOFF_SPEED_THRESHOLD:
+            speed_state["hits"] = speed_state.get("hits", 0) + 1
+        else:
+            speed_state["hits"] = 0
+        return speed_state["hits"] >= DB_NAME_PATCH_KICKOFF_HITS_REQUIRED
+
     def _schedule_db_name_patch_retry(
-        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float
+        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float,
+        speed_state: dict | None = None,
     ) -> None:
         """Re-request StadiumDbNamePatchCoordinator every ~900ms until
         `deadline` (a time.monotonic() timestamp) or an earlier confirmed
@@ -346,19 +452,35 @@ class GameMixin:
         # after the new chain just showed it).
         if self._kickoff_generation != generation:
             return
+        # Already finished by something else this generation (a confirmed
+        # patch, the deadline, kick-off detection, or the Team Entrance
+        # trigger hiding it early -- see
+        # _hide_scoreboard_name_progress_for_stadium_scene) since the last
+        # tick was scheduled. Nothing left to do.
+        if not self._scoreboard_name_progress_active:
+            return
+        if speed_state is None:
+            speed_state = {}
         if time.monotonic() >= deadline:
             self._finish_scoreboard_name_progress(std_name, None)
             return
         self.after(
             900,
-            lambda: self._db_name_patch_retry_tick(injid, std_name, baseline_name, generation, started_at, deadline),
+            lambda: self._db_name_patch_retry_tick(
+                injid, std_name, baseline_name, generation, started_at, deadline, speed_state
+            ),
         )
 
     def _db_name_patch_retry_tick(
-        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float
+        self, injid: str, std_name: str, baseline_name: str | None, generation: int, started_at: float, deadline: float,
+        speed_state: dict | None = None,
     ) -> None:
         if self._closing or self._kickoff_generation != generation:
             return
+        if not self._scoreboard_name_progress_active:
+            return
+        if speed_state is None:
+            speed_state = {}
         # Stop early if a different stadium has since taken over this slot --
         # a stale retry for an old match would just be a wasted scan. Kept
         # alongside the generation check above (which catches the common
@@ -394,6 +516,22 @@ class GameMixin:
         if current is not None and (current == std_name or current != baseline_name):
             self._finish_scoreboard_name_progress(std_name, current)
             return
+        # Stop showing the loading bar once real gameplay is confirmed
+        # running, whether or not a patch ever landed -- the pre-match
+        # presentation screen this patch targets is no longer even visible
+        # once actual kick-off has happened, so a loading notification still
+        # sitting on screen at that point is just noise (reported live
+        # 2026-09-14: it stayed up "during the match"). The coordinator
+        # itself is untouched by this -- StadiumDbNamePatchCoordinator keeps
+        # whatever it's doing in the background regardless; this only stops
+        # re-showing the modal.
+        if self._db_name_patch_kickoff_detected(speed_state, started_at):
+            self.log(
+                f"Stadium DB name patch retry stopped: real kick-off detected "
+                f"for slot {injid} before a patch was confirmed"
+            )
+            self._finish_scoreboard_name_progress(std_name, None)
+            return
         # A retry chain silently dying from an unexpected exception here
         # would look identical to the injID-mismatch case above (no further
         # log lines, ever) -- catch and log instead of letting Tkinter's
@@ -411,7 +549,9 @@ class GameMixin:
         # done.
         progress = min(95.0, (elapsed / total) * 100.0)
         self._update_stadium_loading_modal(progress, "Applying scoreboard name...")
-        self._schedule_db_name_patch_retry(injid, std_name, baseline_name, generation, started_at, deadline)
+        self._schedule_db_name_patch_retry(
+            injid, std_name, baseline_name, generation, started_at, deadline, speed_state
+        )
 
     def _clear_live_context(self) -> None:
         self._kit_cycle_index = {}

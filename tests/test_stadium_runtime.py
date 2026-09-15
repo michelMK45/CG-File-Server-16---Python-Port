@@ -191,5 +191,117 @@ class ResolveGoalpostSourcesTests(unittest.TestCase):
         self.assertFalse(result[0].exists())
 
 
+class ApplyStadiumRuntimePickerReentryTests(unittest.TestCase):
+    """Regression coverage for the manual in-game stadium picker reopening
+    itself right after the player closed it (reported live 2026-09-15).
+
+    Root cause: app_game.py's KickOffHub retry loop
+    (_kickoff_retry_tick/_schedule_kickoff_retry) calls refresh_live_context
+    repeatedly while HID/AID are still resolving, and refresh_live_context
+    calls apply_all_runtime() any time its own (HID, AID, TOUR, ROUND)
+    signature changes -- which it does every time AID resolves a tick after
+    HID already has. apply_stadium_runtime's own stadium_signature excludes
+    AID, so that later call re-enters apply_stadium_runtime for the EXACT
+    SAME stadium_signature the player already resolved (by picking, or by
+    closing/cancelling -> random fallback) a moment earlier. The picker's
+    own pending/resolved flags are one-shot -- cleared the instant the first
+    call consumes them -- so without a longer-lived memory of "already
+    decided", this second call saw pending=False and treated it as a brand
+    new assignment, popping the picker again on top of the one the player
+    just closed."""
+
+    class FakeVar:
+        def __init__(self, value: bool) -> None:
+            self._value = value
+
+        def get(self) -> bool:
+            return self._value
+
+    def make_app(self, tmp_path: Path) -> SimpleNamespace:
+        (tmp_path / "StadiumA").mkdir()
+        (tmp_path / "StadiumB").mkdir()
+        app = SimpleNamespace(
+            settings_ini=FakeSettingsIni({"stadium": {"Team123": "StadiumA,StadiumB,4,1,1"}}),
+            targetpath=tmp_path,
+            HID="Team123",
+            TOURNAME="",
+            TOURROUNDID="",
+            AID="",
+            curstad="",
+            CCount="0",
+            injID=None,
+            PoliceNum=None,
+            gold=None,
+            _kickoff_generation=1,
+            _d3d_injector=object(),  # only needs to be non-None; _open_stadium_picker itself is stubbed below
+            random_stadium_selection_var=self.FakeVar(False),
+            _stadium_picker_pending=False,
+            _stadium_picker_signature=None,
+            _stadium_picker_resolved=False,
+            _stadium_picker_chosen=None,
+            _stadium_picker_decided_signature=None,
+            _stadium_picker_decided_stadium=None,
+            _stadium_task_running=False,
+            _stadium_task_signature=None,
+            _last_stadium_applied_signature=None,
+            log=lambda *a, **k: None,
+            _set_progress=lambda *a, **k: None,
+            _set_process_status=lambda *a, **k: None,
+        )
+        return app
+
+    def test_reentrant_call_after_close_reuses_the_decision_instead_of_reopening(self) -> None:
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp))
+            runtime = StadiumRuntime(app)
+
+            opened: list[tuple] = []
+
+            def fake_open_stadium_picker(candidates: list[str], signature: tuple) -> None:
+                opened.append(signature)
+                # Mirrors the real _open_stadium_picker's own bookkeeping,
+                # minus the actual D3D-overlay calls.
+                app._stadium_picker_pending = True
+                app._stadium_picker_signature = signature
+                app._stadium_picker_resolved = False
+                app._stadium_picker_chosen = None
+
+            started: list[str] = []
+
+            def fake_start_stadium_task(section_id, section_name, injid, signature, request_key, chosen_stadium):
+                started.append(chosen_stadium)
+
+            runtime._open_stadium_picker = fake_open_stadium_picker
+            runtime.start_stadium_task = fake_start_stadium_task
+
+            # 1) First entry (e.g. KickOffHub retry tick #1, HID just resolved):
+            # no picker session yet for this signature -> opens one and returns
+            # without loading anything.
+            runtime.apply_stadium_runtime()
+            self.assertEqual(len(opened), 1)
+            self.assertEqual(len(started), 0)
+
+            # 2) Player closes the picker (Escape / the Close button) without
+            # picking -- mirrors _resolve_stadium_picker(None) marking it
+            # resolved with no chosen stadium, then forcing a fresh
+            # apply_all_runtime() call to consume that resolution.
+            app._stadium_picker_resolved = True
+            runtime.apply_stadium_runtime()
+            self.assertEqual(len(opened), 1, "must not reopen a second picker on this consuming call")
+            self.assertEqual(len(started), 1)
+            self.assertFalse(app._stadium_picker_pending)
+
+            # 3) A later re-entrant call for the SAME stadium_signature (e.g.
+            # the KickOffHub retry loop's next tick, once AID has also
+            # resolved) must reuse the already-decided stadium instead of
+            # popping a brand-new picker on top of the one just closed.
+            runtime.apply_stadium_runtime()
+            self.assertEqual(len(opened), 1, "picker must not reopen after already being resolved this match")
+            self.assertEqual(len(started), 2)
+            self.assertEqual(started[0], started[1], "must not re-roll a different stadium on the re-entrant call")
+
+
 if __name__ == "__main__":
     unittest.main()

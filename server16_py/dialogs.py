@@ -1286,3 +1286,73 @@ class AboutDialog(BaseDialog):
         foot.pack(fill="x")
         ttk.Button(foot, text=self.tr("dialog.about.close"),
                    command=self.destroy).pack(side="right", padx=14)
+
+
+class FifaLocationWarningDialog(BaseDialog):
+    """Shown by app_settings.py's _check_fifa_location -- both at startup (app.py's __init__,
+    right after setuppaths()) and right after a user manually links a FIFA exe via
+    select_fifa_exe() -- whenever this program ends up running from a different folder than
+    the linked fifa16.exe. Launch FIFA and every file operation that assumes co-location
+    (exedir is always derived from the linked FIFA exe's own parent, never from where this
+    program itself lives) will misbehave. `close_ok(True)` means "continue anyway";
+    `close_ok(False)`, wired to the window's own X button too, means "close the application"
+    -- deliberately the same, cautious default, since dismissing an unresolved warning should
+    never be read as consent to proceed."""
+
+    def __init__(self, master: tk.Misc, fifa_dir: Path, app_dir: Path) -> None:
+        super().__init__(master, "dialog.fifa_location.title")
+        self._set_geometry(520, 300, 460, 260)
+        self.resizable(False, False)
+        self.protocol("WM_DELETE_WINDOW", lambda: self.close_ok(False))
+
+        body = tk.Frame(self, bg=self.bg, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body,
+            text=self.tr("dialog.fifa_location.heading"),
+            bg=self.bg,
+            fg=self.gold,
+            font=("Bahnschrift", 12, "bold"),
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x")
+
+        self._dark_label(
+            body,
+            self.tr("dialog.fifa_location.body"),
+            bg=self.bg,
+            font=("Bahnschrift", 10),
+            wraplength=460,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", pady=(10, 10))
+
+        paths = tk.Frame(body, bg=self.card, highlightthickness=1, highlightbackground="#243654")
+        paths.pack(fill="x", pady=(0, 14))
+        self._dark_label(
+            paths,
+            self.tr("dialog.fifa_location.app_path", path=str(app_dir)),
+            bg=self.card,
+            muted=True,
+            font=("Consolas", 9),
+            wraplength=430,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(8, 2))
+        self._dark_label(
+            paths,
+            self.tr("dialog.fifa_location.fifa_path", path=str(fifa_dir)),
+            bg=self.card,
+            muted=True,
+            font=("Consolas", 9),
+            wraplength=430,
+            justify="left",
+            anchor="w",
+        ).pack(fill="x", padx=10, pady=(0, 8))
+
+        actions = tk.Frame(body, bg=self.bg)
+        actions.pack(fill="x", side="bottom")
+        ttk.Button(actions, text=self.tr("dialog.fifa_location.close"), command=lambda: self.close_ok(False)).pack(side="left", fill="x", expand=True, padx=(0, 6))
+        ttk.Button(actions, text=self.tr("dialog.fifa_location.continue"), command=lambda: self.close_ok(True)).pack(side="right", fill="x", expand=True, padx=(6, 0))

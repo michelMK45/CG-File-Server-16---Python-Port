@@ -32,6 +32,28 @@ class FakeStadiumRuntime:
         self.request_calls.append((injid, std_name))
 
 
+class FakeOffsets:
+    GAMESTATSBASE = 0x1
+    GAMERANTIME = [0x1]
+
+
+class FakeMemory:
+    """Feeds a scripted sequence of GAMERANTIME reads to
+    _db_name_patch_kickoff_detected, one per call -- None means "read
+    failed" (mirrors a real Memory.get_int raising, caught internally)."""
+
+    def __init__(self, readings: list[int | None] | None = None) -> None:
+        self._readings = list(readings or [])
+
+    def get_int(self, *_args, **_kwargs) -> int:
+        if not self._readings:
+            raise RuntimeError("no more scripted readings")
+        value = self._readings.pop(0)
+        if value is None:
+            raise RuntimeError("simulated read failure")
+        return value
+
+
 class FakeGame(GameMixin):
     def __init__(self) -> None:
         self._closing = False
@@ -39,6 +61,14 @@ class FakeGame(GameMixin):
         self.injID = "176"
         self.stadium_db_name_patcher = FakeCoordinator()
         self.stadium_runtime = FakeStadiumRuntime()
+        self.offsets = FakeOffsets()
+        self.memory = FakeMemory()
+        # Tests that call _db_name_patch_retry_tick/_schedule_db_name_patch_retry
+        # directly are simulating an already-running cycle, so default True;
+        # _start_scoreboard_name_progress itself also sets this.
+        self._scoreboard_name_progress_active = True
+        self._scoreboard_name_progress_std_name: str | None = None
+        self._scoreboard_name_progress_injid: str | None = None
         self.after_calls: list[tuple[int, object]] = []
         self.show_calls: list[tuple] = []
         self.update_calls: list[tuple] = []
@@ -191,6 +221,144 @@ class ScoreboardNameProgressTests(unittest.TestCase):
         game._db_name_patch_retry_tick(
             "176", "Anfield", baseline_name=None, generation=1, started_at=1000.0, deadline=1060.0
         )
+        self.assertEqual(game.update_calls, [])
+        self.assertEqual(game.hide_calls, [])
+        self.assertEqual(game.stadium_runtime.request_calls, [])
+
+
+class KickoffStopsLoadingBarTests(unittest.TestCase):
+    """Reported live 2026-09-14: the "Applying scoreboard name..." bar could
+    stay on screen for the full 60s retry window regardless of match state,
+    including well after real kick-off. These cover the new
+    _db_name_patch_kickoff_detected heuristic (same sustained-clock-speed
+    signal already proven live for ChantsRuntime/TeamEntranceRuntime) and its
+    wiring into the retry tick.
+    """
+
+    def test_stays_false_during_the_protection_window(self) -> None:
+        game = FakeGame()
+        game.memory = FakeMemory([100])
+        with patch("server16_py.app_game.time.monotonic", return_value=1002.0):
+            detected = game._db_name_patch_kickoff_detected({}, started_at=1000.0)
+        self.assertFalse(detected)
+
+    def test_stays_false_when_the_clock_read_fails(self) -> None:
+        game = FakeGame()
+        game.memory = FakeMemory([None])
+        with patch("server16_py.app_game.time.monotonic", return_value=1010.0):
+            detected = game._db_name_patch_kickoff_detected({}, started_at=1000.0)
+        self.assertFalse(detected)
+
+    def test_requires_three_consecutive_fast_ticks_after_the_protection_window(self) -> None:
+        game = FakeGame()
+        game.memory = FakeMemory([100, 108, 116, 124])
+        speed_state: dict = {}
+        times = [1006.0, 1006.9, 1007.8, 1008.7]
+        results = []
+        for t in times:
+            with patch("server16_py.app_game.time.monotonic", return_value=t):
+                results.append(game._db_name_patch_kickoff_detected(speed_state, started_at=1000.0))
+        self.assertEqual(results, [False, False, False, True])
+
+    def test_a_slow_reading_resets_the_streak(self) -> None:
+        # Two fast hits, then one slow (celebration-speed) reading, then two
+        # more fast hits must NOT trip early -- only a fresh run of three
+        # consecutive fast hits after the reset may.
+        game = FakeGame()
+        game.memory = FakeMemory([100, 108, 116, 117, 125, 133, 141])
+        speed_state: dict = {}
+        times = [1006.0, 1006.9, 1007.8, 1008.7, 1009.6, 1010.5, 1011.4]
+        results = []
+        for t in times:
+            with patch("server16_py.app_game.time.monotonic", return_value=t):
+                results.append(game._db_name_patch_kickoff_detected(speed_state, started_at=1000.0))
+        self.assertEqual(results, [False, False, False, False, False, False, True])
+
+    def test_tick_stops_and_hides_when_kickoff_detected_before_confirmation(self) -> None:
+        game = FakeGame()
+        game.memory = FakeMemory([124])  # completes a 3rd consecutive fast hit
+        speed_state = {"last_game_time": 116, "last_real_time": 1007.8, "hits": 2}
+        with patch("server16_py.app_game.time.monotonic", return_value=1008.7):
+            game._db_name_patch_retry_tick(
+                "176", "Anfield", baseline_name=None, generation=1,
+                started_at=1000.0, deadline=1060.0, speed_state=speed_state,
+            )
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name not confirmed"))
+        self.assertEqual(game.hide_calls, [1200])
+        # The coordinator itself is never re-requested once kick-off has
+        # already been confirmed -- the pre-match screen this patch targets
+        # is gone, so there is nothing left worth polling for.
+        self.assertEqual(game.stadium_runtime.request_calls, [])
+        self.assertTrue(any("kick-off detected" in log for log in game.logs))
+
+    def test_a_confirmed_success_still_wins_over_kickoff_detection_on_the_same_tick(self) -> None:
+        game = FakeGame()
+        game.stadium_db_name_patcher.confirmed_name = "Anfield"
+        game.memory = FakeMemory([124])
+        speed_state = {"last_game_time": 116, "last_real_time": 1007.8, "hits": 2}
+        with patch("server16_py.app_game.time.monotonic", return_value=1008.7):
+            game._db_name_patch_retry_tick(
+                "176", "Anfield", baseline_name=None, generation=1,
+                started_at=1000.0, deadline=1060.0, speed_state=speed_state,
+            )
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name applied: Anfield"))
+        self.assertFalse(any("kick-off detected" in log for log in game.logs))
+
+
+class HideForStadiumSceneTests(unittest.TestCase):
+    """Requested live 2026-09-14: hide the scoreboardstdname loading bar the
+    instant Team Entrance's own trigger fires (app.py's _start_team_entrance)
+    -- reaching that trigger means the walkout/stadium scene has already
+    begun, so there is nothing left worth showing the notification for.
+    """
+
+    def test_hides_immediately_using_the_coordinators_confirmed_name(self) -> None:
+        game = FakeGame()
+        game._scoreboard_name_progress_active = True
+        game._scoreboard_name_progress_std_name = "Anfield"
+        game._scoreboard_name_progress_injid = "176"
+        game.stadium_db_name_patcher.confirmed_name = "Anfield"
+        game._hide_scoreboard_name_progress_for_stadium_scene()
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name applied: Anfield"))
+        self.assertEqual(game.hide_calls, [1200])
+        self.assertFalse(game._scoreboard_name_progress_active)
+
+    def test_hides_as_not_confirmed_when_nothing_landed_yet(self) -> None:
+        game = FakeGame()
+        game._scoreboard_name_progress_active = True
+        game._scoreboard_name_progress_std_name = "Anfield"
+        game._scoreboard_name_progress_injid = "176"
+        game.stadium_db_name_patcher.confirmed_name = None
+        game._hide_scoreboard_name_progress_for_stadium_scene()
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name not confirmed"))
+        self.assertEqual(game.hide_calls, [1200])
+
+    def test_is_a_no_op_when_no_progress_cycle_is_active(self) -> None:
+        # No custom scoreboardstdname assignment this match (no cycle was
+        # ever started) -- must not touch the shared widget at all.
+        game = FakeGame()
+        game._scoreboard_name_progress_active = False
+        game._hide_scoreboard_name_progress_for_stadium_scene()
+        self.assertEqual(game.update_calls, [])
+        self.assertEqual(game.hide_calls, [])
+
+    def test_a_scheduled_tick_arriving_after_the_entrance_hide_is_a_no_op(self) -> None:
+        # The chain's own self.after(900, ...) can still be queued when the
+        # entrance trigger hides the bar out-of-band -- the next tick to
+        # fire must see the cycle already inactive and do nothing further
+        # (no re-request, no re-show, no duplicate finish).
+        game = FakeGame()
+        game._scoreboard_name_progress_active = True
+        game._scoreboard_name_progress_std_name = "Anfield"
+        game._scoreboard_name_progress_injid = "176"
+        game._hide_scoreboard_name_progress_for_stadium_scene()
+        game.update_calls.clear()
+        game.hide_calls.clear()
+
+        with patch("server16_py.app_game.time.monotonic", return_value=1010.0):
+            game._db_name_patch_retry_tick(
+                "176", "Anfield", baseline_name=None, generation=1, started_at=1000.0, deadline=1060.0
+            )
         self.assertEqual(game.update_calls, [])
         self.assertEqual(game.hide_calls, [])
         self.assertEqual(game.stadium_runtime.request_calls, [])

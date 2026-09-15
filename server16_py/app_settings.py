@@ -8,7 +8,7 @@ from tkinter import filedialog, messagebox
 
 import psutil
 
-from .dialogs import ImportModeDialog, SectionPickerDialog
+from .dialogs import FifaLocationWarningDialog, ImportModeDialog, SectionPickerDialog
 from .fifa_db import FifaDatabase
 from .ini_file import SessionIniFile, export_sections, import_sections
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
@@ -118,6 +118,45 @@ class SettingsMixin:
             if path.exists():
                 return path
         return paths[0]
+
+    def _check_fifa_location(self) -> bool:
+        """Called both from app.py's __init__ (once, right after setuppaths() first resolves
+        self.fifaEXE/self.exedir from settings.json) and from select_fifa_exe() (right after a
+        user manually links a FIFA exe from a different folder) -- either path can leave this
+        program running out of a different folder than fifa16.exe. That silently breaks Launch
+        FIFA (subprocess.Popen([self.fifaEXE], ...) below) and every FSW/data file path this
+        app writes to -- all derived from self.exedir (setuppaths' own Path(self.fifaEXE).parent),
+        never from self.base_dir once a FIFA exe is linked. Deliberately skipped when
+        settings.json has no FIFA exe linked yet (self.fifaEXE == "default"): a brand-new
+        install starts out with nothing to compare against, and setuppaths() itself falls back
+        to self.base_dir in that case, so there's no mismatch to report.
+
+        Returns False when the user chose to close the app (or dismissed the warning) instead
+        of continuing. Callers must stop whatever they were doing and return immediately in
+        that case, without touching any widget on_close() may have already torn down --
+        __init__ additionally relies on main() skipping mainloop() entirely afterward (checked
+        there via self._closing, which on_close() sets)."""
+        if self.fifaEXE == "default":
+            return True
+        try:
+            fifa_dir = self.exedir.resolve()
+            app_dir = self.base_dir.resolve()
+        except Exception:
+            return True
+        if fifa_dir == app_dir:
+            return True
+        self.log(
+            f"CGFS16 is not in the same folder as the linked FIFA 16 executable "
+            f"(app: {app_dir}, FIFA: {fifa_dir}) -- Launch FIFA and file operations may not work correctly"
+        )
+        dialog = FifaLocationWarningDialog(self, fifa_dir, app_dir)
+        self.wait_window(dialog)
+        if dialog.result:
+            self.log("User chose to continue despite the FIFA location mismatch (unstable mode)")
+            return True
+        self.log("Closing application: user chose to close after the FIFA location mismatch warning")
+        self.on_close()
+        return False
 
     def _load_module_states(self) -> None:
         if self.settings_ini.read("TeamEntrance", "Modules") not in {"0", "1"}:
@@ -299,6 +338,8 @@ class SettingsMixin:
             self.settings.fifa_exe = filename
             self._set_progress(24, self.progress_text("configuring_paths"))
             self.setuppaths(load_team_database=False)
+            if not self._check_fifa_location():
+                return
             self._load_team_database(lambda value, text: self._set_progress(value, text))
             self._set_progress(82, self.progress_text("applying_bootstrap"))
             self.apply_bootstrap_files()
@@ -314,8 +355,14 @@ class SettingsMixin:
             self.log("Failed while loading FIFA data after selecting executable", exc, exc_info=sys.exc_info())
             messagebox.showerror(self.tr("message.fifa16"), self.tr("message.error.load_fifa_data"))
         finally:
-            window.configure(cursor="")
-            window.update_idletasks()
+            # The FIFA-location check above can close the whole app (on_close() destroys
+            # this window) before this block runs -- guard the reconfigure so that doesn't
+            # surface as a stray "application has been destroyed" error on the way out.
+            try:
+                window.configure(cursor="")
+                window.update_idletasks()
+            except Exception:
+                pass
 
     def _auto_detect_fifa_exe(self) -> Path | None:
         for name in ("fifa16.exe", "FIFA16.exe", "FIFA 16.exe", "fifa 16.exe"):
