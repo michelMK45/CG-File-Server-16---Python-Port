@@ -25,6 +25,7 @@ class FakeGame(GameMixin):
         self._entrance_sequence = 0
         self._entrance_armed = False
         self._entrance_pre_match_guard = False
+        self._stadium_picker_pending = False
         self.curstad = ""
         self.entrance_starts = 0
         self.chants_starts = 0
@@ -148,6 +149,36 @@ class TeamEntranceTriggerTests(unittest.TestCase):
         game2._handle_page_transition("game/screens/playNow/SelectTeam")
         self.assertEqual(game2.entrance_starts, 0)
         self.assertFalse(game2._entrance_armed)
+
+    def test_entrance_does_not_restart_when_tournament_mode_follows_a_friendly(self) -> None:
+        # Reproduces runtime/server16.log 2026-09-15 16:34:44-16:35:10
+        # verbatim: after a friendly match ends (HID=456), the player
+        # returns to FluxHub, then opens Tournament Mode. FIFA reports a
+        # blank transitional page on the way in, which the blank-page
+        # fallback below used to arm Team Entrance for -- and the very next
+        # transition, into "tournamentMode/SelectTournament", was not
+        # recognized as a menu page (the blocklist only knew about
+        # "playnow"/"fluxhub"/"stadiumpan"), so it "consumed" the stale arm
+        # as if it were the real walkout and replayed the previous match's
+        # Entrance.mp3 while the player was just browsing Tournament Mode /
+        # Career setup screens. None of these transitions may ever start the
+        # entrance worker.
+        game = FakeGame()
+        game.matchstarted = False
+
+        for page_name in (
+            "game/screens/fluxHub/FluxHub",
+            "",
+            "game/screens/tournamentMode/SelectTournament",
+            "game/screens/tournamentMode/SelectTeams",
+            "game/screens/career/Scheduling",
+            "game/screens/saveload_pc/save",
+            "game/screens/fluxHub/FluxHub",
+        ):
+            game._handle_page_transition(page_name)
+
+        self.assertEqual(game.entrance_starts, 0)
+        self.assertFalse(game._entrance_armed)
 
     def test_matchstarted_flips_false_immediately_on_pause_menu_page(self) -> None:
         # Leading hypothesis for "Restart doesn't stop/restart the anthem"

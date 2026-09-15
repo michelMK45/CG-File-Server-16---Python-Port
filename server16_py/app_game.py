@@ -614,16 +614,31 @@ class GameMixin:
 
     @staticmethod
     def _page_blocks_team_entrance(page_name: str) -> bool:
-        """True for a pause menu or playNow setup menu -- never the walkout.
+        """True for a pause menu or any other non-match setup menu -- never
+        the walkout.
 
         Same page-name vocabulary already used by TeamEntranceRuntime's own
         loop ("playnow") and by the Discord presence pause detection
-        ("fluxhub"/"stadiumpan") to recognize these pages. Used to stop the
-        blank-page arm fallback from being consumed as "the walkout started"
-        when the very next transition is actually just menu/pause churn.
+        ("fluxhub"/"stadiumpan") to recognize these pages, plus the mode-
+        select/career/save-load families ("tournamentmode", "career",
+        "saveload") added 2026-09-15 after a live report + log capture
+        (runtime/server16.log) showed the same "blank page arms, next page
+        consumes it" mechanism (CLAUDE.md §5.5 Part 6) misfiring on
+        Tournament Mode: after a friendly match, going FluxHub -> blank ->
+        "tournamentMode/SelectTournament" was not recognized as a menu, so
+        the blank-page arm from the previous match got consumed as if the
+        new page were the walkout, replaying that team's Entrance.mp3 for
+        ~16 seconds while just browsing the Tournament Mode / Career setup
+        screens, until the unresolved-state timeout finally stopped it. Used
+        to stop the blank-page arm fallback from being consumed as "the
+        walkout started" when the very next transition is actually just
+        menu/mode-select churn.
         """
         lowered = (page_name or "").lower()
-        return any(token in lowered for token in ("playnow", "fluxhub", "stadiumpan"))
+        return any(
+            token in lowered
+            for token in ("playnow", "fluxhub", "stadiumpan", "tournamentmode", "career", "saveload")
+        )
 
     def _page_can_have_match_context(self, page_name: str) -> bool:
         if not page_name:
