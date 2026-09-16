@@ -1280,6 +1280,8 @@ class AboutDialog(BaseDialog):
                  font=("Bahnschrift", 8, "bold")).pack(anchor="w", pady=(14, 0))
 
         credit_row(body, "dialog.about.libraries_fifalib", "FifaLibrary16 (rzocc)")
+        credit_row(body, "dialog.about.libraries_rmlui", "RmlUi (MIT License)")
+        credit_row(body, "dialog.about.libraries_freetype", "FreeType (FreeType License)")
 
         tk.Frame(self, bg="#22314b", height=1).pack(fill="x")
         foot = tk.Frame(self, bg=self.panel, pady=10)

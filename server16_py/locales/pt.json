@@ -434,6 +434,8 @@
   "dialog.about.special_thanks": "Agradecimentos Especiais",
   "dialog.about.libraries": "Bibliotecas",
   "dialog.about.libraries_fifalib": "Biblioteca de Dados do FIFA",
+  "dialog.about.libraries_rmlui": "UI do Menu no Jogo",
+  "dialog.about.libraries_freetype": "Renderização de Fontes",
   "dialog.about.close": "Fechar",
   "tab.setup": "Set Up",
   "tab.setup.general": "Installer",

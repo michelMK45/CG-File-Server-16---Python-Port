@@ -492,6 +492,8 @@
   "dialog.about.special_thanks": "Special Thanks",
   "dialog.about.libraries": "Libraries",
   "dialog.about.libraries_fifalib": "FIFA Data Library",
+  "dialog.about.libraries_rmlui": "In-Game Menu UI",
+  "dialog.about.libraries_freetype": "Font Rendering",
   "dialog.about.close": "Close",
   "tab.setup": "Set Up",
   "tab.setup.general": "Installer",

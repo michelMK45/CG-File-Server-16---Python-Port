@@ -446,8 +446,17 @@ class UIMixin:
         self.language_var.set(self._language_combo_value())
         self.about_button = ttk.Button(top, text=self.tr("button.about"), command=self._show_about)
         self.about_button.pack(side="right", padx=(0, 6))
-        self.check_update_button = ttk.Button(top, text=self.tr("button.check_update"), command=self.check_updates)
-        self.check_update_button.pack(side="right", padx=(0, 6))
+        self.check_update_button_wrap = tk.Frame(top, bg=self.bg)
+        self.check_update_button_wrap.pack(side="right", padx=(0, 6))
+        self.check_update_button = ttk.Button(
+            self.check_update_button_wrap, text=self.tr("button.check_update"), command=self.check_updates
+        )
+        self.check_update_button.pack()
+        self.check_update_badge = tk.Canvas(
+            self.check_update_button_wrap, width=10, height=10, bg=self.bg, highlightthickness=0
+        )
+        self.check_update_badge.create_oval(1, 1, 9, 9, fill="#e5484d", outline="")
+        self._set_update_badge_visible(self._update_available)
 
         header = tk.Frame(root, bg=self.bg, padx=10)
         header.pack(fill="x")
@@ -4776,38 +4785,52 @@ class UIMixin:
         key = "button.checking_update" if self._update_check_in_progress else "button.check_update"
         return self.tr(key)
 
-    def check_updates(self) -> None:
+    def _set_update_badge_visible(self, visible: bool) -> None:
+        self._update_available = visible
+        if self.check_update_badge is None:
+            return
+        if visible:
+            self.check_update_badge.place(relx=1.0, rely=0.0, x=-1, y=-1, anchor="ne")
+        else:
+            self.check_update_badge.place_forget()
+
+    def check_updates(self, *, silent: bool = False) -> None:
         if self._update_check_in_progress:
             return
         self._update_check_in_progress = True
-        if self.check_update_button is not None:
+        if not silent and self.check_update_button is not None:
             self.check_update_button.configure(state="disabled", text=self._check_update_button_text())
-        self.log("Checking for updates on GitHub releases")
-        threading.Thread(target=self._run_check_updates_worker, daemon=True).start()
+        self.log("Checking for updates on GitHub releases" + (" (background)" if silent else ""))
+        threading.Thread(target=self._run_check_updates_worker, args=(silent,), daemon=True).start()
 
-    def _run_check_updates_worker(self) -> None:
+    def _run_check_updates_worker(self, silent: bool = False) -> None:
         result = self._update_checker.check_latest_release(self.app_version)
         window = self._window()
         try:
-            window.after(0, lambda: self._handle_check_updates_result(result))
+            window.after(0, lambda: self._handle_check_updates_result(result, silent))
         except Exception:
             pass
 
-    def _handle_check_updates_result(self, result: UpdateCheckResult) -> None:
+    def _handle_check_updates_result(self, result: UpdateCheckResult, silent: bool = False) -> None:
         self._update_check_in_progress = False
         if self.check_update_button is not None:
             self.check_update_button.configure(state="normal", text=self._check_update_button_text())
 
         if not result.ok:
             self.log(f"Update check failed: {result.error}")
-            messagebox.showerror(
-                self.tr("message.update_check_title"),
-                self.tr("message.update_check_error", error=result.error),
-            )
+            if not silent:
+                messagebox.showerror(
+                    self.tr("message.update_check_title"),
+                    self.tr("message.update_check_error", error=result.error),
+                )
             return
+
+        self._set_update_badge_visible(result.update_available)
 
         if result.update_available:
             self.log(f"Update available: v{result.latest_version} (current v{result.current_version})")
+            if silent:
+                return
             should_open = messagebox.askyesno(
                 self.tr("message.update_check_title"),
                 self.tr(
@@ -4824,7 +4847,8 @@ class UIMixin:
             return
 
         self.log(f"No updates found. Current version is v{result.current_version}")
-        messagebox.showinfo(
-            self.tr("message.update_check_title"),
-            self.tr("message.update_none", current=result.current_version),
-        )
+        if not silent:
+            messagebox.showinfo(
+                self.tr("message.update_check_title"),
+                self.tr("message.update_none", current=result.current_version),
+            )

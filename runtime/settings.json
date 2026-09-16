@@ -1,6 +1,18 @@
 {
   "FIFAEXE": "default",
+  "CAMERAPACKAGE": "",
+  "SHOW_STADIUM_LOADING_NOTIFICATION": true,
+  "SHOW_OVERLAY": true,
+  "KIT_HOTKEYS_ENABLED": true,
+  "KEEP_OPEN_ON_GAME_CLOSE": true,
+  "OVERLAY_PERFORMANCE_MODE": false,
+  "RANDOM_STADIUM_SELECTION": false,
+  "MOVIE_PREVIEW_MUTED": false,
+  "LANGUAGE": "en",
+  "UI_ZOOM": 1.15,
+  "CUSTOM_KIT_NUMBERS": false,
   "SUBSTITUTION_COUNT": 5,
+  "AUTO_APPLY_SUBSTITUTION_COUNT": false,
   "discord_rpc": {
     "enabled": true,
     "client_id": "1495719449700077630",

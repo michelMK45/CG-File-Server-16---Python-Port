@@ -340,6 +340,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.log_widget = None
         self.logs_frame = None
         self.check_update_button = None
+        self.check_update_button_wrap = None
+        self.check_update_badge = None
         self.locate_fifa_button = None
         self.launch_fifa_button = None
         self.assign_scoreboard_button = None
@@ -456,6 +458,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.logs_group = None
         self.app_version = APP_VERSION
         self._update_check_in_progress = False
+        self._update_available = False
         self._update_checker = GithubReleaseChecker(self.UPDATE_REPO_OWNER, self.UPDATE_REPO_NAME)
         self.chants_thread_started = False
         self._chants_stop = threading.Event()
@@ -589,6 +592,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._poll_job = self.after(500, self.poll_process)
         self._stats_job = self.after(250, self.stats_loop)
         self._overlay_job = self.after(80, self.overlay_loop)
+        self.after(3000, lambda: self.check_updates(silent=True))
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
         if self._discord_rpc_enabled:
