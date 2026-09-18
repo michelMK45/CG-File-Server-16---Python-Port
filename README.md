@@ -19,21 +19,30 @@ The app attaches to FIFA 16's memory to read the current match context — home 
 
 ### In-Game Interactive Overlay
 
-A fullscreen overlay renders directly on top of FIFA 16 — even in exclusive fullscreen — so you can assign assets without ever leaving the game.
+A fullscreen overlay renders directly on top of FIFA 16 — even in exclusive fullscreen — so you can assign assets without ever leaving the game. As of v1.6.0 the menu is rendered by **RmlUi** instead of the old hand-rolled D3D11 renderer:
 
 - Open with **F12**, or hold **Start / Menu** on a gamepad for 0.6 seconds; press F12 again (or use the controller) to close it.
-- Fully navigable with keyboard or controller, with on-screen button hints.
-- Stadium assignment shows live preview images inline.
+- Fully navigable with keyboard, controller, **or mouse** — click tabs, rows, and the scrollbar directly, with a tab indicator that glides smoothly between selections.
+- The panel can be **dragged and resized** like a real window, and remembers its position/size across close/reopen.
+- Live preview images/video for stadiums, scoreboards, TV logos, and movies, shown inline as you browse.
+- A live **scoreboard widget** (both crests, score, match clock) on the dashboard.
+- A **country filter panel** on the Stadiums tab (gamepad Y, or a mouse "Filter" button) with multi-select by country code and an A-Z/Z-A sort toggle.
+- A manual **in-game stadium picker** when random stadium selection is turned off — see [Manual Stadium Picker & Multi-Stadium Assignments](#manual-stadium-picker--multi-stadium-assignments).
+- A **Kits** tab to cycle Kit Sets in-game with F7–F11 — see [Kit Sets](#kit-sets).
 - Shows the active assignment mode (Round, Tournament, Home Team, or Default) for each asset type.
-- Can be disabled entirely from the settings panel if you only want the desktop window.
+- Can be disabled entirely from the settings panel if you only want the desktop window; an overlay performance mode is also available for lower-end setups, which skips thumbnail/preview rendering in the overlay.
+
+⚠ **Known limitation:** a mouse click can still also reach FIFA's own menu underneath while the overlay is open, since FIFA reads mouse input through exclusive DirectInput rather than window messages. Mouse works fine for navigating the CGFS menu itself — just be mindful of where you click on screen while it's open.
 
 ### Stadium Management
 
-- Assign stadiums per home team, round, or full tournament, plus randomized multi-stadium rotations.
+- Assign stadiums per home team, round, or full tournament, plus randomized multi-stadium rotations — or turn randomization off and pick manually in-game; see [Manual Stadium Picker & Multi-Stadium Assignments](#manual-stadium-picker--multi-stadium-assignments).
+- A team/round/tournament can hold more than one stadium at once, each with its own independently-editable Police/Pitch/Net/Goalpost values.
 - Load stadiums from a plain folder or from `.zip` / `.rar` archives — archives are extracted on the fly to a temp folder and cleaned up automatically afterward.
 - Optional preview images shown on the dashboard, the Assign Stadium window, and the loading modal.
 - Per-stadium gameplay camera overrides so the Broadcast camera's height/position can be tuned to each stadium's own geometry.
-- Per-stadium goalpost files, crowd-chair replacement (`NoSeats.rx3`), and stadium-specific movies/bumpers.
+- Per-stadium goalpost **model** and **texture/color** packs — two independent, freely mixable packs instead of one bundled folder — plus crowd-chair replacement (`NoSeats.rx3`) and stadium-specific movies/bumpers. See [Goalpost Model & Texture Packs](#goalpost-model--texture-packs).
+- Custom pre-match stadium display names (`scoreboardstdname`) now actually render on FIFA's presentation screen — see [Custom Stadium Display Name](#custom-stadium-display-name).
 
 ### Camera Packages
 
@@ -41,16 +50,20 @@ Supports Anth's FIFA 16 AIO Camera Mod Package out of the box. Presets are auto-
 
 ### Kit Mixer
 
-Build a custom kit per team and kit type (home / away / keeper / third) without hand-editing `.rx3` files:
+Build a custom kit per team and kit type (home / away / keeper / third) without hand-editing `.rx3` files. Two tabs cover two different workflows:
 
-- Mix a jersey texture from one kit source with the shorts/socks from a different source, applied live.
-- Swap kit numbers and the kit-selection UI thumbnail independently of the jersey texture.
-- Pick a jersey name text color, including ready-made swatches parsed from any Lua bundled with the kit source.
-- Selectively restore exactly what you changed — texture, numbers, thumbnail, or name color — for one team + kit type, without touching the rest.
+- **Advanced** — mix a jersey texture from one kit source with the shorts/socks from a different source, applied live; swap kit numbers and the kit-selection UI thumbnail independently of the jersey texture; pick a jersey name text color, including ready-made swatches parsed from any Lua bundled with the kit source; selectively restore exactly what you changed — texture, numbers, thumbnail, or name color — for one team + kit type, without touching the rest.
+- **Simple (Kit Sets)** — pick a ready-made kit set (jersey + numbers + thumbnail together) and apply it in one action, with an optional linked goalkeeper kit per tournament; cycle through kit sets in-game with **F7–F11** without opening the menu at all. See [Kit Sets](#kit-sets).
+- Kit-selection UI thumbnails can now be baked directly from a loose `.png`/`.jpg` image instead of needing a hand-prepared `.dds` file.
+- Browsable **Team Picker** dialogs with crest previews and search replace plain dropdowns in the "Pick Team" flow.
+
+### New Asset Modules: Ball, Referee, Wipe, Adboard
+
+Four additional per-round/tournament asset assignments, editable from the Settings Editor exactly like Scoreboard/TV Logo/Movies: match **Ball**, **Referee** kits, **Wipe** transition animations, and **Adboard** pitch-side advertising (with per-stadium priority over the round assignment). Each has its own Setup tab toggle. See [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) for folder layout.
 
 ### Assets Extractor
 
-Unpacks vanilla FIFA game content (database, kit textures/numbers/thumbnails, team logos) into loose files, which is what lets Kit Mixer changes apply without restarting FIFA. Recommended for vanilla installs only — extracting over a total-conversion mod can overwrite and corrupt its custom content.
+Unpacks vanilla FIFA game content (database, kit textures/numbers/thumbnails, team crests, league logos) into loose files, which is what lets Kit Mixer changes apply without restarting FIFA. Recommended for vanilla installs only — extracting over a total-conversion mod can overwrite and corrupt its custom content.
 
 ### Custom Substitutions
 
@@ -66,9 +79,13 @@ Optionally shows your current match, teams, and stadium in your Discord status v
 
 ### Assignment & Settings Editors
 
-Built-in editors read and write `FSW/settings.ini` directly from the UI: stadium/scoreboard/TV logo/movie assignments, excluded competitions or rounds, stadium net values, scoreboard display names, and chants entries — changes apply back into the running app immediately where possible.
+Built-in editors read and write `FSW/settings.ini` directly from the UI: stadium/scoreboard/TV logo/movie/ball/referee/wipe/adboard assignments, excluded competitions or rounds, stadium net values, scoreboard display names, and chants entries — changes apply back into the running app immediately where possible.
 
 Movie assignment (the quick "Assign Movie" dialog and the larger version in the Settings Editor's Movies/TeamMovies/DerbyMatch tabs) shows a small embedded video preview, audio included — pick a movie and it autoplays right there before you assign it (an Autoplay toggle can turn that off), with a volume slider and a fullscreen button. This decodes through `ffpyplayer` (bundled FFmpeg + SDL2, see [Requirements](#requirements)) — no separate player install needed; if that package is missing from the build, the preview controls are simply disabled with an explanatory note, everything else keeps working normally.
+
+Live previews now extend to every asset type across the Settings Editor and the assignment dialogs — thumbnail images for stadiums/scoreboards/TV logos/pitch/net/police, per-track play/stop for chants — instead of just a filename, plus a **"Reveal in Explorer"** button that opens the currently selected asset's folder or archive directly. A dedicated **Settings** tab groups App Settings and Overlay Settings separately from the Dashboard's Modules card, and a magnifying-glass **UI zoom control** scales fonts and window/dialog sizing app-wide.
+
+Bindings can also be shared between installs — see [Settings Export & Import](#settings-export--import).
 
 ## Screenshots
 
@@ -307,6 +324,31 @@ Optional files supported by the runtime:
 
 Archive extraction is used only for loading the stadium files. Preview lookup does not extract archives, so preview images are resolved from `StadiumGBD/render/thumbnail/stadium/<stadium name>.*`.
 
+### Goalpost Model & Texture Packs
+
+A stadium's goalpost can be overridden with two independent, freely mixable packs instead of one bundled folder — any model can be paired with any color/texture:
+
+```text
+FSW/Goalpost/
+  GoalpostModel/<name>/
+    specificgoalpost_<id>_0.rx3
+    preview.png                  (optional, static preview image)
+  GoalpostColor/<name>/
+    specificnetsupportpost_0_0_textures.rx3
+```
+
+Pick a **Goalpost Model** and/or **Goalpost Texture** per stadium name from the "Assign Stadium" dialog's Visual Details card, or from the Settings Editor's Stadium Settings tab — both write to the same shared, stadium-name-keyed settings, alongside Police/Pitch/Net. Leaving both unset keeps the legacy behavior (the stadium's own `GoalpostGBD` folder, if any). The model preview is a static image (`preview.png`/`.jpg`/`.jpeg` inside the model folder); the texture/color has no preview-image convention, so a small preview is instead rendered directly from its `.rx3`.
+
+### Manual Stadium Picker & Multi-Stadium Assignments
+
+By default, when a team/round/tournament has more than one stadium assigned, CGFS picks one at random each match ("Randomize multiple stadium selection", on by default in the Settings tab). Turn that toggle off and an in-game picker panel opens instead — a scrollable, thumbnail-backed list (capped at 64 entries) you choose from manually before the match loads.
+
+Each stadium in a multi-stadium assignment can carry its own Police/Pitch/Net/Goalpost values, edited from a two-list **Assigned / Available** UI in the Settings Editor, rather than one shared triple for the whole assignment.
+
+### Custom Stadium Display Name
+
+The **Scoreboard Stadium Name** tab in the Settings Editor lets you override the vanilla stadium name FIFA shows on its pre-match presentation screen for a given stadium — e.g. showing your custom stadium's real name instead of whichever vanilla stadium (`Waldstadion`/`Sanderson Park`) its container slot borrows a name from. This previously wrote to memory with no visible effect; as of v1.6.0 it actually renders in-game, found via a live memory scan-and-patch rather than a fixed offset, with a bounded retry window right as the match's presentation screen loads. Very long names may still be shortened if the specific stadium slot's underlying text buffer has no extra room.
+
 ### Camera Packages
 
 The Camera tab supports the exact package folder named:
@@ -381,6 +423,25 @@ Notes:
 
 Kit Mixer requires the same 32-bit `FifaLibrary16.dll` bridge as database reading and BH regeneration — see [FIFA Database Reading (32-bit Bridge)](#fifa-database-reading-32-bit-bridge) further down.
 
+### Kit Sets
+
+The Kit Mixer **Simple** tab lets you apply a ready-made kit set — jersey, numbers, and UI thumbnail together — in one action, instead of mixing each piece by hand in **Advanced**. Kit sets live under a `packs` subfolder of the same per-team kit source used above:
+
+```text
+FSW/Kits/<name>/packs/<pack_name>/
+  sceneassets/kit/kit_<team_id>_<kittype>_<tourn_id>.rx3
+  sceneassets/kitnumbers/specifickitnumbers_<team_id>_<jerseyOrShorts>_<tourn_id>_<kittype>.rx3
+  ui/imgAssets/kits/j<kittype>_<team_id>_0.dds
+```
+
+Each immediate subfolder of `packs/` is offered as one selectable kit set. An **"Auto link"** checkbox (checked by default) automatically pairs a keeper kit set that shares the exact same pack folder name as the selected outfield kit set — most users never need to touch anything else. Uncheck it to pick a keeper kit manually from the dropdown instead (or "-- none --" for no keeper kit at all); this choice is remembered per kit set (`settings.ini [kitgkauto]`/`[kitgk]`).
+
+In-game, the overlay's **Kits** tab walks scope → kit type → kit set the same way the Stadiums tab does, and these hotkeys cycle kit sets without opening the menu at all, shown as a stacked prev/current/next carousel:
+
+- **F7 / F8** — home team previous / next kit set
+- **F9 / F10** — away team previous / next kit set
+- **F11** — cycle kit type (home / away / keeper / third)
+
 ⚠ **Known limitation — kit numbers / name color on a vanilla install:** the per-team kit number override and the jersey name color patch only take effect in-game through `assignKitDetails(...)`/`GetRMNumberSet(...)`, which live in CGFS's bundled `player.lua`. That file is only installed if you check **"Rev Mod Lua Assets"** in the Setup tab's Extra section (unchecked by default) — leave it unchecked on a plain vanilla install and Kit Mixer's kit-number and name-color changes are silently ignored in-game, even though Kit Mixer itself reports them as applied. Checking it, however, also installs CGFS's bundled `general.lua`, which sets the *global* kit-number identifier scheme — this can make every **other** team's kit numbers (any team you haven't touched in Kit Mixer) show a checkerboard/missing texture if your kit-number font pack expects the other scheme; toggle **"Enable custom kit numbers"** (same Extra section) to switch schemes if that happens. Total-conversion mods like FIP aren't affected — they ship their own already-compatible Lua, so the Rev Mod checkbox isn't needed (or recommended) there at all.
 
 ### Assets Extractor Details
@@ -390,10 +451,35 @@ The Setup tab's **Assets Extractor** card, backed by the standalone `bin/KitExtr
 - **Database** — a one-time "Extract Database" bootstrap that copies a template `fifa_ng_db.db` into place for clean vanilla installs that don't ship one as a loose file. Every other extraction requires this to already be done, and the button locks itself once a database exists so a modded/edited one is never silently overwritten.
 - **Kits** — extracts, for the whole roster, kit textures (jerseys/shorts/keeper kits), kit-selection UI thumbnails, and kit numbers (shared glyph sheets plus the rare per-team override a handful of licensed clubs ship — a high failure count on that second part is normal). Checkboxes under one **"Extract Selected"** action.
 - **Team Logos** — extracts the small crest images shown on the Dashboard and in-game overlay.
+- **League Logos** — extracts league logos (`data/ui/imgassets/league/`), used by the League preview box in the Team Picker dialog. Unlike the other modes, this has no per-team component — it's a single pass, not a per-team loop.
+
+Browsable **Team Picker** and **Stadium Picker** dialogs, with crest/logo previews and search, replace plain dropdowns in Kit Mixer's "Pick Team" flow and the Scoreboard Stadium Name editor.
 
 ⚠ **Recommended for vanilla installs only** — extracting over a total-conversion mod (e.g. FIFA Infinity) can overwrite and corrupt its custom content.
 
 Extraction doesn't regenerate BH by itself — run **Regen BH** (Installer tab) afterward so the extracted/replaced files actually show up in-game without restarting it. See [FIFA Database Reading (32-bit Bridge)](#fifa-database-reading-32-bit-bridge) further down for the native binaries this tool needs.
+
+### Ball, Referee, Wipe & Adboard Folders
+
+Four ini-only asset modules, each assignable per round/tournament from the Settings Editor exactly like Scoreboard/TV Logo/Movies, with their own Setup tab toggle:
+
+```text
+FSW/balls/<folder>/*.rx3          -> data/sceneassets/ball
+FSW/referee/<folder>/*.rx3        -> data/sceneassets/kit
+FSW/wipe/<folder>/*.rx3           -> data/sceneassets/wipe3d
+FSW/adboards/<folder>/            -> data/sceneassets/adboard (+ corner-flag routing)
+```
+
+Adboard additionally supports a per-stadium override — `FSW/adboards/<stadium name>/` takes priority over the round/tournament assignment whenever it exists. Each module warns in the Setup tab if assets are assigned while its module toggle is switched off.
+
+### Settings Export & Import
+
+Share stadium/scoreboard/chants/etc. bindings between installs from the Settings tab: export selected `settings.ini` sections to a standalone `.ini` file, then import it back on another install with an explicit choice of mode:
+
+- **Replace** — clears the destination section first, then writes the imported values.
+- **Merge** — only fills in keys that are missing on the destination, leaving existing bindings untouched.
+
+Import shows a conflict preview before anything is overwritten, so you can see exactly what will change.
 
 ### Custom Substitutions Details
 
@@ -445,7 +531,7 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/`: main application source code.
 - `server16_py/app.py`: application entry class; assembles the mixin modules below.
 - `server16_py/app_ui.py`: main window construction, dashboard layout, and UI helpers.
-- `server16_py/app_overlay.py`: in-game overlay loop, gamepad/keyboard input handling, and D3D menu rendering.
+- `server16_py/app_overlay.py`: in-game overlay loop, gamepad/keyboard/mouse input handling, and syncing menu content/state to the native overlay (menu rendering itself is done by the RmlUi-based native side, see below).
 - `server16_py/app_game.py`: game process polling, live match context reading, and stats loop.
 - `server16_py/app_settings.py`: settings loading, module state management, and worker queue.
 - `server16_py/app_logging.py`: runtime log panel and auto-follow toggle.
@@ -456,15 +542,21 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/asset_runtime.py`: scoreboard, TV logo, movie, and related routing.
 - `server16_py/chants_runtime.py`: chants and audio playback runtime.
 - `server16_py/camera_runtime.py`: Anth camera package discovery, preview, and application.
-- `server16_py/kit_mixer.py`: Kit Mixer runtime — mixes jersey/shorts textures, kit numbers, kit UI thumbnails, and jersey name color, with a per-kit-type restore manager.
+- `server16_py/kit_mixer.py`: Kit Mixer runtime — mixes jersey/shorts textures, kit numbers, kit UI thumbnails, and jersey name color (Advanced tab), plus Kit Sets/`[kitgk]` linked-goalkeeper support (Simple tab), with a per-kit-type restore manager.
 - `server16_py/substitution_runtime.py`: live in-game hook that lets you raise FIFA 16's hardcoded substitution limit for the current match.
+- `server16_py/entrance_runtime.py`: Team Entrance runtime — per-home-team walkout anthem playback.
+- `server16_py/match_string_patcher.py`: live memory scan-and-patch coordinators, including the one behind the `scoreboardstdname` fix.
 - `server16_py/settings_editor.py`: settings editing UI.
 - `server16_py/dialogs.py`: assignment dialogs.
-- `server16_py/video_preview.py`: embedded libVLC movie (`.vp8`) preview widget shared by the Movie assignment dialog and the settings editor.
+- `server16_py/team_picker_dialog.py` / `server16_py/stadium_picker_dialog.py`: browsable Team/Stadium picker dialogs with crest/logo previews and search.
+- `server16_py/video_preview.py`: embedded `ffpyplayer`-based movie (`.vp8`) preview widget shared by the Movie assignment dialog and the settings editor, decoding on its own worker thread.
+- `server16_py/movie_preview_runtime.py`: streams decoded preview frames into the D3D overlay for in-overlay movie previews.
+- `server16_py/dds_image_worker.py`: 32-bit bridge that bakes a loose `.png`/`.jpg` into a kit-selection UI `.dds` thumbnail.
 - `server16_py/file_tools.py`: shared file-copying, archive extraction, and setup helpers.
 - `server16_py/fifa_db.py`: reads team/stadium names from the FIFA t3db database via the `db_worker.py` subprocess bridge.
 - `server16_py/db_worker.py` / `server16_py/bh_worker.py` / `server16_py/kit_worker.py` / `server16_py/kit_preview_worker.py`: 32-bit subprocess workers that load `FifaLibrary16.dll` (x86-only) to read the database, regenerate BH entries, and mix/preview kit textures, respectively.
-- `server16_py/native_tools/kit_extractor/`: source for `KitExtractorHost.exe` (`bin/KitExtractorHost.exe`), a standalone x86 tool that bulk-extracts kits/database content used by the Setup tab's Assets Extractor.
+- `server16_py/native_tools/kit_extractor/`: source for `KitExtractorHost.exe` (`bin/KitExtractorHost.exe`), a standalone x86 tool that bulk-extracts kits/database/league-logo content used by the Setup tab's Assets Extractor.
+- `server16_py/d3d_overlay/cgfs16_rmlui.cpp` / `.h`, `cgfs16_rmlui_menu.cpp` / `.h`: the RmlUi-based F12 overlay menu renderer and menu logic; `resources/rmlui/*.rml` are loaded as loose files.
 - `runtime/`: local runtime data such as settings and logs.
 - `legacy/`: reference material from the original project/conversion process.
 - `scripts/setup_python32.bat`: provisions the bundled 32-bit Python interpreter used by the workers above.
@@ -553,7 +645,7 @@ Suggested GitHub release contents:
 - release notes summarizing major fixes and improvements
 - optional screenshots or changelog excerpts
 
-Previous release notes: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md)
+Previous release notes: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) · [v1.6.0](RELEASE_NOTES_v1.6.0.md)
 
 ## Credits
 

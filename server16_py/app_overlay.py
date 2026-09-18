@@ -2906,6 +2906,10 @@ class OverlayMixin:
         if gk_result:
             detail = f"{detail}  (GK: {gk_result['tourn_id']})"
 
+        numbers_missing_reason = result.get("numbers_missing_reason")
+        if numbers_missing_reason:
+            self._warn_kit_numbers_not_applied(numbers_missing_reason)
+
         # Recompute the same options list _trigger_kit_cycle used (cheap local
         # dir scan, no subprocess) to find the prev/next entries either side
         # of the index that worker landed on.
@@ -2940,6 +2944,35 @@ class OverlayMixin:
         inj = self._d3d_injector
         if inj is not None:
             inj.hide_kit_carousel()
+
+    def _warn_kit_numbers_not_applied(self, reason: str) -> None:
+        """Separate warning toast (not the carousel panel itself) for
+        whenever a kit cycled in via the hotkey carousel had no usable
+        SpecificNumberFont source — see KitMixRuntime._resolve_specific_
+        kitnumbers, whose "missing"/"ambiguous" reason ends up on
+        apply_kit_set's result["numbers_missing_reason"]. Silently applying
+        a kit with no numbers would otherwise look like a broken pack with
+        no explanation in-game; the actual reason is already logged by
+        kit_mixer itself, this just surfaces it where the player can see it
+        without having to check runtime/server16.log.
+
+        Title/body are kept deliberately short — toast.rml's .title/.body
+        are single-line (white-space: nowrap + text-overflow: ellipsis) at
+        a fixed 360px toast width, same constraint every other toast in
+        this app already lives within (see notify.warn.* in the locale
+        files for the established length budget); the team/kit context is
+        already visible on the carousel panel shown alongside this toast,
+        so it doesn't need repeating here — the full filenames are already
+        in runtime/server16.log for whoever needs them."""
+        title_key = "kitsimple.numbers_warning_title_missing" if reason == "missing" else "kitsimple.numbers_warning_title_ambiguous"
+        body_key = "kitsimple.numbers_warning_missing" if reason == "missing" else "kitsimple.numbers_warning_ambiguous"
+        slot = self._show_toast_notification(
+            self.tr(title_key),
+            self.tr(body_key),
+            style=1, icon="problem",
+        )
+        if slot != -1:
+            self.after(5000, lambda s=slot: self._hide_toast_notification(s))
 
     def _best_effort_neutralize_game_keys(self) -> None:
         """Release common UI keys so FIFA is less likely to consume held inputs while menu is open."""

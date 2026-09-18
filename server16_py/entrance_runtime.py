@@ -347,7 +347,19 @@ class TeamEntranceRuntime:
             # are known to read as "not running" throughout the normal, unpaused
             # walkout too (see the class docstring), so they would mistake the
             # pre-kickoff presentation itself for a pause.
-            pause_menu_tokens = ("fluxhub", "stadiumpan")
+            # "instantreplay" added 2026-09-18 after a live report: opening
+            # FluxHub during the walkout, then choosing its "Instant Replay"
+            # option, lands on `game/screens/instantReplay/ReplayScreen` --
+            # a page that matched neither token, so the resume debounce below
+            # mistook it for "match resumed" and faded the anthem back in
+            # while still just reviewing a replay, right before actual
+            # kick-off. Reviewing a replay from inside the pause flow is not
+            # gameplay resuming, so it must keep resetting the resume
+            # debounce exactly like fluxhub/stadiumpan already do -- the same
+            # "the only available page-name signal can't distinguish two
+            # situations that look identical" pattern behind every other fix
+            # in this saga (see CLAUDE.md §7).
+            pause_menu_tokens = ("fluxhub", "stadiumpan", "instantreplay")
             while time.time() < hard_deadline and self._is_current(generation):
                 if not app.module_enabled("TeamEntrance"):
                     break

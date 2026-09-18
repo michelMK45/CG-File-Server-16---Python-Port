@@ -493,6 +493,84 @@ class TeamEntranceRuntimeTests(unittest.TestCase):
             self.assertIn((0, 0.2, 300), app.chants_runtime.fades)
             self.assertTrue(any("kick-off clock detected" in line for line in app.logs))
 
+    def test_worker_stays_paused_through_instant_replay_then_resumes_on_real_page(self) -> None:
+        # Regression test for a live report (2026-09-18): opening FluxHub
+        # during the walkout, then choosing its "Instant Replay" option,
+        # lands on `game/screens/instantReplay/ReplayScreen` -- a page that
+        # (before this fix) matched neither pause-menu token, so the resume
+        # debounce mistook it for "match resumed" and faded the anthem back
+        # in while the player was still just reviewing a replay from the
+        # pause menu, right before actual kick-off. `player.resume` is
+        # wrapped to record the page name in effect at the moment it's
+        # called, so this proves resume only ever fires once the page is
+        # genuinely back to gameplay -- not merely that it fires exactly
+        # once (which the buggy code would also do, just too early).
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            track = root / "Entrance.mp3"
+            track.write_bytes(b"test")
+            app = FakeApp(root)
+            player = FakePlayer()
+            resume_pages: list[str] = []
+            original_resume = player.resume
+
+            def recording_resume() -> None:
+                resume_pages.append(app.lastpagename)
+                original_resume()
+
+            player.resume = recording_resume  # type: ignore[method-assign]
+
+            memory = FakeMemory(
+                [
+                    (1, 1),  # presentation
+                    (1, 1),  # iter1: warm up
+                    (1, 1),  # iter2: paused (fluxhub, count=1)
+                    (1, 1),  # iter3: paused (fluxhub, count=2)
+                    (1, 1),  # iter4: paused (fluxhub, count=3 -> pause fires)
+                    (1, 1),  # iter5: instant replay (still paused)
+                    (1, 1),  # iter6: instant replay
+                    (1, 1),  # iter7: instant replay
+                    (1, 1),  # iter8: instant replay
+                    (1, 1),  # iter9: real page, resume debounce tick 1
+                    (1, 1),  # iter10: resume debounce tick 2
+                    (1, 1),  # iter11: resume debounce tick 3 -> resume fires
+                    (1, 2),  # iter12: kickoff speed hit 1
+                    (1, 3),  # iter13: kickoff speed hit 2
+                    (1, 4),  # iter14: kickoff speed hit 3 -> fade-out
+                ]
+            )
+            runtime = TeamEntranceRuntime(
+                app,
+                player_factory=lambda: player,
+                memory_factory=lambda: memory,
+            )
+            config = TeamEntranceConfig(track, 0.2, 0.0)
+
+            page_sequence = iter(
+                [
+                    "game/screens/fluxHub/FluxHub",
+                    "game/screens/fluxHub/FluxHub",
+                    "game/screens/fluxHub/FluxHub",
+                    "game/screens/instantReplay/ReplayScreen",
+                    "game/screens/instantReplay/ReplayScreen",
+                    "game/screens/instantReplay/ReplayScreen",
+                    "game/screens/instantReplay/ReplayScreen",
+                    "",
+                    "",
+                    "",
+                ]
+            )
+
+            def fake_sleep(_seconds: float) -> None:
+                app.lastpagename = next(page_sequence, app.lastpagename)
+
+            with patch("server16_py.entrance_runtime.time.sleep", side_effect=fake_sleep):
+                runtime._run_worker(0, "1", config)
+
+            self.assertEqual(player.pause_calls, 1)
+            self.assertEqual(resume_pages, [""])
+            self.assertTrue(any("kick-off clock detected" in line for line in app.logs))
+
     def test_worker_stops_completely_when_match_ends_while_paused(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

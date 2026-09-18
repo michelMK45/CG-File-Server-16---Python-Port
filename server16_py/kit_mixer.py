@@ -322,6 +322,14 @@ class KitMixRuntime:
     def pack_kitui_dir(self, team_id: str, pack_name: str) -> Path:
         return self.packs_dir(team_id) / pack_name / "ui" / "imgAssets" / "kits"
 
+    def pack_lua_dir(self, team_id: str, pack_name: str) -> Path:
+        """Mirrors kits_lua_dir but scoped to one packs/<pack_name>/ set —
+        same fifarna/lua/assignments/teams layout, just rooted under the
+        pack folder instead of the flat kits_dir root. See
+        _resolve_number_colours_from_lua/_resolve_pack_name_color, which
+        read whichever of the two applies for a given kit set."""
+        return self.packs_dir(team_id) / pack_name / "fifarna" / "lua" / "assignments" / "teams"
+
     def backup_path(self, live_path: Path) -> Path:
         return live_path.with_name(f"{live_path.stem}.original{live_path.suffix}")
 
@@ -545,13 +553,33 @@ class KitMixRuntime:
         return output_path
 
     @staticmethod
-    def _kit_set_entry(tourn_id: str, kit_path: Path, jersey_numbers_path, shorts_numbers_path, kitui_path) -> dict:
+    def _kit_set_entry(
+        tourn_id: str, kit_path: Path, jersey_numbers_path, shorts_numbers_path, kitui_path,
+        numbers_missing_reason: str | None = None, name_color: str | None = None,
+    ) -> dict:
         return {
             "tourn_id": tourn_id,
             "kit_path": kit_path,
             "jersey_numbers_path": jersey_numbers_path,
             "shorts_numbers_path": shorts_numbers_path,
             "kitui_path": kitui_path,
+            # "missing" (no specifickitnumbers files at all) or "ambiguous"
+            # (only the fallback-by-colour files exist, and more than one —
+            # see _resolve_specific_kitnumbers) when neither numbers path
+            # resolved; None once either one did. Surfaced by apply_kit_set
+            # so a caller (the hotkey carousel, the overlay Kits tab) can
+            # warn the user with the actual reason instead of silently
+            # applying a kit with no numbers.
+            "numbers_missing_reason": numbers_missing_reason,
+            # Jersey name colour read straight out of this pack's own
+            # bundled assignKitDetails(pack_id,kittype,...) call, if any —
+            # see _resolve_pack_name_color. None when no lua is bundled, no
+            # call exists for this pack_id+kittype, or it leaves namecolour
+            # at -1 ("don't override"). apply_kit_set applies this
+            # automatically alongside the kit/numbers/kitui, same as it
+            # already does for numbers -- no manual Advanced-tab step needed
+            # when the pack already ships the colour.
+            "name_color": name_color,
             "complete": jersey_numbers_path is not None and shorts_numbers_path is not None and kitui_path is not None,
         }
 
@@ -601,14 +629,16 @@ class KitMixRuntime:
             if not m or m.group(2) != kittype or m.group(3) != "0":
                 continue
             pack_id = m.group(1)
-            jersey_numbers = self.kitnumbers_dir(team_id) / kitnumbers_filename(pack_id, kittype, "jersey", "0")
-            shorts_numbers = self.kitnumbers_dir(team_id) / kitnumbers_filename(pack_id, kittype, "shorts", "0")
+            lua_dir = self.kits_lua_dir(team_id)
+            jersey_numbers, shorts_numbers, numbers_reason = self._resolve_specific_kitnumbers(
+                self.kitnumbers_dir(team_id), lua_dir, pack_id, kittype
+            )
+            name_color = self._resolve_pack_name_color(lua_dir, pack_id, kittype)
             kitui = self.kitui_dir(team_id) / kitui_filename(pack_id, kittype, "0")
             entries.append(self._kit_set_entry(
-                "0", path,
-                jersey_numbers if jersey_numbers.exists() else None,
-                shorts_numbers if shorts_numbers.exists() else None,
+                "0", path, jersey_numbers, shorts_numbers,
                 kitui if kitui.exists() else None,
+                numbers_missing_reason=numbers_reason, name_color=name_color,
             ))
 
         packs_root = self.packs_dir(team_id)
@@ -627,16 +657,154 @@ class KitMixRuntime:
                 if kit_path is None:
                     continue
 
-                numbers_dir = self.pack_kitnumbers_dir(team_id, pack_name)
-                jersey_numbers_path = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_1_*_{kittype}.rx3"))), None) if numbers_dir.exists() else None
-                shorts_numbers_path = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_2_*_{kittype}.rx3"))), None) if numbers_dir.exists() else None
+                lua_dir = self.pack_lua_dir(team_id, pack_name)
+                jersey_numbers_path, shorts_numbers_path, numbers_reason = self._resolve_specific_kitnumbers(
+                    self.pack_kitnumbers_dir(team_id, pack_name), lua_dir, pack_id, kittype
+                )
+                name_color = self._resolve_pack_name_color(lua_dir, pack_id, kittype)
                 pack_kitui_dir = self.pack_kitui_dir(team_id, pack_name)
                 kitui_path = next(iter(sorted(pack_kitui_dir.glob(f"j{kittype}_{pack_id}_*.dds"))), None) if pack_kitui_dir.exists() else None
 
-                entries.append(self._kit_set_entry(pack_name, kit_path, jersey_numbers_path, shorts_numbers_path, kitui_path))
+                entries.append(self._kit_set_entry(
+                    pack_name, kit_path, jersey_numbers_path, shorts_numbers_path, kitui_path,
+                    numbers_missing_reason=numbers_reason, name_color=name_color,
+                ))
 
         entries.sort(key=self._kit_set_sort_key)
         return entries
+
+    @staticmethod
+    def _find_assign_kit_details_args(lua_dir: Path, pack_id: str, kittype: str) -> list[str] | None:
+        """Returns the raw comma-split argument list (namefont,namecolour,
+        lay,numberset,numbercolourshirt,numbercolourshort,fit,collar) of the
+        pack's own bundled assignKitDetails(pack_id,kittype,...) call, or
+        None if no lua bundled alongside this kit set defines one for this
+        exact pack_id+kittype. Shared source-of-truth for both
+        _resolve_number_colours_from_lua (numbercolourshirt/short) and
+        _resolve_pack_name_color (namecolour) — both fields FIFA's own
+        player.lua reads from the exact same call at runtime. Scans every
+        *.lua in lua_dir (mirroring find_kit_lua_sources — a pack's bundled
+        lua may reference a different reference id than the live team_id
+        it's assigned to, but it always matches pack_id, the id embedded in
+        its own filenames)."""
+        if not lua_dir.exists():
+            return None
+        call_re = re.compile(
+            r"assignKitDetails\(\s*" + re.escape(pack_id) + r"\s*,\s*" + re.escape(kittype) + r"\s*,\s*([^)]*)\)"
+        )
+        for lua_path in sorted(lua_dir.glob("*.lua")):
+            try:
+                text = lua_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            match = call_re.search(text)
+            if match:
+                return [a.strip() for a in match.group(1).split(",")]
+        return None
+
+    @classmethod
+    def _resolve_number_colours_from_lua(cls, lua_dir: Path, pack_id: str, kittype: str) -> tuple[str | None, str | None]:
+        """Reads numbercolourshirt/numbercolourshort straight out of the
+        pack's own bundled assignKitDetails(...) call — the exact same two
+        fields FIFA's own player.lua (getKitNumberColourShirt/
+        getKitNumberColourShort, fed into GetRMNumberSet) reads at runtime
+        to pick which specifickitnumbers_<id>_0_<tourn>_<colour>.rx3 file
+        applies to this kittype. This resolves the *same* ambiguity the
+        engine itself resolves, from data the pack already ships, rather
+        than guessing from the filename alone or requiring the user to
+        rename anything. Returns (shirt_colour, short_colour) as raw string
+        colour/style ids, or None for either that's absent/left as -1
+        ("don't override") in the lua."""
+        args = cls._find_assign_kit_details_args(lua_dir, pack_id, kittype)
+        if args is None or len(args) < 6:
+            return None, None
+        shirt, short = args[4], args[5]
+        return (shirt if shirt != "-1" else None, short if short != "-1" else None)
+
+    @classmethod
+    def _resolve_pack_name_color(cls, lua_dir: Path, pack_id: str, kittype: str) -> str | None:
+        """Reads the jersey namecolour straight out of the same pack-bundled
+        assignKitDetails(pack_id,kittype,...) call
+        _resolve_number_colours_from_lua reads — args[1] instead of args[4]/
+        args[5]. This is what apply_kit_set feeds into apply_name_color so a
+        pack's own name colour gets applied automatically alongside its kit/
+        numbers/kitui, the same way _resolve_number_colours_from_lua already
+        lets kit numbers apply without any manual step or file renaming.
+        Returns None when no lua/call is found, namecolour is -1 ("don't
+        override"), or it isn't a valid 6-hex-digit colour."""
+        args = cls._find_assign_kit_details_args(lua_dir, pack_id, kittype)
+        if args is None or len(args) < 2:
+            return None
+        namecolour = args[1].strip("\"'")
+        return namecolour if NAME_COLOR_HEX_RE.match(namecolour) else None
+
+    def _resolve_specific_kitnumbers(self, numbers_dir: Path, lua_dir: Path, pack_id: str, kittype: str) -> tuple[Path | None, Path | None, str | None]:
+        """Resolves the jersey/shorts SpecificNumberFont source files for one
+        kit set, mirroring player.lua's own GetRMNumberSet fallback order:
+        first the per-kittype variant (shortcode 1=jersey/2=shorts, last
+        field the kittype — what KitExtractorHost.cs's own extractor
+        produces). Real community kit packs very often ship only
+        GetRMNumberSet's *other* fallback-by-colour variant instead —
+        shortcode "0" literal, last field a colour/style id rather than a
+        kittype (e.g. "specifickitnumbers_1362_0_0_13.rx3") — which the
+        engine itself would fall back to reading in-game if the per-kittype
+        file were simply missing, so reusing it as this kittype's numbers is
+        exactly equivalent, not a guess, PROVIDED it's the only such file in
+        the folder.
+
+        When several colour/style candidates exist for the same pack_id
+        (confirmed live: real packs routinely ship one such file per kit
+        variant, with no kittype/kit-variant indicator anywhere in the
+        filename), _resolve_number_colours_from_lua is tried first — it
+        reads the pack's own bundled team lua for the real
+        numbercolourshirt/numbercolourshort values FIFA itself would use to
+        pick between them, which resolves this deterministically (including
+        the case, confirmed against a real pack, where the shirt and shorts
+        digits genuinely use two *different* colour files for the same kit
+        type). Only when that yields nothing (no bundled lua, no matching
+        assignKitDetails call, or the colour(s) it names aren't actually
+        among the files present) does this fall back to the old filename-
+        only heuristic: use the single candidate for both if there's
+        exactly one, otherwise leave both unresolved and log the ambiguity
+        rather than guessing (picking the alphabetically-first one was
+        confirmed live to apply the wrong kit's number style before this
+        lua-based resolution existed).
+
+        Returns (jersey_path, shorts_path, missing_reason) — missing_reason
+        is None whenever either path resolved, "missing" when nothing at all
+        was found (not even a colour/style fallback candidate), or
+        "ambiguous" for the case above. A caller applying the kit set
+        (apply_kit_set) surfaces this reason so the UI can warn about it
+        instead of silently shipping a kit with no numbers."""
+        if not numbers_dir.exists():
+            return None, None, "missing"
+        jersey = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_1_*_{kittype}.rx3"))), None)
+        shorts = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_2_*_{kittype}.rx3"))), None)
+        if jersey is not None or shorts is not None:
+            return jersey, shorts, None
+
+        shirt_colour, short_colour = self._resolve_number_colours_from_lua(lua_dir, pack_id, kittype)
+        if shirt_colour is not None or short_colour is not None:
+            jersey_lua = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_0_*_{shirt_colour}.rx3"))), None) if shirt_colour else None
+            shorts_lua = next(iter(sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_0_*_{short_colour}.rx3"))), None) if short_colour else None
+            if jersey_lua is not None or shorts_lua is not None:
+                return jersey_lua, shorts_lua, None
+
+        candidates = sorted(numbers_dir.glob(f"specifickitnumbers_{pack_id}_0_*.rx3"))
+        if len(candidates) == 1:
+            return candidates[0], candidates[0], None
+        if len(candidates) > 1:
+            names = ", ".join(c.name for c in candidates)
+            self.app.log(
+                f"Kit numbers: {len(candidates)} ambiguous colour/style candidates for pack "
+                f"{pack_id} (kittype {kittype}) in {numbers_dir} -- {names} -- none applied, "
+                "since neither a bundled team lua nor the filenames say which one is for this "
+                f"kit type. Rename the right one to specifickitnumbers_{pack_id}_1_0_{kittype}.rx3 "
+                f"(jersey) / specifickitnumbers_{pack_id}_2_0_{kittype}.rx3 (shorts) to pick it "
+                "explicitly."
+            )
+            return None, None, "ambiguous"
+        return None, None, "missing"
 
     @staticmethod
     def live_kittype_for(kittype: str, target_kittype: str | None = None) -> str:
@@ -707,18 +875,57 @@ class KitMixRuntime:
             live_kitui.write_bytes(entry["kitui_path"].read_bytes())
             applied["kitui"] = str(live_kitui)
 
+        if entry["name_color"]:
+            # Writes into team_id's own LIVE data/fifarna/lua/.../team_<id>.lua
+            # (via apply_name_color), never pack_id's -- same team_id/pack_id
+            # split as every other asset above (see the docstring). Never
+            # allowed to block/roll back the rest of an otherwise-successful
+            # kit apply, same tolerance apply_kit_set_linked already gives a
+            # failed/missing GK link.
+            try:
+                color_result = self.apply_name_color(team_id, live_kittype, entry["name_color"])
+                if color_result.get("applied"):
+                    applied["name_color"] = color_result["output"]
+            except Exception as exc:
+                app.log(f"Kit set name color apply failed for team {team_id} ({live_kittype}): {exc}")
+
         app.log(f"Kit set applied for team {team_id} ({kittype}->{live_kittype}, tourn {tourn_id}): {sorted(applied)}")
-        return {"team_id": team_id, "kittype": kittype, "target_kittype": live_kittype, "tourn_id": tourn_id, "applied": applied}
+        return {
+            "team_id": team_id, "kittype": kittype, "target_kittype": live_kittype, "tourn_id": tourn_id,
+            "applied": applied, "numbers_missing_reason": entry["numbers_missing_reason"],
+        }
 
     @staticmethod
     def gk_link_key(team_id: str, tourn_id: str) -> str:
         return f"{team_id}_{tourn_id}"
 
+    def is_gk_auto_link_enabled(self, team_id: str, tourn_id: str) -> bool:
+        """Whether the GK link for this exact outfield kit set is driven by
+        suggest_linked_gk_tourn's automatic same-pack-name match rather than
+        the manual settings.ini [kitgk] value — settings.ini [kitgkauto],
+        same "<team_id>_<tourn_id>" key shape. Defaults to True (auto) when
+        never configured, matching the "Auto link" checkbox's own default in
+        the Simple tab, so most users never need to touch this at all."""
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return True
+        value = settings_ini.read(self.gk_link_key(team_id, tourn_id), "kitgkauto")
+        return value != "0"
+
+    def set_gk_auto_link_enabled(self, team_id: str, tourn_id: str, enabled: bool) -> None:
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return
+        settings_ini.write(self.gk_link_key(team_id, tourn_id), "1" if enabled else "0", "kitgkauto")
+        settings_ini.save()
+
     def get_linked_gk_tourn(self, team_id: str, tourn_id: str) -> str | None:
-        """The keeper-kit tourn_id linked to this team's (kittype, tourn_id)
-        outfield kit set, if the user configured one — settings.ini [kitgk],
-        keyed by "<team_id>_<tourn_id>" since the link is per specific era,
-        not per team globally (see apply_kit_set_linked)."""
+        """The manually-configured keeper-kit tourn_id for this team's
+        (kittype, tourn_id) outfield kit set — settings.ini [kitgk], keyed by
+        "<team_id>_<tourn_id>" since the link is per specific era, not per
+        team globally. Only meaningful when is_gk_auto_link_enabled is False
+        for the same key — see resolve_gk_tourn, which is what callers
+        (apply_kit_set_linked, the Simple tab UI) should actually use."""
         settings_ini = getattr(self.app, "settings_ini", None)
         if settings_ini is None:
             return None
@@ -736,23 +943,56 @@ class KitMixRuntime:
             settings_ini.delete_key(key, "kitgk")
         settings_ini.save()
 
+    def suggest_linked_gk_tourn(self, team_id: str, tourn_id: str) -> str | None:
+        """The keeper kit set "Auto link" should use for this outfield kit
+        set: if a keeper kit set exists under the exact same pack name/
+        tourn_id, that's a strong signal the two were packaged together on
+        purpose (e.g. a season's kit release bundling home + keeper under one
+        pack folder). Returns None if no keeper set shares that exact
+        tourn_id; deliberately never guesses via fuzzy name matching."""
+        if not team_id or not tourn_id:
+            return None
+        for entry in self.list_kit_sets(team_id, "2"):
+            if entry["tourn_id"] == tourn_id:
+                return tourn_id
+        return None
+
+    def resolve_gk_tourn(self, team_id: str, tourn_id: str) -> str | None:
+        """The GK tourn_id that should actually be used right now for this
+        outfield kit set: the automatic same-pack-name match while "Auto
+        link" is on (the default), or the manually configured [kitgk] value
+        once the user has turned it off for this exact kit set. This is the
+        single source of truth both apply_kit_set_linked and the Simple
+        tab's combo default should read from."""
+        if self.is_gk_auto_link_enabled(team_id, tourn_id):
+            return self.suggest_linked_gk_tourn(team_id, tourn_id)
+        return self.get_linked_gk_tourn(team_id, tourn_id)
+
     def apply_kit_set_linked(self, team_id: str, kittype: str, tourn_id: str, target_kittype: str | None = None) -> dict:
         """Strict superset of apply_kit_set: applies the outfield kit set as
         usual, then — only when it actually lands on the home/away live slot
         ("0"/"1", after target_kittype's override, if any — see apply_kit_set),
         per the explicit design constraint that this stays config/overlay-only
         and never adds a picker to FIFA's own kit-selection screen — also
-        applies the linked goalkeeper kit set if one is configured for this
-        exact tourn_id. A failed/missing GK application never rolls back or
-        blocks the outfield kit that already succeeded; result["gk"] is None
-        when no link is configured or the linked GK set couldn't be applied."""
+        applies whichever goalkeeper kit set resolve_gk_tourn resolves to
+        (the automatic same-pack-name match by default, or the user's manual
+        [kitgk] link once they've turned "Auto link" off), so the overlay's
+        Kits tab and the F7-F11 hotkey carousel pair up home/keeper kits
+        automatically without ever requiring a visit to the desktop Simple
+        tab. A failed/missing GK application never rolls back or blocks the
+        outfield kit that already succeeded; result["gk"] is None when no
+        link (automatic or manual) applies, or the linked GK set couldn't be
+        applied."""
         result = self.apply_kit_set(team_id, kittype, tourn_id, target_kittype=target_kittype)
         result["gk"] = None
         if result["target_kittype"] in ("0", "1"):
-            gk_tourn = self.get_linked_gk_tourn(team_id, tourn_id)
+            auto = self.is_gk_auto_link_enabled(team_id, tourn_id)
+            gk_tourn = self.resolve_gk_tourn(team_id, tourn_id)
             if gk_tourn:
                 try:
                     result["gk"] = self.apply_kit_set(team_id, "2", gk_tourn)
+                    if auto:
+                        self.app.log(f"Linked GK kit auto-matched by pack name for team {team_id} (tourn {gk_tourn})")
                 except Exception as exc:
                     self.app.log(f"Linked GK kit apply failed for team {team_id} tourn {gk_tourn}: {exc}")
         return result

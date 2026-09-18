@@ -180,6 +180,26 @@ class TeamEntranceTriggerTests(unittest.TestCase):
         self.assertEqual(game.entrance_starts, 0)
         self.assertFalse(game._entrance_armed)
 
+    def test_entrance_does_not_restart_when_instant_replay_follows_fluxhub(self) -> None:
+        # Reported live 2026-09-18: opening FluxHub during the walkout, then
+        # choosing its "Instant Replay" option, routes through
+        # `game/screens/instantReplay/ReplayScreen` -- a page the blocklist
+        # did not recognize, matching the exact "tournamentMode" gap fixed
+        # above but for the replay-viewer menu family instead.
+        game = FakeGame()
+        game.matchstarted = False
+
+        for page_name in (
+            "game/screens/fluxHub/FluxHub",
+            "",
+            "game/screens/instantReplay/ReplayScreen",
+            "game/screens/fluxHub/FluxHub",
+        ):
+            game._handle_page_transition(page_name)
+
+        self.assertEqual(game.entrance_starts, 0)
+        self.assertFalse(game._entrance_armed)
+
     def test_matchstarted_flips_false_immediately_on_pause_menu_page(self) -> None:
         # Leading hypothesis for "Restart doesn't stop/restart the anthem"
         # (reported live 2026-08-30, still not confirmed by a captured

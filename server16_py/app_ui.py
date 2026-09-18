@@ -2386,7 +2386,12 @@ class UIMixin:
         self._kitsimple_footer_frame = footer
         self.kitsimple_status_label = tk.Label(footer, text=self.display_value("idle"), bg=self.card, fg=self.muted, font=("Bahnschrift", 9))
         self.kitsimple_status_label.pack(anchor="w", pady=(0, 4))
-        ttk.Button(footer, text=self.tr("button.apply_kit_set"), command=self._kitsimple_apply).pack(fill="x")
+        kitsimple_btn_row = tk.Frame(footer, bg=self.card)
+        kitsimple_btn_row.pack(fill="x")
+        kitsimple_btn_row.grid_columnconfigure(0, weight=2)
+        kitsimple_btn_row.grid_columnconfigure(1, weight=1)
+        ttk.Button(kitsimple_btn_row, text=self.tr("button.apply_kit_set"), command=self._kitsimple_apply).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(kitsimple_btn_row, text=self.tr("button.restore_manager"), command=self._open_kit_restore_manager).grid(row=0, column=1, sticky="ew")
 
         # Scrollable body: team selector, kit list + preview, GK link row.
         scroll_host = tk.Frame(card, bg=self.card)
@@ -2455,6 +2460,21 @@ class UIMixin:
         preview_label.image_size = (170, 170)
         self._kitsimple_preview_label = preview_label
 
+        numbers_warning_label = tk.Label(
+            scroll_body, text="", bg=self.card, fg="#FFAA00", anchor="w", justify="left",
+            wraplength=420, font=("Bahnschrift", 9),
+        )
+        # Packed once, unconditionally, right here -- always kept in the
+        # layout (blank when there's nothing to warn about) rather than
+        # pack()/pack_forget()-toggled, since gk_row right below it is
+        # itself sometimes pack_forget()-ten (kittype 2/3, see
+        # _kitsimple_refresh_gk_options) and Tk's pack(before=...) requires
+        # the reference widget to already be in the packing list -- toggling
+        # both independently would risk a TclError depending on which
+        # widget's visibility changed most recently.
+        numbers_warning_label.pack(fill="x", pady=(0, 4))
+        self._kitsimple_numbers_warning_label = numbers_warning_label
+
         gk_row = tk.Frame(scroll_body, bg=self.card)
         gk_row.pack(fill="x", pady=(0, 8))
         self.kitsimple_gk_row = gk_row
@@ -2462,11 +2482,23 @@ class UIMixin:
         self.kitsimple_gk_var = tk.StringVar(value=KITSIMPLE_GK_NONE_LABEL)
         self._kitsimple_gk_options: dict[str, str] = {}
         gk_combo = ttk.Combobox(
-            gk_row, state="readonly", textvariable=self.kitsimple_gk_var,
+            gk_row, state="disabled", textvariable=self.kitsimple_gk_var,
             values=(KITSIMPLE_GK_NONE_LABEL,), width=24, style="Server16.TCombobox",
         )
         gk_combo.pack(side="left", padx=(6, 0))
         self.kitsimple_gk_combo = gk_combo
+        self._add_tooltip(gk_combo, "tooltip.kitsimple_gk_link")
+
+        self.kitsimple_gk_auto_var = tk.BooleanVar(value=True)
+        gk_auto_check = ttk.Checkbutton(
+            gk_row,
+            style="Switch.TCheckbutton",
+            text=self.tr("kitsimple.gk_auto_link"),
+            variable=self.kitsimple_gk_auto_var,
+            command=self._kitsimple_on_gk_auto_toggle,
+        )
+        gk_auto_check.pack(side="left", padx=(10, 0))
+        self._add_tooltip(gk_auto_check, "tooltip.kitsimple_gk_auto_link")
 
         self._kitsimple_refresh_lists()
 
@@ -2523,24 +2555,64 @@ class UIMixin:
         if self.kitsimple_gk_var.get() not in values:
             self.kitsimple_gk_var.set(KITSIMPLE_GK_NONE_LABEL)
 
-    def _kitsimple_sync_gk_selection(self) -> None:
-        """Reflects whatever GK link is already saved (settings.ini [kitgk])
-        for the currently-selected outfield kit set — the link is per exact
-        (team_id, tourn_id), so this must re-run every time the listbox
-        selection changes, not just on tab refresh."""
-        kittype_code = self._kitsimple_current_kittype_code()
-        if kittype_code not in ("0", "1"):
-            return
+    def _kitsimple_current_gk_tourn_id(self) -> str | None:
+        """The outfield tourn_id currently selected in the listbox, or None
+        if nothing valid is selected — shared by the GK sync/toggle/apply
+        paths below so they all agree on which kit set they're keying off."""
         listbox = self._kitsimple_listbox
         selection = listbox.curselection()
         if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
-            self.kitsimple_gk_var.set(KITSIMPLE_GK_NONE_LABEL)
+            return None
+        return self._kitsimple_kit_sets[selection[0]]["tourn_id"]
+
+    def _kitsimple_sync_gk_selection(self) -> None:
+        """Reflects the GK link for the currently-selected outfield kit set —
+        the link is per exact (team_id, tourn_id), so this must re-run every
+        time the listbox selection changes, not just on tab refresh.
+
+        Restores the saved "Auto link" state for this exact kit set (default
+        on, kit_mixer.is_gk_auto_link_enabled), then shows whichever kit
+        resolve_gk_tourn resolves to — the automatic same-pack-name match
+        while auto is on, or the manually saved [kitgk] value once it's been
+        turned off. The combo itself stays disabled while auto is on; see
+        _kitsimple_update_gk_combo_state."""
+        kittype_code = self._kitsimple_current_kittype_code()
+        if kittype_code not in ("0", "1"):
             return
         team_id = self.kitmix_team_id.get().strip()
-        tourn_id = self._kitsimple_kit_sets[selection[0]]["tourn_id"]
-        linked = self.kit_mixer.get_linked_gk_tourn(team_id, tourn_id) if team_id else None
+        tourn_id = self._kitsimple_current_gk_tourn_id()
+        if not team_id or tourn_id is None:
+            self.kitsimple_gk_auto_var.set(True)
+            self.kitsimple_gk_var.set(KITSIMPLE_GK_NONE_LABEL)
+            self._kitsimple_update_gk_combo_state()
+            return
+        self.kitsimple_gk_auto_var.set(self.kit_mixer.is_gk_auto_link_enabled(team_id, tourn_id))
+        self._kitsimple_refresh_gk_preview()
+
+    def _kitsimple_refresh_gk_preview(self) -> None:
+        """Sets the combo to whatever resolve_gk_tourn currently resolves to
+        for the selected kit set + the combo's own (not-yet-saved) "Auto
+        link" checkbox state — called both when the listbox selection
+        changes and when the checkbox itself is toggled, so the preview
+        never lags behind either input."""
+        team_id = self.kitmix_team_id.get().strip()
+        tourn_id = self._kitsimple_current_gk_tourn_id()
+        linked = None
+        if team_id and tourn_id is not None:
+            if self.kitsimple_gk_auto_var.get():
+                linked = self.kit_mixer.suggest_linked_gk_tourn(team_id, tourn_id)
+            else:
+                linked = self.kit_mixer.get_linked_gk_tourn(team_id, tourn_id)
         available = self.kitsimple_gk_combo.cget("values")
         self.kitsimple_gk_var.set(linked if linked and linked in available else KITSIMPLE_GK_NONE_LABEL)
+        self._kitsimple_update_gk_combo_state()
+
+    def _kitsimple_update_gk_combo_state(self) -> None:
+        auto = self.kitsimple_gk_auto_var.get()
+        self.kitsimple_gk_combo.configure(state="disabled" if auto else "readonly")
+
+    def _kitsimple_on_gk_auto_toggle(self) -> None:
+        self._kitsimple_refresh_gk_preview()
 
     def _kitsimple_selected_gk_tourn(self) -> str | None:
         value = self.kitsimple_gk_var.get()
@@ -2574,6 +2646,22 @@ class UIMixin:
             self.kitmix_team_id.set(dialog.result)
             self._kitsimple_refresh_lists()
 
+    def _kitsimple_update_numbers_warning(self, entry: dict | None) -> None:
+        """Yellow inline warning shown as soon as a kit set is selected in
+        the list — not just once it's actually applied, unlike the hotkey
+        carousel's own toast (_warn_kit_numbers_not_applied, app_overlay.py)
+        — so browsing the list itself already tells you which entries have
+        no usable kit numbers and why, before you commit to applying one.
+        Reads the same entry["numbers_missing_reason"] KitMixRuntime.
+        list_kit_sets already computes; no extra work needed here."""
+        label = self._kitsimple_numbers_warning_label
+        reason = entry["numbers_missing_reason"] if entry else None
+        if not reason:
+            label.configure(text="")
+            return
+        key = "kitsimple.numbers_warning_missing" if reason == "missing" else "kitsimple.numbers_warning_ambiguous"
+        label.configure(text=self.tr(key))
+
     def _kitsimple_on_select(self, _event=None) -> None:
         listbox = self._kitsimple_listbox
         selection = listbox.curselection()
@@ -2582,9 +2670,11 @@ class UIMixin:
         self._kitsimple_preview_generation = generation
         if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
             self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.no_changes"))
+            self._kitsimple_update_numbers_warning(None)
             return
 
         entry = self._kitsimple_kit_sets[selection[0]]
+        self._kitsimple_update_numbers_warning(entry)
         if entry["kitui_path"] is None:
             fallback = kit_ui_placeholder_path()
             if fallback is not None:
@@ -2656,7 +2746,10 @@ class UIMixin:
         kittype_code = self._kitsimple_current_kittype_code()
 
         if kittype_code in ("0", "1"):
-            self.kit_mixer.set_linked_gk_tourn(team_id, entry["tourn_id"], self._kitsimple_selected_gk_tourn())
+            auto_enabled = self.kitsimple_gk_auto_var.get()
+            self.kit_mixer.set_gk_auto_link_enabled(team_id, entry["tourn_id"], auto_enabled)
+            if not auto_enabled:
+                self.kit_mixer.set_linked_gk_tourn(team_id, entry["tourn_id"], self._kitsimple_selected_gk_tourn())
 
         window = self._window()
         window.configure(cursor="watch")
