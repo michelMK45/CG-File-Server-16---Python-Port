@@ -9,6 +9,7 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from .asset_grid_items import goalpost_model_items, goalpost_texture_items, make_picker_button, png_items
 from .file_tools import (
     discover_stadium_names,
     resolve_asset_thumbnail_path,
@@ -366,6 +367,8 @@ class MovieDialog(BaseDialog):
 
 
 class StadiumDialog(BaseDialog):
+    POLICE_VALUES = tuple(str(i) for i in range(1, 11))
+
     def __init__(self, master: tk.Misc, exedir: Path, default_scope: str = "0") -> None:
         super().__init__(master, "dialog.assignment.title.stadium")
         self._set_geometry(1180, 760, 1060, 700)
@@ -546,13 +549,13 @@ class StadiumDialog(BaseDialog):
         pitch_wrap = tk.Frame(preview_top, bg=self.card)
         pitch_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
         pitch_wrap.grid_columnconfigure(0, weight=1)
-        self._combo(pitch_wrap, 0, self.tr("dialog.stadium.pitch_pattern"), pitch_values, self.selectedpitch, self._on_pitch_changed)
+        self._combo(pitch_wrap, 0, self.tr("dialog.stadium.pitch_pattern"), pitch_values, self.selectedpitch, self._on_pitch_changed, picker=lambda: self._pick_asset("pitch"))
         self._build_preview(pitch_wrap, 0, self.tr("dialog.stadium.preview.pitch"), "pitch", image_size=(155, 135), row=2)
 
         net_wrap = tk.Frame(preview_top, bg=self.card)
         net_wrap.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
         net_wrap.grid_columnconfigure(0, weight=1)
-        self._combo(net_wrap, 0, self.tr("dialog.stadium.net_pattern"), net_values, self.selectednet, self._on_net_changed)
+        self._combo(net_wrap, 0, self.tr("dialog.stadium.net_pattern"), net_values, self.selectednet, self._on_net_changed, picker=lambda: self._pick_asset("net"))
         self._build_preview(net_wrap, 0, self.tr("dialog.stadium.preview.net"), "net", image_size=(155, 135), row=2)
 
         preview_bottom = tk.Frame(right_body, bg=self.card)
@@ -562,9 +565,10 @@ class StadiumDialog(BaseDialog):
             preview_bottom,
             0,
             self.tr("dialog.stadium.police_pattern"),
-            [str(i) for i in range(1, 11)],
+            list(self.POLICE_VALUES),
             self.selectedpolice,
             self._on_police_changed,
+            picker=lambda: self._pick_asset("police"),
         )
         self._build_preview(preview_bottom, 0, self.tr("dialog.stadium.preview.police"), "police", image_size=(360, 220), row=2)
 
@@ -591,6 +595,7 @@ class StadiumDialog(BaseDialog):
             self._folder_names(self.goalpost_model_source),
             self.selectedgoalpost,
             self._on_goalpost_model_changed,
+            picker=lambda: self._pick_asset("goalpost"),
         )
         self._build_preview(goalpost_model_wrap, 0, self.tr("dialog.stadium.preview.goalpost_model"), "goalpost_model", image_size=(155, 135), row=2)
 
@@ -604,6 +609,7 @@ class StadiumDialog(BaseDialog):
             self._folder_names(self.goalpost_texture_source),
             self.selectedgoalposttexture,
             self._on_goalpost_texture_changed,
+            picker=lambda: self._pick_asset("goalposttexture"),
         )
         self._build_preview(goalpost_texture_wrap, 0, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(155, 135), row=2)
 
@@ -630,18 +636,80 @@ class StadiumDialog(BaseDialog):
         self._on_goalpost_model_changed()
         self._on_goalpost_texture_changed()
 
-    def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None) -> None:
+    def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None, picker=None) -> None:
+        """`picker`, when given, puts the small grid-picker button right of the
+        combo (see _pick_asset)."""
         self._dark_label(parent, label, muted=True, font=("Bahnschrift", 10), anchor="w").grid(row=row, column=0, sticky="w", pady=(0 if row == 0 else 12, 0))
+        # With a picker the combo shares its grid cell with the button through a
+        # wrapper frame, so the parent's single-column layout stays as it was.
+        host = parent
+        if picker is not None:
+            host = tk.Frame(parent, bg=self.card)
+            host.grid(row=row + 1, column=0, sticky="ew", pady=(6, 0))
+            host.grid_columnconfigure(0, weight=1)
         combo = ttk.Combobox(
-            parent,
+            host,
             state="readonly",
             textvariable=variable,
             values=values or ["0"],
             style="Server16.TCombobox",
         )
-        combo.grid(row=row + 1, column=0, sticky="ew", pady=(6, 0))
+        if picker is None:
+            combo.grid(row=row + 1, column=0, sticky="ew", pady=(6, 0))
+        else:
+            combo.grid(row=0, column=0, sticky="ew")
+            make_picker_button(host, self.app, picker).grid(row=0, column=1, padx=(6, 0))
         if callback is not None:
             combo.bind("<<ComboboxSelected>>", callback)
+
+    def _asset_picker_setup(self, field: str):
+        """(variable, label translation key, grid items, refresh callback) for one
+        of the visual-asset combos -- the same option lists and preview
+        locations those combos and their preview boxes already use. The refresh
+        callback is what <<ComboboxSelected>> would have run: setting a
+        StringVar programmatically doesn't fire that event, so a pick made in
+        the grid has to invoke it by hand to update the preview box."""
+        if field == "police":
+            items = png_items(self.POLICE_VALUES, self.police_source)
+            return self.selectedpolice, "dialog.stadium.police_pattern", items, self._on_police_changed
+        if field == "pitch":
+            items = png_items(self._file_stems(self.pitch_source), self.pitch_source)
+            return self.selectedpitch, "dialog.stadium.pitch_pattern", items, self._on_pitch_changed
+        if field == "net":
+            items = png_items(self._file_stems(self.net_source), self.net_source)
+            return self.selectednet, "dialog.stadium.net_pattern", items, self._on_net_changed
+        if field == "goalpost":
+            items = goalpost_model_items(self.goalpost_model_source, self._folder_names(self.goalpost_model_source))
+            return self.selectedgoalpost, "dialog.stadium.goalpost_model", items, self._on_goalpost_model_changed
+        if field == "goalposttexture":
+            items = goalpost_texture_items(
+                self.goalpost_texture_source, self._folder_names(self.goalpost_texture_source), self.app.stadium_runtime,
+            )
+            return self.selectedgoalposttexture, "dialog.stadium.goalpost_texture", items, self._on_goalpost_texture_changed
+        raise ValueError(f"no asset picker for stadium field {field!r}")
+
+    def _pick_asset(self, field: str) -> None:
+        """Opens the preview grid for one of this dialog's visual-asset combos
+        and applies the choice (cancelling leaves the field untouched)."""
+        # Imported here, not at module level: asset_grid_picker_dialog subclasses
+        # BaseDialog from this module, so a top-level import would be circular.
+        from .asset_grid_picker_dialog import AssetGridPickerDialog
+
+        variable, label_key, items, on_changed = self._asset_picker_setup(field)
+        picker = AssetGridPickerDialog(self.app, self.tr(label_key), items, current=variable.get().strip())
+        self.wait_window(picker)
+        if not self.winfo_exists():
+            return  # this dialog was closed while the picker was open
+        # This dialog is modal too (BaseDialog grabs input), and Tk does not hand
+        # the grab back when the picker that took it over is destroyed -- retake
+        # it, or the main window becomes clickable again beneath this open dialog.
+        try:
+            self.grab_set()
+        except tk.TclError:
+            pass
+        if picker.result is not None:
+            variable.set(picker.result)
+            on_changed()
 
     def _bind_mousewheel_target(self, *widgets: tk.Misc, scroll_callback) -> None:
         def on_mousewheel(event):

@@ -285,6 +285,12 @@ class UIMixin:
         style.configure("TLabel", background=self.bg, foreground=self.fg)
         style.configure("TButton", background=self.panel_alt, foreground=self.fg, padding=8, borderwidth=0)
         style.map("TButton", background=[("active", "#2b3442")])
+        # Compact icon button sitting beside a combobox (settings_editor.py's
+        # asset-grid picker buttons): TButton's padding=8 makes it taller than
+        # the combo it accompanies, and the dimmed glyph is the only cue that
+        # it's disabled (TButton itself doesn't change look when disabled).
+        style.configure("Server16.Picker.TButton", padding=(6, 4))
+        style.map("Server16.Picker.TButton", foreground=[("disabled", self.muted)])
         style.configure("TCheckbutton", background=self.bg, foreground=self.fg)
         style.configure(
             "Server16.TEntry",

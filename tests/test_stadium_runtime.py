@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 from server16_py.stadium_runtime import StadiumRuntime, _clean_db_display_name
 
@@ -301,6 +304,70 @@ class ApplyStadiumRuntimePickerReentryTests(unittest.TestCase):
             self.assertEqual(len(opened), 1, "picker must not reopen after already being resolved this match")
             self.assertEqual(len(started), 2)
             self.assertEqual(started[0], started[1], "must not re-roll a different stadium on the re-entrant call")
+
+
+class RenderGoalpostTexturePreviewCacheTests(unittest.TestCase):
+    """reuse_cached=True lets the asset grid preview every GoalpostColor pack
+    at once without re-running the ~seconds-long 32-bit subprocess for packs
+    whose PNG is still current."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.runtime = StadiumRuntime(SimpleNamespace(base_dir=base))
+        self.rx3 = base / "pack.rx3"
+        self.rx3.write_bytes(b"rx3")
+        self.worker_calls: list[dict] = []
+
+    def fake_worker(self, config: dict, worker_name: str = "kit_worker.py") -> dict:
+        self.worker_calls.append(config)
+        output = Path(config["output"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"png")
+        return {"ok": True, "output": str(output)}
+
+    def render(self, **kwargs) -> Path:
+        with mock.patch("server16_py.stadium_runtime.run_fifalibrary_worker", self.fake_worker):
+            return self.runtime.render_goalpost_texture_preview(self.rx3, cache_key="Azul", **kwargs)
+
+    def test_default_always_re_renders(self) -> None:
+        self.render()
+        self.render()
+        self.assertEqual(len(self.worker_calls), 2)
+
+    def test_reuse_cached_renders_when_there_is_no_png_yet(self) -> None:
+        output = self.render(reuse_cached=True)
+        self.assertEqual(len(self.worker_calls), 1)
+        self.assertTrue(output.is_file())
+
+    def test_reuse_cached_skips_the_subprocess_when_the_png_is_current(self) -> None:
+        first = self.render(reuse_cached=True)
+        second = self.render(reuse_cached=True)
+        self.assertEqual(len(self.worker_calls), 1)
+        self.assertEqual(second, first)
+
+    def test_a_png_rendered_by_the_default_path_is_reusable_too(self) -> None:
+        self.render()
+        self.render(reuse_cached=True)
+        self.assertEqual(len(self.worker_calls), 1)
+
+    def test_a_replaced_rx3_is_re_rendered_even_when_it_is_older_than_the_png(self) -> None:
+        # The case a plain "PNG newer than source" check gets wrong: a pack
+        # swapped for a file that keeps an OLDER modification date.
+        self.render(reuse_cached=True)
+        older = self.rx3.stat().st_mtime_ns - 10_000_000_000
+        os.utime(self.rx3, ns=(older, older))
+        self.render(reuse_cached=True)
+        self.assertEqual(len(self.worker_calls), 2)
+        self.render(reuse_cached=True)  # ...and that render is cached in turn
+        self.assertEqual(len(self.worker_calls), 2)
+
+    def test_a_missing_source_is_never_treated_as_cached(self) -> None:
+        self.render()
+        self.rx3.unlink()
+        self.render(reuse_cached=True)
+        self.assertEqual(len(self.worker_calls), 2)
 
 
 if __name__ == "__main__":

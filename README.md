@@ -168,6 +168,8 @@ FSW/Images/Police/
 
 Runtime bootstrap copying prefers the root `FSW/PitchMowPattern`, `FSW/Nets`, and `FSW/Police` folders when they exist. The stadium assignment dialog uses the `FSW/Images/...` folders first for selector values and preview PNGs, then falls back to the root folders.
 
+In both the `Assign Stadium` window and the Settings Editor's Stadium Settings tab, the Police / Pitch Mow Pattern / Net / Goalpost Model / Goalpost Texture dropdowns each have a small **▦** button beside them. It opens a grid with every available option shown as its preview image plus its name, so you can compare them at a glance and pick one (click to select, then double-click or **Select** to confirm) instead of stepping through the dropdown one value at a time. In the Settings Editor, select a single assigned stadium first, same as for the dropdowns. Goalpost Texture previews are rendered on demand from each pack's `.rx3`, so they fill in one by one the first time the grid opens; already-rendered ones are reused afterwards.
+
 ### Stadium Preview Images
 
 The project supports optional preview images for stadiums.

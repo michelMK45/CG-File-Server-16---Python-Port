@@ -10,6 +10,14 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
+from .asset_grid_items import (
+    AssetGridItem,
+    goalpost_model_items,
+    goalpost_texture_items,
+    make_picker_button,
+    png_items,
+)
+from .asset_grid_picker_dialog import AssetGridPickerDialog
 from .chants_runtime import MciAudioPlayer
 from .file_tools import (
     discover_stadium_names,
@@ -90,6 +98,7 @@ class SettingsSectionFrame(tk.Frame):
     # limit), so there is no point letting a key be assigned more than this here.
     MAX_ASSIGNED_STADIUMS = 64
     STADIUM_DEFAULTS = {"police": "4", "pitch": "0", "net": "0"}
+    POLICE_VALUES = tuple(str(i) for i in range(1, 11))
     NET_DEFAULTS = {"down": "1086199011", "high": "1087199011", "rig": "4", "shape": "0"}
     STADIUM_NAME_DEFAULTS = {"name": "", "active": "1"}
     CHANTS_DEFAULTS = {
@@ -523,15 +532,20 @@ class SettingsSectionFrame(tk.Frame):
         self.police_var.trace_add("write", lambda *_: self._on_stadium_param_changed("police"))
         self.pitch_var.trace_add("write", lambda *_: self._on_stadium_param_changed("pitch"))
         self.net_var.trace_add("write", lambda *_: self._on_stadium_param_changed("net"))
-        self.police_combo = self._add_combo_row(self.body, 2, self.tr("dialog.editor.field.police"), self.police_var, [str(i) for i in range(1, 11)])
-        self.pitch_combo = self._add_combo_row(self.body, 3, self.tr("dialog.editor.field.pitch"), self.pitch_var, self._asset_indices(self.app.PitchMowsource))
-        self.net_combo = self._add_combo_row(self.body, 4, self.tr("dialog.editor.field.net"), self.net_var, self._asset_indices(self.app.Nsource))
+        # Each combo also gets a small button beside it that opens the preview
+        # grid for that field (see _pick_stadium_asset) -- picking there just
+        # sets the same StringVar the combo is bound to, so everything above
+        # (preview refresh, write-back into _stadium_params/_stadium_goalpost*)
+        # runs exactly as if the value had been chosen from the dropdown.
+        self.police_combo = self._add_combo_row(self.body, 2, self.tr("dialog.editor.field.police"), self.police_var, list(self.POLICE_VALUES), picker=lambda: self._pick_stadium_asset("police"))
+        self.pitch_combo = self._add_combo_row(self.body, 3, self.tr("dialog.editor.field.pitch"), self.pitch_var, self._asset_indices(self.app.PitchMowsource), picker=lambda: self._pick_stadium_asset("pitch"))
+        self.net_combo = self._add_combo_row(self.body, 4, self.tr("dialog.editor.field.net"), self.net_var, self._asset_indices(self.app.Nsource), picker=lambda: self._pick_stadium_asset("net"))
         self.goalpost_var = tk.StringVar(value="None")
         self.goalpost_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalpost"))
-        self.goalpost_combo = self._add_combo_row(self.body, 5, self.tr("dialog.editor.field.goalpost_model"), self.goalpost_var, self._available_goalpost_choices("GoalpostModel"))
+        self.goalpost_combo = self._add_combo_row(self.body, 5, self.tr("dialog.editor.field.goalpost_model"), self.goalpost_var, self._available_goalpost_choices("GoalpostModel"), picker=lambda: self._pick_stadium_asset("goalpost"))
         self.goalpost_texture_var = tk.StringVar(value="None")
         self.goalpost_texture_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalposttexture"))
-        self.goalpost_texture_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.goalpost_texture"), self.goalpost_texture_var, self._available_goalpost_choices("GoalpostColor"))
+        self.goalpost_texture_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.goalpost_texture"), self.goalpost_texture_var, self._available_goalpost_choices("GoalpostColor"), picker=lambda: self._pick_stadium_asset("goalposttexture"))
         self._refresh_stadium_assigned_state()
 
     def _stadium_default_triple(self) -> tuple[str, str, str]:
@@ -560,6 +574,45 @@ class SettingsSectionFrame(tk.Frame):
     def _set_stadium_param_controls_state(self, state: str) -> None:
         for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo):
             combo.configure(state=state)
+            # The picker button (see _add_combo_row) follows its combo: with no
+            # single Assigned row selected there's nothing for a pick to write into.
+            picker_button = getattr(combo, "picker_button", None)
+            if picker_button is not None:
+                picker_button.configure(state=state)
+
+    def _pick_stadium_asset(self, field: str) -> None:
+        """Opens the preview grid for one of the stadium editor's
+        preview-bearing fields and writes the choice back into that field's
+        StringVar (which then flows through _on_stadium_param_changed like any
+        dropdown change). Cancelling leaves the field untouched."""
+        variable, label_key, items = self._stadium_picker_setup(field)
+        dialog = AssetGridPickerDialog(self.app, self.tr(label_key), items, current=variable.get().strip())
+        self.app.wait_window(dialog)
+        if dialog.result is not None:
+            variable.set(dialog.result)
+
+    def _stadium_picker_setup(self, field: str) -> tuple[tk.StringVar, str, list[AssetGridItem]]:
+        """(variable, label translation key, grid items) for `field` -- the
+        same option lists and preview locations the combos and preview boxes
+        above already use, re-read from disk so a pack added while this editor
+        was open still shows up."""
+        if field == "police":
+            return self.police_var, "dialog.editor.field.police", png_items(self.POLICE_VALUES, self._police_preview_dir)
+        if field == "pitch":
+            items = png_items(self._asset_indices(self.app.PitchMowsource), self._pitch_preview_dir)
+            return self.pitch_var, "dialog.editor.field.pitch", items
+        if field == "net":
+            items = png_items(self._asset_indices(self.app.Nsource), self._net_preview_dir)
+            return self.net_var, "dialog.editor.field.net", items
+        if field == "goalpost":
+            model_dir = self.app.exedir / "FSW" / "Goalpost" / "GoalpostModel"
+            items = goalpost_model_items(model_dir, self._available_goalpost_choices("GoalpostModel"))
+            return self.goalpost_var, "dialog.editor.field.goalpost_model", items
+        if field == "goalposttexture":
+            color_dir = self.app.exedir / "FSW" / "Goalpost" / "GoalpostColor"
+            items = goalpost_texture_items(color_dir, self._available_goalpost_choices("GoalpostColor"), self.app.stadium_runtime)
+            return self.goalpost_texture_var, "dialog.editor.field.goalpost_texture", items
+        raise ValueError(f"no asset picker for stadium field {field!r}")
 
     def _on_assigned_selection_changed(self) -> None:
         """Loads the single selected Assigned row's own Police/Pitch/Net into
@@ -1313,10 +1366,24 @@ class SettingsSectionFrame(tk.Frame):
         parent.grid_columnconfigure(1, weight=1)
         return entry
 
-    def _add_combo_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, values: list[str]):
+    def _add_combo_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, values: list[str], picker=None):
+        """`picker`, when given, adds a small button right of the combo that
+        calls it (used to open AssetGridPickerDialog). The button is reachable
+        as `combo.picker_button` so callers can enable/disable it with the combo."""
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=4, padx=(0, 10))
-        combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
-        combo.grid(row=row, column=1, sticky="ew", pady=4)
+        if picker is None:
+            combo = ttk.Combobox(parent, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
+            combo.grid(row=row, column=1, sticky="ew", pady=4)
+        else:
+            # Combo + button share column 1 through a wrapper frame so the
+            # form's column layout stays identical to the rows without a picker.
+            field = tk.Frame(parent, bg=self.app.card)
+            field.grid(row=row, column=1, sticky="ew", pady=4)
+            field.grid_columnconfigure(0, weight=1)
+            combo = ttk.Combobox(field, textvariable=variable, values=values, font=("Consolas", 10), style="Server16.TCombobox")
+            combo.grid(row=0, column=0, sticky="ew")
+            combo.picker_button = make_picker_button(field, self.app, picker)
+            combo.picker_button.grid(row=0, column=1, padx=(6, 0))
         parent.grid_columnconfigure(1, weight=1)
         return combo
 

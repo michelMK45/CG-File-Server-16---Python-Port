@@ -93,6 +93,11 @@ play/stop for chants, and thumbnail images for stadiums/scoreboards/TV logos/pit
 instead of just a filename. A new **"Reveal in Explorer"** button opens the currently selected
 asset's folder or archive directly.
 
+In the Assign Stadium window and the Settings Editor's Stadium Settings tab, the Police / Pitch /
+Net / Goalpost Model / Goalpost Texture dropdowns also get a small **▦** button that opens a grid of
+every option with its preview and name, so you can pick visually instead of stepping through the
+dropdown one value at a time.
+
 #### Settings Export / Import
 Share stadium/scoreboard/chants/etc. bindings between installs: export selected `settings.ini`
 sections to a standalone `.ini` file, then import it back on another install with an explicit

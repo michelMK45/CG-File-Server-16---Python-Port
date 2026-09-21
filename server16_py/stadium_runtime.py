@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import re
 import unicodedata
@@ -275,7 +276,16 @@ class StadiumRuntime:
     def goalpost_texture_preview_dir(self) -> Path:
         return self.app.base_dir / "runtime" / "goalpost_texture_previews"
 
-    def render_goalpost_texture_preview(self, source_rx3: Path, cache_key: str, max_size: int = 220) -> Path:
+    @staticmethod
+    def _mtime_ns(path: Path) -> int | None:
+        try:
+            return path.stat().st_mtime_ns
+        except OSError:
+            return None
+
+    def render_goalpost_texture_preview(
+        self, source_rx3: Path, cache_key: str, max_size: int = 220, reuse_cached: bool = False,
+    ) -> Path:
         """Renders a small PNG preview of a GoalpostColor pack's .rx3 texture
         (there's no dedicated preview-image convention on that side, unlike
         GoalpostModel's preview.<ext> -- see file_tools.
@@ -287,8 +297,21 @@ class StadiumRuntime:
         (e.g. "Azul") -- the same pack always renders to the same output
         file, reused across every dialog that previews it. Blocking -- call
         from a background thread when used from the UI, same convention as
-        KitMixRuntime.render_preview."""
+        KitMixRuntime.render_preview.
+
+        reuse_cached=True skips the (~seconds-long) subprocess when the PNG on
+        disk was already rendered from this exact .rx3. "Rendered from this
+        exact .rx3" is tracked by stamping the PNG's mtime with the .rx3's own
+        mtime after every render and requiring them to be EQUAL (not merely
+        newer) on reuse -- so replacing a pack with an older-dated file is
+        detected too, which a plain "PNG is newer than source" check would
+        miss. Meant for callers that preview MANY packs at once (the asset grid
+        picker); the single-preview boxes keep the always-re-render default.
+        Assumes the same max_size as whatever produced the cached PNG."""
         output_path = self.goalpost_texture_preview_dir() / f"{cache_key}.png"
+        source_mtime_ns = self._mtime_ns(Path(source_rx3))
+        if reuse_cached and source_mtime_ns is not None and self._mtime_ns(output_path) == source_mtime_ns:
+            return output_path
         config = {
             "source": str(source_rx3),
             "role": "rx3_texture",
@@ -296,7 +319,13 @@ class StadiumRuntime:
             "max_size": max_size,
         }
         result = run_fifalibrary_worker(config, worker_name="kit_preview_worker.py")
-        return Path(result["output"])
+        rendered = Path(result["output"])
+        if source_mtime_ns is not None:
+            try:
+                os.utime(rendered, ns=(source_mtime_ns, source_mtime_ns))
+            except OSError:
+                pass  # only costs a re-render next time
+        return rendered
 
     @staticmethod
     def _looks_like_stadium_dir(path: Path) -> bool:
