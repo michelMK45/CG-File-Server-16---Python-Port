@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import random
+import re
 import shutil
 import subprocess
 import sys
@@ -415,7 +416,42 @@ def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path, fsw_goalnet
         manifest_path.write_text("\n".join(copied), encoding="utf-8")
 
 
-def copy_goalpost_sources(src_dirs: list[Path], dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
+_SLOT_SPECIFIC_GOALPOST_RE = re.compile(
+    r"^(?P<prefix>specificgoalpost|specificnetsupportpost)_\d+_\d+(?P<textures>_textures)?\.rx3$",
+    re.IGNORECASE,
+)
+
+
+def slot_specific_goalpost_name(filename: str, stadium_id: str) -> str | None:
+    """The slot-specific name a GoalpostModel/GoalpostColor pack file should be
+    installed under, or None if filename isn't a recognized specificgoalpost_* /
+    specificnetsupportpost_* asset (in which case it's copied under its own name).
+
+    goalnet.lua's GetRMGoalPost()/GetRMGoalPostTex()/GetRMSupportPost() each check
+    specific*_0_{stadiumID}[_textures].rx3 before the shared specific*_0_0 and
+    specific*_{teamID}_0 fallbacks -- the same fallback chain GetRMNetColour() uses,
+    which apply_specific_net_color() already exploits for nets. stadiumID is the
+    176/261 injection slot, which alternates per stadium load, so installing under it
+    gives the engine a path it hasn't already cached this session. Packs ship one
+    fixed filename per pack (e.g. specificnetsupportpost_0_0_textures.rx3 for EVERY
+    color, specificgoalpost_0_0.rx3 for several models), so installed as-is two
+    stadiums with different picks resolve to the very same path and the engine keeps
+    serving whichever it loaded first. The pack's own <team>_<stadium> ids are dropped:
+    the pick is assigned to a stadium, not to a team (a pack named
+    specificgoalpost_18_0.rx3 would otherwise only ever show when team 18 is home)."""
+    match = _SLOT_SPECIFIC_GOALPOST_RE.match(filename)
+    if match is None:
+        return None
+    return f"{match['prefix'].lower()}_0_{stadium_id}{match['textures'] or ''}.rx3"
+
+
+def copy_goalpost_sources(
+    src_dirs: list[Path],
+    dst_dir: Path,
+    manifest_path: Path,
+    fsw_goalnet_dir: Path | None = None,
+    stadium_id: str | None = None,
+) -> list[str]:
     """Like copy_goalpost, but merges files from several independent source
     directories (e.g. a GoalpostModel pack and a separate GoalpostColor/
     texture pack, each selected on its own -- see
@@ -423,16 +459,27 @@ def copy_goalpost_sources(src_dirs: list[Path], dst_dir: Path, manifest_path: Pa
     manifest, so clear_goalpost can evict every copied file together
     regardless of which source directory it came from. A src_dir that
     doesn't exist is silently skipped (same tolerance copy_goalpost already
-    has for a single missing source)."""
+    has for a single missing source).
+
+    With stadium_id set, recognized specificgoalpost_*/specificnetsupportpost_*
+    files are installed under their slot-specific name instead (see
+    slot_specific_goalpost_name); the manifest lists the names actually written.
+    Leave it None for a stadium's own legacy GoalpostGBD, whose filenames are
+    deliberate overrides of the vanilla names and must keep them. Returns the
+    destination names written (relative to dst_dir), in copy order."""
     clear_goalpost(dst_dir, manifest_path, fsw_goalnet_dir)
     copied: list[str] = []
     for src_dir in src_dirs:
         if not src_dir.is_dir():
             continue
-        for item in src_dir.rglob("*"):
+        for item in sorted(src_dir.rglob("*")):
             if not item.is_file() or item.suffix.lower() == ".png":
                 continue
             rel = item.relative_to(src_dir)
+            if stadium_id is not None:
+                slot_name = slot_specific_goalpost_name(item.name, stadium_id)
+                if slot_name is not None:
+                    rel = rel.with_name(slot_name)
             _copy_file_if_needed(item, dst_dir / rel)
             rel_str = str(rel)
             if rel_str not in copied:
@@ -440,6 +487,7 @@ def copy_goalpost_sources(src_dirs: list[Path], dst_dir: Path, manifest_path: Pa
     if copied:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text("\n".join(copied), encoding="utf-8")
+    return copied
 
 
 _GOALNET_DEFAULT_NAMES = (

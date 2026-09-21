@@ -240,6 +240,14 @@ class GameMixin:
                 self._entrance_sequence += 1
                 self._entrance_armed = True
                 self._entrance_pre_match_guard = True
+            # The blank page right after KickOffHub is when FIFA starts
+            # LOADING the match -- and, in every captured log, exactly when
+            # the stadium-name buffer first gets allocated (the priority
+            # window reads 0MB until then). Start polling for it now rather
+            # than waiting for the slower scan attempts to stumble on it
+            # (see StadiumDbNamePatchCoordinator.fast_watch). No-op unless a
+            # stadium is applied for this match.
+            self._start_scoreboard_name_fast_watch()
             self._start_chants_runtime()
             return
         if "TV/bumper" in page_name or "skillGames/SkillGa" in page_name:
@@ -270,6 +278,10 @@ class GameMixin:
                     self.stadium_runtime.write_active_stad_name(std_name)
                     self.match_string_patcher.request(std_name)
                     self.stadium_runtime.request_db_name_patch(self.injID, std_name)
+                    # Backstop for a blank-page transition that never fired
+                    # (or fired before the stadium was applied) -- same fast
+                    # watch, just started later. Harmless if already running.
+                    self._start_scoreboard_name_fast_watch()
                     self._start_scoreboard_name_progress(self.injID, std_name)
             return
         self.pagechange = False
@@ -325,6 +337,43 @@ class GameMixin:
             injid, std_name, baseline_name, self._kickoff_generation,
             started_at, started_at + DB_NAME_PATCH_RETRY_WINDOW_SECONDS, speed_state,
         )
+
+    def _loading_has_started(self) -> bool:
+        """True once FIFA is past KickOffHub and loading the match: the blank
+        page (or the bumper) is showing. Used by finish_stadium_apply so a
+        stadium that finishes applying AFTER the user already pressed start --
+        i.e. after the blank-page transition that normally starts the fast
+        watch has come and gone -- still starts it."""
+        page = self.lastpagename or ""
+        return not page.strip() or "TV/bumper" in page
+
+    def _start_scoreboard_name_fast_watch(self) -> None:
+        """Start StadiumDbNamePatchCoordinator's fast priority-window watch for
+        the stadium applied to this match, if any.
+
+        Called at the blank page that follows KickOffHub (FIFA starts loading
+        the match; the name buffer only gets allocated from here on) and again
+        at "TV/bumper" as a backstop. Reported live 2026-09-21: the second
+        match of a session displayed "Sanderson Park" -- the patch landed in
+        the same second as the bumper, after the one before it had landed a
+        second EARLIER, because the slow scan attempts (1.5-6s each) only
+        happen to catch the freshly allocated buffer in time some of the
+        time. See StadiumDbNamePatchCoordinator.fast_watch for the details.
+
+        Deliberately NOT started earlier (e.g. from finish_stadium_apply): an
+        earlier prewarm of ordinary scan attempts was tried, but the buffer
+        does not exist during the menus, so those attempts could never
+        succeed and only consumed the coordinator's per-slot scan budget
+        (MAX_SCAN_ATTEMPTS lasts the whole FIFA process) -- a long pause on
+        KickOffHub could exhaust it before the buffer even existed.
+        """
+        if not self.curstad or self._closing:
+            return
+        try:
+            std_name = self.stadium_runtime.resolve_scoreboard_display_name(self.curstad)
+            self.stadium_runtime.start_db_name_fast_watch(self.injID, std_name)
+        except Exception as exc:
+            self.log("Stadium DB name fast watch start error", exc)
 
     def _hide_scoreboard_name_progress_for_stadium_scene(self) -> None:
         """Hide the scoreboardstdname loading notification the instant Team
@@ -663,27 +712,49 @@ class GameMixin:
         return any(token.lower() in lowered for token in candidates)
 
     def _read_legacy_team_context(self) -> tuple[str | None, str | None]:
-        if not self.MP:
+        """Try an alternate (shorter, 5-hop) HID/AID pointer chain that
+        apparently resolves on some FIFA builds/mods where the newer 6-hop
+        chain _try_read_context_int falls back to below does not -- same
+        "try more than one chain shape, let whichever resolves win" pattern
+        already used for STDNAMEOFFSET176/176B/176C (CLAUDE.md §7 Part 3).
+
+        Reused ``self.memory`` (not a fresh Memory() instance) as of
+        2026-09-21: this used to open and close a SECOND, independent
+        process handle -- a full psutil.process_iter() system-wide scan plus
+        OpenProcess plus a Toolhelp32 module snapshot -- on every single
+        call. Called every ~500ms poll tick throughout ALL pre-match menu
+        navigation (poll_process -> update_page_name -> refresh_live_context
+        whenever the page name contains "team"/"squad"/"stadium"/etc.), this
+        chain very commonly hasn't resolved yet (HID/AID aren't meaningful
+        until a match is actually starting) -- so this was paying that full
+        re-attach cost AND logging a full exception traceback, with no
+        de-duplication, on nearly every tick for as long as the user stayed
+        in those menus. Reported live as "memory read errors during
+        runtime". self.memory is already open and freshly re-attacked this
+        same poll tick (poll_process's own self.memory.attack(self.MP) call,
+        just before update_page_name runs) -- there is nothing this
+        alternate chain gains from a second, independent handle to the same
+        process. Failures here are expected and silent (like
+        _try_read_optional_int's own pattern below) -- the caller's own
+        _try_read_context_int calls right after already report a genuinely
+        unresolved context exactly once per distinct state, not once per
+        tick (see that method's own _last_context_error de-duplication).
+        """
+        if not self.MP or not self.memory.is_open():
             return None, None
-        legacy_memory = Memory()
         try:
-            if not legacy_memory.attack(self.MP) or not legacy_memory.is_open():
-                return None, None
-            hid = str(legacy_memory.get_int(self.offsets.ORIHTIDBASE, self.offsets.HT[:5]))
-            aid = str(legacy_memory.get_int(self.offsets.ORIHTIDBASE, self.offsets.HT[:4] + [self.offsets.HT[5]]))
+            hid = str(self.memory.get_int(self.offsets.ORIHTIDBASE, self.offsets.HT[:5]))
+            aid = str(self.memory.get_int(self.offsets.ORIHTIDBASE, self.offsets.HT[:4] + [self.offsets.HT[5]]))
             if hid == "0":
-                friendly_hid = str(legacy_memory.get_int(self.offsets.ORIFRIHTIDBASE, self.offsets.HT2[:5]))
-                friendly_aid = str(legacy_memory.get_int(self.offsets.ORIFRIHTIDBASE, self.offsets.HT2[:4] + [self.offsets.HT2[5]]))
+                friendly_hid = str(self.memory.get_int(self.offsets.ORIFRIHTIDBASE, self.offsets.HT2[:5]))
+                friendly_aid = str(self.memory.get_int(self.offsets.ORIFRIHTIDBASE, self.offsets.HT2[:4] + [self.offsets.HT2[5]]))
                 if friendly_hid != "0":
                     hid = friendly_hid
                 if friendly_aid != "0":
                     aid = friendly_aid
             return hid, aid
-        except Exception as exc:
-            self.log("Legacy team context read failed", exc, exc_info=sys.exc_info())
+        except Exception:
             return None, None
-        finally:
-            legacy_memory.close()
 
     def refresh_live_context(self, page_name: str) -> None:
         hid, aid = self._read_legacy_team_context()
@@ -766,12 +837,12 @@ class GameMixin:
     def _try_read_context_int(self, trace_name: str, static_ptr: int, offsets: list[int], page_name: str) -> str | None:
         try:
             value = str(self.memory.get_int(static_ptr, offsets))
-            self._last_context_error = None
+            self._last_context_error.pop(trace_name, None)
             return value
         except MemoryAccessError as exc:
             message = f"Context not ready for page '{page_name}' [{trace_name}]: {exc}"
-            if message != self._last_context_error:
-                self._last_context_error = message
+            if message != self._last_context_error.get(trace_name):
+                self._last_context_error[trace_name] = message
                 self.log(message)
                 self._log_pointer_debug()
             return None

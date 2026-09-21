@@ -27,9 +27,16 @@ class FakeCoordinator:
 class FakeStadiumRuntime:
     def __init__(self) -> None:
         self.request_calls: list[tuple[str, str]] = []
+        self.fast_watch_calls: list[tuple[str, str]] = []
 
     def request_db_name_patch(self, injid: str, std_name: str) -> None:
         self.request_calls.append((injid, std_name))
+
+    def resolve_scoreboard_display_name(self, stad_name: str) -> str:
+        return f"display:{stad_name}"
+
+    def start_db_name_fast_watch(self, injid: str, std_name: str) -> None:
+        self.fast_watch_calls.append((injid, std_name))
 
 
 class FakeOffsets:
@@ -59,6 +66,7 @@ class FakeGame(GameMixin):
         self._closing = False
         self._kickoff_generation = 1
         self.injID = "176"
+        self.curstad = ""
         self.stadium_db_name_patcher = FakeCoordinator()
         self.stadium_runtime = FakeStadiumRuntime()
         self.offsets = FakeOffsets()
@@ -362,6 +370,44 @@ class HideForStadiumSceneTests(unittest.TestCase):
         self.assertEqual(game.update_calls, [])
         self.assertEqual(game.hide_calls, [])
         self.assertEqual(game.stadium_runtime.request_calls, [])
+
+
+class FastWatchTriggerTests(unittest.TestCase):
+    """Found live 2026-09-21: the second match of a session displayed
+    "Sanderson Park" because the slow scan attempts caught FIFA's freshly
+    allocated name buffer only some of the time (the winning patch landed 1s
+    before "TV/bumper" in one match, right after it in the next). The fast
+    watch is started when match loading begins and again at the bumper."""
+
+    def test_starts_the_fast_watch_for_the_applied_stadium(self) -> None:
+        game = FakeGame()
+        game.curstad = "Anfield"
+        game._start_scoreboard_name_fast_watch()
+        self.assertEqual(game.stadium_runtime.fast_watch_calls, [("176", "display:Anfield")])
+
+    def test_noop_without_an_applied_stadium(self) -> None:
+        game = FakeGame()
+        game.curstad = ""
+        game._start_scoreboard_name_fast_watch()
+        self.assertEqual(game.stadium_runtime.fast_watch_calls, [])
+
+    def test_noop_while_closing(self) -> None:
+        game = FakeGame()
+        game.curstad = "Anfield"
+        game._closing = True
+        game._start_scoreboard_name_fast_watch()
+        self.assertEqual(game.stadium_runtime.fast_watch_calls, [])
+
+    def test_a_failure_starting_the_watch_is_logged_not_raised(self) -> None:
+        game = FakeGame()
+        game.curstad = "Anfield"
+
+        def boom(injid, std_name):
+            raise RuntimeError("no team_db")
+
+        game.stadium_runtime.start_db_name_fast_watch = boom
+        game._start_scoreboard_name_fast_watch()
+        self.assertTrue(any("fast watch start error" in line for line in game.logs))
 
 
 if __name__ == "__main__":

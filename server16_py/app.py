@@ -108,7 +108,14 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_scope_phase = False
         self._overlay_selected_scope: str | None = None
         self._last_runtime_signature = None
-        self._last_context_error = None
+        # Keyed per trace_name (HT-HID, HT-AID, S-FIRST, ...) -- see
+        # _try_read_context_int's own docstring/comment for why a single
+        # shared slot silently defeated this de-duplication: refresh_live_context
+        # checks up to 8 different fields every cycle, and a single shared
+        # "last message" got overwritten by whichever field was checked most
+        # recently, so every field logged (message + a full 8-line pointer
+        # trace dump) on essentially every poll tick during pre-match menus.
+        self._last_context_error: dict[str, str] = {}
         self._closing = False
         self._poll_job = None
         self._stats_job = None

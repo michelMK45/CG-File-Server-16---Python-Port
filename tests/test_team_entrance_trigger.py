@@ -226,5 +226,74 @@ class TeamEntranceTriggerTests(unittest.TestCase):
         self.assertTrue(game._entrance_armed)
 
 
+class FastWatchGame(FakeGame):
+    """Records the stadium-name fast-watch trigger without needing the whole
+    stadium/coordinator stack behind it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.curstad = "Anfield"
+        self.injID = "176"
+        self.fast_watch_starts = 0
+        self.progress_starts = 0
+        self.stadium_runtime = types.SimpleNamespace(
+            resolve_scoreboard_display_name=lambda name: name,
+            write_active_stad_name=lambda name: True,
+            request_db_name_patch=lambda injid, name: None,
+        )
+        self.match_string_patcher = types.SimpleNamespace(request=lambda name: True)
+
+    def _start_scoreboard_name_fast_watch(self) -> None:
+        self.fast_watch_starts += 1
+
+    def _start_scoreboard_name_progress(self, injid: str, std_name: str) -> None:
+        self.progress_starts += 1
+
+
+class StadiumNameFastWatchTriggerTests(unittest.TestCase):
+    """Found live 2026-09-21: the second match of a session displayed
+    "Sanderson Park" because the slow scan attempts only sometimes caught FIFA's
+    freshly allocated name buffer before the pre-match screen read it. The
+    buffer is allocated when match loading starts -- the blank page right
+    after KickOffHub -- so that is when the fast watch must start, with the
+    TV/bumper page as a backstop."""
+
+    def test_blank_page_after_kickoffhub_starts_the_fast_watch(self) -> None:
+        game = FastWatchGame()
+        game._handle_page_transition("")
+        self.assertEqual(game.fast_watch_starts, 1)
+
+    def test_bumper_starts_it_again_as_a_backstop(self) -> None:
+        game = FastWatchGame()
+        game._handle_page_transition("game/screens/TV/bumper")
+        self.assertEqual(game.fast_watch_starts, 1)
+        self.assertEqual(game.progress_starts, 1)
+
+    def test_blank_page_then_bumper_starts_it_in_both_places(self) -> None:
+        game = FastWatchGame()
+        game._handle_page_transition("")
+        game._handle_page_transition("game/screens/TV/bumper")
+        self.assertEqual(game.fast_watch_starts, 2)
+
+    def test_loading_has_started_on_the_blank_page_and_the_bumper_only(self) -> None:
+        game = FakeGame()
+        for page, expected in (
+            ("", True),
+            ("  ", True),
+            ("game/screens/TV/bumper", True),
+            ("game/screens/playNow/KickOffHub", False),
+            ("game/screens/playNow/SelectTeam", False),
+            ("game/screens/fluxHub/FluxHub", False),
+        ):
+            game.lastpagename = page
+            self.assertEqual(game._loading_has_started(), expected, page)
+
+    def test_no_stadium_applied_means_nothing_to_watch(self) -> None:
+        # The real (un-overridden) trigger is a no-op without curstad.
+        game = FakeGame()
+        game.curstad = ""
+        game._start_scoreboard_name_fast_watch()  # must not touch missing attrs
+
+
 if __name__ == "__main__":
     unittest.main()

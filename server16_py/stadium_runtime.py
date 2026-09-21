@@ -134,12 +134,30 @@ class StadiumRuntime:
         regardless.
         """
         app = self.app
+        old_name = self._resolve_db_old_name(injid)
+        if old_name:
+            app.stadium_db_name_patcher.request(injid, old_name, new_name)
+
+    def _resolve_db_old_name(self, injid: str) -> str | None:
+        """The text currently believed to be live in this slot's name buffer:
+        whatever the coordinator last CONFIRMED there, else the slot's
+        (cleaned) vanilla DB name."""
+        app = self.app
         old_name = app.stadium_db_name_patcher.get_current_name(injid)
         if not old_name:
             raw_db_name = app._resolve_stadium_name(injid)
             old_name = _clean_db_display_name(raw_db_name) if raw_db_name else None
+        return old_name or None
+
+    def start_db_name_fast_watch(self, injid: str, new_name: str) -> None:
+        """Start StadiumDbNamePatchCoordinator's fast priority-window watch for
+        this slot (see its fast_watch docstring for why). Resolves the "old"
+        name exactly like request_db_name_patch does; a no-op when it can't
+        be resolved, or when the slot already shows `new_name`."""
+        app = self.app
+        old_name = self._resolve_db_old_name(injid)
         if old_name:
-            app.stadium_db_name_patcher.request(injid, old_name, new_name)
+            app.stadium_db_name_patcher.fast_watch(injid, old_name, new_name)
 
     def has_assignment(self) -> bool:
         """Return True if there is a stadium assignment for the current match context."""
@@ -706,7 +724,22 @@ class StadiumRuntime:
                 app.log(f"Goalpost pack not found for {stad_name}: {_gp_src}")
         _goalpost_manifest = app.exedir / "FSW" / ".goalpost_manifest"
         _fsw_goalnet_dir = app.exedir / "FSW" / "GoalNet"
-        steps.append(("Applying goalpost models", lambda: copy_goalpost_sources(goalpost_sources, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir)))
+        def _apply_goalposts() -> None:
+            # An explicit [stadiumgoalpost]/[stadiumgoalposttexture] pick is installed under
+            # the per-slot names goalnet.lua checks first (see slot_specific_goalpost_name):
+            # the packs' own fixed filenames are shared by every stadium, and the engine
+            # only ever loads a given path once per session, same as the net color case
+            # above. A stadium's own legacy GoalpostGBD keeps its filenames as-is.
+            slot_id = injid if (goalpost_model or goalpost_texture) else None
+            copied = copy_goalpost_sources(goalpost_sources, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir, stadium_id=slot_id)
+            if slot_id is not None:
+                picks = f"model [{goalpost_model or '-'}] texture [{goalpost_texture or '-'}]"
+                if copied:
+                    app.log(f"Goalposts applied for {stad_name}: {picks} -> {copied}")
+                else:
+                    app.log(f"Goalposts NOT applied for {stad_name}: {picks}, no installable files found in the selected pack(s)")
+
+        steps.append(("Applying goalpost models", _apply_goalposts))
         if no_seats.exists():
             steps.append(("Applying crowd chairs", lambda: copy_if_exists(no_seats, app.exedir / "data" / "sceneassets" / "crowdchair" / f"specificchair_0_{injid}.rx3")))
         else:
@@ -821,6 +854,11 @@ class StadiumRuntime:
             app.injID = payload["injid"]
             app.StadName = stad_name
             app.curstad = stad_name
+            # Normally the blank page after KickOffHub starts the fast watch
+            # (app_game.py); if the user pressed start before this apply
+            # finished, that transition already passed with no stadium set.
+            if app._loading_has_started():
+                app._start_scoreboard_name_fast_watch()
             app.ScoreboardStadName = scoreboard_display_name  # Save display name for Discord RPC
             app.stadmovie = bool(payload["stadmovie"])
             app._set_display("stadium", stad_name)

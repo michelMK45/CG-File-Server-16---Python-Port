@@ -54,12 +54,20 @@ SCAN_CHUNK = 4 * 1024 * 1024
 SCAN_MAX = 4 * 1024 * 1024 * 1024
 
 # VirtualQueryEx.argtypes is mutated (assigned) below every time a scan runs.
-# If two scans ever ran on two threads at once, each would stomp the other's
-# argtypes with its own POINTER(MEMORY_BASIC_INFORMATION) class object between
-# the assignment and the call, occasionally raising a TypeError from ctypes
-# ("expected LP_MEMORY_BASIC_INFORMATION instance instead of pointer to
-# MEMORY_BASIC_INFORMATION"). This lock keeps the whole scan (argtypes
-# assignment + the VirtualQueryEx/ReadProcessMemory loop) serialized instead.
+# If two threads assigned it at the same instant, each could stomp the
+# other's argtypes between the assignment and the call, occasionally raising a
+# TypeError from ctypes ("expected LP_MEMORY_BASIC_INFORMATION instance
+# instead of pointer to MEMORY_BASIC_INFORMATION"). This lock therefore only
+# guards that assignment -- NOT the whole VirtualQueryEx/ReadProcessMemory
+# walk. It used to cover the entire walk, which serialized every scan in the
+# process behind whichever one started first: found live 2026-09-21 (the
+# second match of a session showed "Sanderson Park"), MatchStringPatchCoordinator's
+# 3-second full-process scan (which has never once found anything in any
+# captured log) held this lock at exactly the moment StadiumDbNamePatchCoordinator's
+# own attempt needed it, delaying the scan that actually matters by several
+# seconds until the patch landed after the pre-match screen had already read
+# the vanilla name. The assigned values are identical every time (ctypes
+# caches POINTER() classes), so once assigned, concurrent walks are safe.
 _SCAN_LOCK = threading.Lock()
 
 
@@ -82,7 +90,13 @@ def _decode_printable_text(data: bytes) -> str | None:
 
 
 def _scan_memory(
-    app: "Server16App", pattern: bytes, start_addr: int = 0, end_addr: int = 0x7FFFFFFFFFFF
+    app: "Server16App",
+    pattern: bytes,
+    start_addr: int = 0,
+    end_addr: int = 0x7FFFFFFFFFFF,
+    *,
+    max_scan: int = SCAN_MAX,
+    quiet: bool = False,
 ) -> list[int]:
     """Scan FIFA process memory for a byte pattern. Returns list of addresses.
 
@@ -95,6 +109,14 @@ def _scan_memory(
     just that window first -- a few MB instead of up to 4GB -- rather than
     depending on luck within a slow, full-process scan racing a limited
     per-match time budget.
+
+    ``max_scan`` caps how many readable+committed bytes this ONE call may
+    read (a single oversized region is clipped to whatever budget remains,
+    rather than scanned whole). ``quiet`` suppresses the per-call summary
+    line unless something was actually found. Both exist for
+    StadiumDbNamePatchCoordinator's fast watch (2026-09-21), which probes a
+    narrow window roughly every 150ms -- an unbounded, chatty scan there
+    would be both a CPU hog and log spam.
     """
     kernel32 = app.memory.kernel32
     handle = app.memory.process_handle
@@ -114,6 +136,9 @@ def _scan_memory(
     debug_target = _DEBUG_SCAN_TARGET
     debug_target_seen = False
 
+    # Only the argtypes assignment needs serializing (see _SCAN_LOCK's
+    # comment) -- the walk itself must NOT hold the lock, or every scan in the
+    # process queues behind whichever started first.
     with _SCAN_LOCK:
         VirtualQueryEx = kernel32.VirtualQueryEx
         VirtualQueryEx.restype = ctypes.c_size_t
@@ -122,73 +147,75 @@ def _scan_memory(
             ctypes.POINTER(MEMORY_BASIC_INFORMATION), ctypes.c_size_t
         ]
 
-        while scanned < SCAN_MAX:
-            ret = VirtualQueryEx(handle, addr, ctypes.byref(mbi), ctypes.sizeof(mbi))
-            if ret == 0:
-                break
-            region_size = mbi.RegionSize
-            base_protect = mbi.Protect & 0xFF
-            is_readable = base_protect in PAGE_READABLE
-            has_guard = (mbi.Protect & PAGE_GUARD) != 0
-            no_access = base_protect == PAGE_NOACCESS
-            region_passes_filter = (
-                mbi.State == MEM_COMMIT and is_readable and not has_guard
-                and not no_access and region_size > 0
+    while scanned < max_scan:
+        ret = VirtualQueryEx(handle, addr, ctypes.byref(mbi), ctypes.sizeof(mbi))
+        if ret == 0:
+            break
+        region_size = mbi.RegionSize
+        base_protect = mbi.Protect & 0xFF
+        is_readable = base_protect in PAGE_READABLE
+        has_guard = (mbi.Protect & PAGE_GUARD) != 0
+        no_access = base_protect == PAGE_NOACCESS
+        region_passes_filter = (
+            mbi.State == MEM_COMMIT and is_readable and not has_guard
+            and not no_access and region_size > 0
+        )
+        if debug_target is not None and region_size > 0 and addr <= debug_target < addr + region_size:
+            debug_target_seen = True
+            app.log(
+                f"[scan-diag] target 0x{debug_target:X} is inside region "
+                f"base=0x{addr:X} size=0x{region_size:X} state=0x{mbi.State:X} "
+                f"protect=0x{mbi.Protect:X} allocprotect=0x{mbi.AllocationProtect:X} "
+                f"passes_filter={region_passes_filter}"
             )
-            if debug_target is not None and region_size > 0 and addr <= debug_target < addr + region_size:
-                debug_target_seen = True
-                app.log(
-                    f"[scan-diag] target 0x{debug_target:X} is inside region "
-                    f"base=0x{addr:X} size=0x{region_size:X} state=0x{mbi.State:X} "
-                    f"protect=0x{mbi.Protect:X} allocprotect=0x{mbi.AllocationProtect:X} "
-                    f"passes_filter={region_passes_filter}"
+        if region_passes_filter:
+            # Read this region in chunks, clipped to whatever scan budget
+            # remains so one oversized region can't blow past `max_scan`.
+            scan_size = min(region_size, max_scan - scanned)
+            offset = 0
+            while offset < scan_size:
+                chunk_size = min(SCAN_CHUNK, scan_size - offset)
+                buf = ctypes.create_string_buffer(chunk_size)
+                read = ctypes.c_size_t()
+                ok = kernel32.ReadProcessMemory(
+                    handle,
+                    ctypes.c_void_p(addr + offset),
+                    buf, chunk_size,
+                    ctypes.byref(read)
                 )
-            if region_passes_filter:
-                # Read this region in chunks
-                offset = 0
-                while offset < region_size:
-                    chunk_size = min(SCAN_CHUNK, region_size - offset)
-                    buf = ctypes.create_string_buffer(chunk_size)
-                    read = ctypes.c_size_t()
-                    ok = kernel32.ReadProcessMemory(
-                        handle,
-                        ctypes.c_void_p(addr + offset),
-                        buf, chunk_size,
-                        ctypes.byref(read)
+                if (
+                    debug_target is not None
+                    and addr + offset <= debug_target < addr + offset + chunk_size
+                ):
+                    target_in_chunk = debug_target - (addr + offset)
+                    if ok:
+                        sample = buf.raw[target_in_chunk: target_in_chunk + 32]
+                    else:
+                        sample = b""
+                    err = ctypes.get_last_error() if not ok else 0
+                    app.log(
+                        f"[scan-diag] chunk covering target: ok={bool(ok)} "
+                        f"read={read.value}/{chunk_size} last_error={err} "
+                        f"bytes_at_target={sample!r}"
                     )
-                    if (
-                        debug_target is not None
-                        and addr + offset <= debug_target < addr + offset + chunk_size
-                    ):
-                        target_in_chunk = debug_target - (addr + offset)
-                        if ok:
-                            sample = buf.raw[target_in_chunk: target_in_chunk + 32]
-                        else:
-                            sample = b""
-                        err = ctypes.get_last_error() if not ok else 0
-                        app.log(
-                            f"[scan-diag] chunk covering target: ok={bool(ok)} "
-                            f"read={read.value}/{chunk_size} last_error={err} "
-                            f"bytes_at_target={sample!r}"
-                        )
-                    if ok and read.value > 0:
-                        data = buf.raw[:read.value]
-                        pos = 0
-                        while True:
-                            idx = data.find(pattern, pos)
-                            if idx == -1:
-                                break
-                            results.append(addr + offset + idx)
-                            pos = idx + 1
-                    offset += chunk_size
-                scanned += region_size
-            if region_size <= 0:
-                # Defensive step to avoid infinite loops on malformed region metadata.
-                addr += 0x1000
-            else:
-                addr += region_size
-            if addr >= end_addr:
-                break
+                if ok and read.value > 0:
+                    data = buf.raw[:read.value]
+                    pos = 0
+                    while True:
+                        idx = data.find(pattern, pos)
+                        if idx == -1:
+                            break
+                        results.append(addr + offset + idx)
+                        pos = idx + 1
+                offset += chunk_size
+            scanned += scan_size
+        if region_size <= 0:
+            # Defensive step to avoid infinite loops on malformed region metadata.
+            addr += 0x1000
+        else:
+            addr += region_size
+        if addr >= end_addr:
+            break
 
     if debug_target is not None and not debug_target_seen:
         app.log(
@@ -198,10 +225,11 @@ def _scan_memory(
         )
 
     elapsed = time.perf_counter() - started
-    app.log(
-        f"Memory scan: {scanned / (1024 * 1024):.0f}MB readable+committed "
-        f"in {elapsed:.2f}s, {len(results)} raw hit(s)"
-    )
+    if not quiet or results:
+        app.log(
+            f"Memory scan: {scanned / (1024 * 1024):.0f}MB readable+committed "
+            f"in {elapsed:.2f}s, {len(results)} raw hit(s)"
+        )
     return list(dict.fromkeys(results))
 
 
@@ -214,6 +242,10 @@ def _find_isolated_occurrences(
     pattern: bytes,
     term_width: int,
     priority_ranges: list[tuple[int, int]] | None = None,
+    *,
+    priority_only: bool = False,
+    quiet: bool = False,
+    max_scan: int | None = None,
 ) -> list[int]:
     """Scan for `pattern` and keep only occurrences that look like a whole,
     standalone string -- not a substring of some longer, unrelated string.
@@ -247,18 +279,32 @@ def _find_isolated_occurrences(
     limited per-match time budget. If nothing is found there, falls back to
     the ordinary unrestricted scan exactly as before -- this never narrows
     what gets found, only tries a fast, likely spot first.
+
+    ``priority_only`` (added 2026-09-21) never falls back to the full scan:
+    with no hits in ``priority_ranges`` it just returns ``[]``. ``quiet`` and
+    ``max_scan`` bound the cost/noise of each probe. All three exist for
+    StadiumDbNamePatchCoordinator's fast watch, which polls the narrow window
+    every ~150ms while waiting for FIFA to allocate the name buffer -- a
+    full-process fallback (or a log line per poll) would defeat the point.
     """
     addresses: list[int] = []
+    scan_kwargs: dict = {}
+    if quiet:
+        scan_kwargs["quiet"] = True
+    if max_scan is not None:
+        scan_kwargs["max_scan"] = max_scan
     if priority_ranges:
         for start, end in priority_ranges:
-            addresses.extend(_scan_memory(app, pattern, start_addr=start, end_addr=end))
+            addresses.extend(_scan_memory(app, pattern, start_addr=start, end_addr=end, **scan_kwargs))
         addresses = list(dict.fromkeys(addresses))
-        if addresses:
+        if addresses and not quiet:
             app.log(
                 f"Stadium DB name patcher: found {len(addresses)} raw hit(s) in the "
                 f"priority address range(s), skipping the full scan"
             )
     if not addresses:
+        if priority_only:
+            return []
         addresses = _scan_memory(app, pattern)
     isolated: list[int] = []
     rejected: list[int] = []
@@ -291,7 +337,7 @@ def _find_isolated_occurrences(
             unreadable += 1
             continue
 
-    if unreadable:
+    if unreadable and not quiet:
         app.log(
             f"Stadium DB name patcher: {unreadable} raw hit(s) of '{pattern!r}' "
             f"could not be read for isolation checking (likely at a memory "
@@ -304,7 +350,7 @@ def _find_isolated_occurrences(
     # instead of yet another silent "0 isolated occurrences" that gives no
     # clue whether the text is truncated, embedded in a longer string, or
     # padded with non-NUL bytes rather than zeros.
-    if not isolated and rejected:
+    if not isolated and rejected and not quiet:
         for addr in rejected[:3]:
             try:
                 # Widened from 16/16 (2026-09-10): a recurring, session-stable
@@ -584,6 +630,22 @@ class StadiumDbNamePatchCoordinator:
     # coordinator giving up early.
     MAX_SCAN_ATTEMPTS = 20
 
+    # Fast watch tuning (see fast_watch). Probes are cheap -- a narrow window
+    # is ~20MB and scans in ~0.02s -- so polling every ~150ms costs a small
+    # fraction of one core, and only for the seconds around loading.
+    FAST_WATCH_INTERVAL_SECONDS = 0.15
+    FAST_WATCH_GRACE_INTERVAL_SECONDS = 0.5
+    FAST_WATCH_MAX_SECONDS = 30.0
+    # After the first patch lands, keep probing briefly to catch further
+    # copies that only become resident slightly later (Part 14: several
+    # copies of the vanilla name coexist and only some are the render source).
+    FAST_WATCH_GRACE_SECONDS = 2.0
+    # Hard cap on bytes read per probe so a wrong/oversized learned window can
+    # never turn a 150ms poll into a multi-second scan.
+    FAST_WATCH_MAX_SCAN_BYTES = 96 * 1024 * 1024
+    # Half-width of the window learned around each successful patch.
+    LEARNED_RANGE_MARGIN = 8 * 1024 * 1024
+
     def __init__(self, app: "Server16App") -> None:
         self.app = app
         self._state_lock = threading.RLock()
@@ -619,6 +681,21 @@ class StadiumDbNamePatchCoordinator:
         # below for why plain content-equality isn't enough to tell "nothing
         # new happened" apart from "a scheduled retry arrived while busy."
         self._request_seq: dict[tuple[int, str], int] = {}
+        # Address windows learned from EARLIER successful patches in this same
+        # FIFA process (pid -> [(start, end)]), searched first alongside the
+        # configured STDNAME_SAFE_EXTEND_PRIORITY_RANGES. The configured range
+        # is calibrated to one install's heap layout; this generalizes the
+        # idea to any install -- once slot A's buffer has been found (slowly,
+        # if need be), slot B's buffer is very likely allocated close by (both
+        # come from the same DB table load: 0x944D989D and 0x944DBCB5 in a
+        # captured session, ~9KB apart), so slot B's first-ever discovery in
+        # the session no longer has to depend on a multi-second full scan.
+        self._learned_ranges: dict[int, list[tuple[int, int]]] = {}
+        # Fast watch (see fast_watch): keys currently being polled, their
+        # latest (old_name, new_name) target, and each watch's own deadline.
+        self._fast_watching: set[tuple[int, str]] = set()
+        self._fast_targets: dict[tuple[int, str], tuple[str, str]] = {}
+        self._fast_deadline: dict[tuple[int, str], float] = {}
 
     def reset(self) -> None:
         with self._state_lock:
@@ -627,6 +704,9 @@ class StadiumDbNamePatchCoordinator:
             self._cache.clear()
             self._current_name.clear()
             self._request_seq.clear()
+            self._learned_ranges.clear()
+            self._fast_targets.clear()
+            self._fast_deadline.clear()
 
     def _key(self, injid: str) -> tuple[int, str] | None:
         app = self.app
@@ -798,16 +878,7 @@ class StadiumDbNamePatchCoordinator:
                     )
                     found = self._scan_and_patch(key, old_name, new_name)
                     if found:
-                        with self._state_lock:
-                            existing = self._cache.get(key, [])
-                            existing_addrs = {candidate[0] for candidate in existing}
-                            new_candidates = [c for c in found if c[0] not in existing_addrs]
-                            if new_candidates:
-                                self._cache[key] = existing + new_candidates
-                                app.log(
-                                    f"Stadium DB name patcher: now tracking "
-                                    f"{len(self._cache[key])} total occurrence(s) for slot {key[1]}"
-                                )
+                        self._merge_into_cache(key, found)
 
                 with self._state_lock:
                     # Compare the request *sequence number*, not the pending
@@ -837,6 +908,265 @@ class StadiumDbNamePatchCoordinator:
                 pending = self._pending.get(key)
             if pending and self._is_current(key):
                 self.request(key[1], pending[0], pending[1], allow_scan=False)
+
+    def _priority_ranges(self, pid: int) -> list[tuple[int, int]]:
+        """Configured priority windows plus any learned in this process."""
+        configured = getattr(getattr(self.app, "offsets", None), "STDNAME_SAFE_EXTEND_PRIORITY_RANGES", None) or []
+        with self._state_lock:
+            learned = list(self._learned_ranges.get(pid, []))
+        return list(configured) + learned
+
+    def _learn_range(self, pid: int, address: int) -> None:
+        """Remember a window around a successfully patched address, unless an
+        existing (configured or learned) window already covers it. Only
+        changes WHERE later scans look first -- never how a hit is treated
+        (capacity/safety rules are identical), so it can't add write risk."""
+        for start, end in self._priority_ranges(pid):
+            if start <= address < end:
+                return
+        window = (max(0, address - self.LEARNED_RANGE_MARGIN), address + self.LEARNED_RANGE_MARGIN)
+        with self._state_lock:
+            self._learned_ranges.setdefault(pid, []).append(window)
+        self.app.log(
+            f"Stadium DB name patcher: learned priority window "
+            f"0x{window[0]:X}-0x{window[1]:X} around 0x{address:X}"
+        )
+
+    def _merge_into_cache(self, key: tuple[int, str], found: list[tuple[int, int, str]]) -> None:
+        with self._state_lock:
+            existing = self._cache.get(key, [])
+            existing_addrs = {candidate[0] for candidate in existing}
+            new_candidates = [c for c in found if c[0] not in existing_addrs]
+            if new_candidates:
+                self._cache[key] = existing + new_candidates
+                self.app.log(
+                    f"Stadium DB name patcher: now tracking "
+                    f"{len(self._cache[key])} total occurrence(s) for slot {key[1]}"
+                )
+
+    def fast_watch(self, injid: str, old_name: str, new_name: str, *, max_seconds: float | None = None) -> bool:
+        """Poll the priority window(s) every ~150ms for `old_name` and patch it
+        the instant it appears -- cheap enough (~20ms per probe) to run at a
+        cadence the slow full-scan attempts can never match.
+
+        Why this exists (found live 2026-09-21: the second match of a session
+        showed "Sanderson Park"): FIFA only allocates this name buffer once
+        match LOADING starts (the blank page after KickOffHub) -- the
+        priority window reported 0MB readable until then in every captured
+        log -- and the pre-match screen reads it roughly one to two seconds
+        later, around the "TV/bumper" page. Each slow attempt costs 1.5-6s
+        (a full UTF-8 scan plus a full pipe-delimited scan every time), so
+        whether one happened to start soon enough after the allocation was a
+        coin flip: the winning patch landed 1s before the bumper in one match
+        and right AFTER it in the next, and the second one displayed the
+        vanilla name. Probing only the window that has always contained the
+        buffer cuts detection latency from seconds to ~150ms.
+
+        Does not consume the per-slot MAX_SCAN_ATTEMPTS budget (that budget
+        lasts the whole FIFA process; burning it on probes that cannot succeed
+        yet would leave nothing for the slow path) and does nothing on an
+        install with no configured or learned window -- those keep relying on
+        the slow attempts exactly as before.
+        """
+        app = self.app
+        if app._closing or not app.memory.is_open():
+            return False
+        if not old_name or old_name == new_name:
+            return False
+        key = self._key(injid)
+        if key is None:
+            return False
+        if not self._priority_ranges(key[0]):
+            return False
+        deadline = time.monotonic() + (max_seconds if max_seconds is not None else self.FAST_WATCH_MAX_SECONDS)
+        with self._state_lock:
+            self._fast_targets[key] = (old_name, new_name)
+            self._fast_deadline[key] = deadline
+            if key in self._fast_watching:
+                return True
+            self._fast_watching.add(key)
+        threading.Thread(
+            target=self._fast_watch_worker,
+            args=(key,),
+            daemon=True,
+            name="StadiumDbNameFastWatch",
+        ).start()
+        return True
+
+    def _fast_watch_worker(self, key: tuple[int, str]) -> None:
+        app = self.app
+        first_hit_at: float | None = None
+        try:
+            while True:
+                now = time.monotonic()
+                with self._state_lock:
+                    target = self._fast_targets.get(key)
+                    deadline = self._fast_deadline.get(key, 0.0)
+                    finished = (
+                        target is None
+                        or now >= deadline
+                        or (first_hit_at is not None and now - first_hit_at >= self.FAST_WATCH_GRACE_SECONDS)
+                        or not self._is_current(key)
+                    )
+                    if finished:
+                        # Decided and released under the lock, so a fast_watch()
+                        # call racing this exit either sees the key still
+                        # registered (and its refreshed target is honored on the
+                        # next loop) or sees it gone and spawns a new worker.
+                        self._fast_watching.discard(key)
+                        self._fast_targets.pop(key, None)
+                        self._fast_deadline.pop(key, None)
+                        return
+                old_name, new_name = target
+                started = time.monotonic()
+                found = self._fast_probe(key, old_name, new_name)
+                if found:
+                    self._merge_into_cache(key, found)
+                    if first_hit_at is None:
+                        first_hit_at = time.monotonic()
+                        app.log(
+                            f"Stadium DB name patcher: fast watch patched {len(found)} "
+                            f"occurrence(s) for slot {key[1]}"
+                        )
+                elapsed = time.monotonic() - started
+                interval = (
+                    self.FAST_WATCH_INTERVAL_SECONDS
+                    if first_hit_at is None
+                    else self.FAST_WATCH_GRACE_INTERVAL_SECONDS
+                )
+                # A slow probe backs itself off instead of hammering the CPU.
+                time.sleep(max(interval, elapsed))
+        except Exception as exc:
+            app.log("Stadium DB name fast watch error", exc)
+            with self._state_lock:
+                self._fast_watching.discard(key)
+                self._fast_targets.pop(key, None)
+                self._fast_deadline.pop(key, None)
+
+    def _fast_probe(self, key: tuple[int, str], old_name: str, new_name: str) -> list[tuple[int, int, str]]:
+        try:
+            pattern = old_name.encode("utf-8")
+        except UnicodeEncodeError:
+            return []
+        if not pattern:
+            return []
+        addresses = _find_isolated_occurrences(
+            self.app,
+            pattern,
+            1,
+            priority_ranges=self._priority_ranges(key[0]),
+            priority_only=True,
+            quiet=True,
+            max_scan=self.FAST_WATCH_MAX_SCAN_BYTES,
+        )
+        if not addresses or not self._is_current(key):
+            return []
+        self.app.log(
+            f"Stadium DB name patcher: fast watch found {len(addresses)} isolated "
+            f"occurrence(s) of '{old_name}' (slot {key[1]})"
+        )
+        return self._patch_isolated_addresses(key, addresses, pattern, 1, "utf-8", old_name, new_name)
+
+    def _patch_isolated_addresses(
+        self,
+        key: tuple[int, str],
+        addresses: list[int],
+        pattern: bytes,
+        term_width: int,
+        encoding: str,
+        old_name: str,
+        new_name: str,
+    ) -> list[tuple[int, int, str]]:
+        """Decide each isolated occurrence's safe write capacity and patch it.
+
+        Shared by the slow full-scan attempt (_scan_and_patch) and the fast
+        priority-range watch (_fast_watch_worker) so both apply the exact same
+        capacity/safety rules -- see the long comment below for why those
+        rules differ between confirmed-safe and unconfirmed addresses.
+        """
+        app = self.app
+        patched: list[tuple[int, int, str]] = []
+        safe_suffixes = set(getattr(getattr(app, "offsets", None), "STDNAME_SAFE_EXTEND_SUFFIXES", []))
+        for addr in addresses:
+            base_capacity = len(pattern) + term_width
+            # A scan for the vanilla name can turn up MULTIPLE
+            # simultaneous isolated copies, and not all of them are the
+            # real render-source buffer -- confirmed live 2026-09-10/11,
+            # twice: a probed "readable" capacity let a write of just 16
+            # bytes (4 bytes past "Waldstadion\0"'s own 12-byte footprint
+            # -- "SPORTCLUB Arena") crash FIFA on leaving the match, and a
+            # second, independent session with a 33-byte write (21 bytes
+            # past the footprint -- "Campos de Sport de El Sardinero")
+            # crashed the same way. Both crashes' addresses (0x5303B8B4,
+            # 0x52B5B8B4) were NOT the known-good buffer family
+            # (offsets.STDNAME_SAFE_EXTEND_SUFFIXES' docstring) -- they
+            # were decoys, and "readable" only ever meant the OS reports
+            # the page as mapped, never that the memory is unused padding
+            # rather than a neighboring heap object's own live data.
+            # Conversely, the specific buffer family in
+            # STDNAME_SAFE_EXTEND_SUFFIXES has been directly confirmed
+            # (Cheat Engine, editing it in place) to survive a full
+            # extended-length write with no crash on abandon -- so a
+            # confirmed-safe address gets the FULL any-readable-byte
+            # extension (_probe_available_capacity). Every OTHER
+            # occurrence -- i.e. every build/mod nobody has manually
+            # confirmed yet, which is most users, since requiring
+            # per-install Cheat Engine work doesn't scale -- gets the
+            # safer, install-independent default instead
+            # (_probe_zero_padded_capacity, own docstring): only
+            # genuinely zero-valued trailing bytes count as real slack,
+            # never merely "readable" ones. This was this exact
+            # capacity probe's ORIGINAL design (Part 10, 2026-09-09) and
+            # never caused a crash in its whole live history -- only the
+            # later any-readable-byte version did. It won't always find
+            # as much room as a confirmed suffix would (real UI padding
+            # isn't guaranteed to be zeroed every session), but it is
+            # strictly safer than capping to base_capacity outright (the
+            # previous behavior for every unconfirmed address), so most
+            # names on most builds should now come through untruncated
+            # or only lightly truncated, with zero manual RE work.
+            addr_suffix = addr & 0xFFFF
+            if addr_suffix in safe_suffixes:
+                capacity = _probe_available_capacity(app, addr, base_capacity, term_width)
+                if capacity > base_capacity:
+                    app.log(
+                        f"Stadium DB name patcher: buffer at 0x{addr:X} matches a "
+                        f"confirmed-safe suffix (0x{addr_suffix:04X}) -- extending to "
+                        f"{capacity - base_capacity} extra byte(s), {capacity}-byte "
+                        f"capacity"
+                    )
+            else:
+                capacity = _probe_zero_padded_capacity(app, addr, base_capacity, term_width)
+                if capacity > base_capacity:
+                    app.log(
+                        f"Stadium DB name patcher: buffer at 0x{addr:X} has "
+                        f"{capacity - base_capacity} genuinely zero-padded byte(s) past "
+                        f"'{old_name}' (no confirmed-safe suffix 0x{addr_suffix:04X}) -- "
+                        f"using {capacity}-byte capacity as a safe, install-independent "
+                        f"default"
+                    )
+                else:
+                    # Zero-padding found nothing, but the OS may still
+                    # report more raw "readable" bytes past it -- log
+                    # that as a diagnostic (never used automatically) so
+                    # a future live Cheat Engine confirmation for this
+                    # install has a concrete address to start from.
+                    probed = _probe_available_capacity(app, addr, base_capacity, term_width)
+                    if probed > base_capacity:
+                        app.log(
+                            f"Stadium DB name patcher: buffer at 0x{addr:X} reports "
+                            f"{probed - base_capacity} extra READABLE (but non-zero) "
+                            f"byte(s) past '{old_name}' -- not used automatically; capped "
+                            f"to the {base_capacity}-byte footprint. If this is the real "
+                            f"render buffer, confirm it live (edit in Cheat Engine, check "
+                            f"the display changes AND a full match survives abandon with "
+                            f"no crash) before adding 0x{addr_suffix:04X} to "
+                            f"STDNAME_SAFE_EXTEND_SUFFIXES."
+                        )
+            if self._patch_one(key, (addr, capacity, encoding), old_name, new_name):
+                patched.append((addr, capacity, encoding))
+                self._learn_range(key[0], addr)
+        return patched
 
     def _scan_and_patch(self, key: tuple[int, str], old_name: str, new_name: str) -> list[tuple[int, int, str]] | None:
         """Find and patch EVERY copy of `old_name` this attempt can locate --
@@ -880,7 +1210,7 @@ class StadiumDbNamePatchCoordinator:
                 continue
             if not pattern or not self._is_current(key):
                 return found or None
-            priority_ranges = getattr(getattr(app, "offsets", None), "STDNAME_SAFE_EXTEND_PRIORITY_RANGES", None)
+            priority_ranges = self._priority_ranges(key[0])
             addresses = _find_isolated_occurrences(app, pattern, term_width, priority_ranges=priority_ranges)
             if not self._is_current(key):
                 app.log("Stadium DB name patcher: discarded stale scan result")
@@ -889,85 +1219,9 @@ class StadiumDbNamePatchCoordinator:
                 f"Stadium DB name patcher: {len(addresses)} isolated {encoding} "
                 f"occurrence(s) of '{old_name}'"
             )
-            safe_suffixes = set(getattr(getattr(app, "offsets", None), "STDNAME_SAFE_EXTEND_SUFFIXES", []))
-            for addr in addresses:
-                base_capacity = len(pattern) + term_width
-                # A scan for the vanilla name can turn up MULTIPLE
-                # simultaneous isolated copies, and not all of them are the
-                # real render-source buffer -- confirmed live 2026-09-10/11,
-                # twice: a probed "readable" capacity let a write of just 16
-                # bytes (4 bytes past "Waldstadion\0"'s own 12-byte footprint
-                # -- "SPORTCLUB Arena") crash FIFA on leaving the match, and a
-                # second, independent session with a 33-byte write (21 bytes
-                # past the footprint -- "Campos de Sport de El Sardinero")
-                # crashed the same way. Both crashes' addresses (0x5303B8B4,
-                # 0x52B5B8B4) were NOT the known-good buffer family
-                # (offsets.STDNAME_SAFE_EXTEND_SUFFIXES' docstring) -- they
-                # were decoys, and "readable" only ever meant the OS reports
-                # the page as mapped, never that the memory is unused padding
-                # rather than a neighboring heap object's own live data.
-                # Conversely, the specific buffer family in
-                # STDNAME_SAFE_EXTEND_SUFFIXES has been directly confirmed
-                # (Cheat Engine, editing it in place) to survive a full
-                # extended-length write with no crash on abandon -- so a
-                # confirmed-safe address gets the FULL any-readable-byte
-                # extension (_probe_available_capacity). Every OTHER
-                # occurrence -- i.e. every build/mod nobody has manually
-                # confirmed yet, which is most users, since requiring
-                # per-install Cheat Engine work doesn't scale -- gets the
-                # safer, install-independent default instead
-                # (_probe_zero_padded_capacity, own docstring): only
-                # genuinely zero-valued trailing bytes count as real slack,
-                # never merely "readable" ones. This was this exact
-                # capacity probe's ORIGINAL design (Part 10, 2026-09-09) and
-                # never caused a crash in its whole live history -- only the
-                # later any-readable-byte version did. It won't always find
-                # as much room as a confirmed suffix would (real UI padding
-                # isn't guaranteed to be zeroed every session), but it is
-                # strictly safer than capping to base_capacity outright (the
-                # previous behavior for every unconfirmed address), so most
-                # names on most builds should now come through untruncated
-                # or only lightly truncated, with zero manual RE work.
-                addr_suffix = addr & 0xFFFF
-                if addr_suffix in safe_suffixes:
-                    capacity = _probe_available_capacity(app, addr, base_capacity, term_width)
-                    if capacity > base_capacity:
-                        app.log(
-                            f"Stadium DB name patcher: buffer at 0x{addr:X} matches a "
-                            f"confirmed-safe suffix (0x{addr_suffix:04X}) -- extending to "
-                            f"{capacity - base_capacity} extra byte(s), {capacity}-byte "
-                            f"capacity"
-                        )
-                else:
-                    capacity = _probe_zero_padded_capacity(app, addr, base_capacity, term_width)
-                    if capacity > base_capacity:
-                        app.log(
-                            f"Stadium DB name patcher: buffer at 0x{addr:X} has "
-                            f"{capacity - base_capacity} genuinely zero-padded byte(s) past "
-                            f"'{old_name}' (no confirmed-safe suffix 0x{addr_suffix:04X}) -- "
-                            f"using {capacity}-byte capacity as a safe, install-independent "
-                            f"default"
-                        )
-                    else:
-                        # Zero-padding found nothing, but the OS may still
-                        # report more raw "readable" bytes past it -- log
-                        # that as a diagnostic (never used automatically) so
-                        # a future live Cheat Engine confirmation for this
-                        # install has a concrete address to start from.
-                        probed = _probe_available_capacity(app, addr, base_capacity, term_width)
-                        if probed > base_capacity:
-                            app.log(
-                                f"Stadium DB name patcher: buffer at 0x{addr:X} reports "
-                                f"{probed - base_capacity} extra READABLE (but non-zero) "
-                                f"byte(s) past '{old_name}' -- not used automatically; capped "
-                                f"to the {base_capacity}-byte footprint. If this is the real "
-                                f"render buffer, confirm it live (edit in Cheat Engine, check "
-                                f"the display changes AND a full match survives abandon with "
-                                f"no crash) before adding 0x{addr_suffix:04X} to "
-                                f"STDNAME_SAFE_EXTEND_SUFFIXES."
-                            )
-                if self._patch_one(key, (addr, capacity, encoding), old_name, new_name):
-                    found.append((addr, capacity, encoding))
+            found.extend(
+                self._patch_isolated_addresses(key, addresses, pattern, term_width, encoding, old_name, new_name)
+            )
 
         # Always also try the pipe-delimited presentation-string field (UTF-8
         # only -- see _find_pipe_bounded_occurrences), even when a NUL-isolated

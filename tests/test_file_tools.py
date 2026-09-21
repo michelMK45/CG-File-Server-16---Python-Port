@@ -9,6 +9,7 @@ from server16_py.file_tools import (
     copy_goalpost_sources,
     resolve_goalpost_model_preview_path,
     resolve_goalpost_texture_rx3_path,
+    slot_specific_goalpost_name,
 )
 
 
@@ -80,6 +81,95 @@ class CopyGoalpostSourcesTests(unittest.TestCase):
     def test_no_sources_produce_any_files_leaves_no_manifest(self) -> None:
         copy_goalpost_sources([], self.dst, self.manifest)
         self.assertFalse(self.manifest.exists())
+
+    def test_without_a_stadium_id_filenames_are_left_exactly_as_shipped(self) -> None:
+        # The legacy per-stadium GoalpostGBD path: its filenames are deliberate
+        # overrides of the vanilla names and must never be rewritten.
+        legacy = self._make_source("GoalpostGBD", {"specificgoalpost_0_0.rx3": b"legacy", "goalpost_1.rx3": b"tri"})
+        copied = copy_goalpost_sources([legacy], self.dst, self.manifest)
+        self.assertEqual(sorted(copied), ["goalpost_1.rx3", "specificgoalpost_0_0.rx3"])
+        self.assertEqual((self.dst / "specificgoalpost_0_0.rx3").read_bytes(), b"legacy")
+
+    def test_with_a_stadium_id_pack_files_are_installed_under_the_slot_specific_names(self) -> None:
+        model = self._make_source("GoalpostModel", {"specificgoalpost_18_0.rx3": b"model", "preview.png": b"img"})
+        texture = self._make_source("GoalpostColor", {"specificnetsupportpost_0_0_textures.rx3": b"texture"})
+        copied = copy_goalpost_sources([model, texture], self.dst, self.manifest, stadium_id="176")
+        expected = {"specificgoalpost_0_176.rx3", "specificnetsupportpost_0_176_textures.rx3"}
+        self.assertEqual(set(copied), expected)
+        self.assertEqual((self.dst / "specificgoalpost_0_176.rx3").read_bytes(), b"model")
+        self.assertEqual((self.dst / "specificnetsupportpost_0_176_textures.rx3").read_bytes(), b"texture")
+        # Neither the pack's own name nor the shared *_0_0 fallback name may be left behind,
+        # or the engine would have a second, cache-prone path to resolve.
+        self.assertFalse((self.dst / "specificgoalpost_18_0.rx3").exists())
+        self.assertFalse((self.dst / "specificnetsupportpost_0_0_textures.rx3").exists())
+        self.assertEqual(set(self.manifest.read_text(encoding="utf-8").splitlines()), expected)
+
+    def test_two_stadiums_whose_packs_share_a_filename_land_on_different_paths_per_slot(self) -> None:
+        # The reported bug: two stadiums picking different goalposts whose packs both ship
+        # specificgoalpost_0_0.rx3 / specificnetsupportpost_0_0_textures.rx3 resolved to the
+        # very same path, so the engine kept serving the first one it loaded.
+        model_a = self._make_source("ModelA", {"specificgoalpost_0_0.rx3": b"model-a"})
+        model_b = self._make_source("ModelB", {"specificgoalpost_0_0.rx3": b"model-b"})
+        red = self._make_source("Red", {"specificnetsupportpost_0_0_textures.rx3": b"red"})
+        blue = self._make_source("Blue", {"specificnetsupportpost_0_0_textures.rx3": b"blue"})
+        first = copy_goalpost_sources([model_a, red], self.dst, self.manifest, stadium_id="176")
+        second = copy_goalpost_sources([model_b, blue], self.dst, self.manifest, stadium_id="261")
+        self.assertTrue(set(first).isdisjoint(second))
+        # The second load evicts the first slot's files (they're in the manifest under
+        # their slot-specific names) and leaves only its own.
+        self.assertFalse((self.dst / "specificgoalpost_0_176.rx3").exists())
+        self.assertFalse((self.dst / "specificnetsupportpost_0_176_textures.rx3").exists())
+        self.assertEqual((self.dst / "specificgoalpost_0_261.rx3").read_bytes(), b"model-b")
+        self.assertEqual((self.dst / "specificnetsupportpost_0_261_textures.rx3").read_bytes(), b"blue")
+
+    def test_reusing_a_slot_replaces_its_content_with_the_new_pick(self) -> None:
+        red = self._make_source("Red", {"specificnetsupportpost_0_0_textures.rx3": b"red"})
+        blue = self._make_source("Blue", {"specificnetsupportpost_0_0_textures.rx3": b"blue"})
+        copy_goalpost_sources([red], self.dst, self.manifest, stadium_id="176")
+        copy_goalpost_sources([blue], self.dst, self.manifest, stadium_id="176")
+        self.assertEqual((self.dst / "specificnetsupportpost_0_176_textures.rx3").read_bytes(), b"blue")
+
+    def test_unrecognized_pack_files_keep_their_name_and_subfolders_are_preserved(self) -> None:
+        model = self._make_source("GoalpostModel", {"goalpost_1.rx3": b"tri", "notes.txt": b"n"})
+        nested = model / "sub"
+        nested.mkdir()
+        (nested / "specificgoalpost_9_0_textures.rx3").write_bytes(b"post-tex")
+        copied = copy_goalpost_sources([model], self.dst, self.manifest, stadium_id="261")
+        self.assertEqual(
+            set(copied),
+            {"goalpost_1.rx3", "notes.txt", str(Path("sub") / "specificgoalpost_0_261_textures.rx3")},
+        )
+        self.assertEqual((self.dst / "sub" / "specificgoalpost_0_261_textures.rx3").read_bytes(), b"post-tex")
+
+
+class SlotSpecificGoalpostNameTests(unittest.TestCase):
+    """The rename table copy_goalpost_sources uses for GoalpostModel/GoalpostColor pack
+    files -- mirrors the specific*_0_{stadiumID} candidates in goalnet.lua's
+    GetRMGoalPost/GetRMGoalPostTex/GetRMSupportPost."""
+
+    def test_model_files_map_to_specificgoalpost_0_slot_whatever_team_id_the_pack_used(self) -> None:
+        for shipped in ("specificgoalpost_18_0.rx3", "specificgoalpost_0_0.rx3", "specificgoalpost_9_0.rx3", "specificgoalpost_10_0.rx3"):
+            with self.subTest(shipped=shipped):
+                self.assertEqual(slot_specific_goalpost_name(shipped, "176"), "specificgoalpost_0_176.rx3")
+        self.assertEqual(slot_specific_goalpost_name("specificgoalpost_0_0.rx3", "261"), "specificgoalpost_0_261.rx3")
+
+    def test_texture_files_keep_their_textures_suffix(self) -> None:
+        self.assertEqual(
+            slot_specific_goalpost_name("specificnetsupportpost_0_0_textures.rx3", "176"),
+            "specificnetsupportpost_0_176_textures.rx3",
+        )
+        self.assertEqual(
+            slot_specific_goalpost_name("specificgoalpost_0_0_textures.rx3", "261"),
+            "specificgoalpost_0_261_textures.rx3",
+        )
+
+    def test_matching_is_case_insensitive_and_output_is_lowercase(self) -> None:
+        self.assertEqual(slot_specific_goalpost_name("SpecificGoalPost_9_0.RX3", "176"), "specificgoalpost_0_176.rx3")
+
+    def test_anything_else_is_not_renamed(self) -> None:
+        for other in ("goalpost_1.rx3", "goalpost_0_textures.rx3", "specificgoalnet_0_0.rx3", "specificgoalpost_0_0.txt", "preview.rx3", "specificgoalpost_x_0.rx3"):
+            with self.subTest(other=other):
+                self.assertIsNone(slot_specific_goalpost_name(other, "176"))
 
 
 class ResolveGoalpostModelPreviewPathTests(unittest.TestCase):
