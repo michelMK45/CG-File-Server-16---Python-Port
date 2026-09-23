@@ -25,6 +25,9 @@
   wrote successfully to memory with zero visible effect).
 - **Settings Export/Import** — share stadium/scoreboard/chants/etc. bindings as a standalone
   `.ini` file, with an explicit Replace/Merge choice and a conflict preview on import.
+- **Gamepads tab** — bridge up to 4 physical controllers (non-Xbox pads)
+  into virtual Xbox 360 pads so FIFA reads them correctly, with an optional HidHide layer that
+  hides the raw pad from FIFA and a live controller test panel.
 - **League Logos extraction** and new browsable **Team Picker** / **Stadium Picker** dialogs with
   crest/logo previews.
 
@@ -109,6 +112,22 @@ The Assets Extractor can now pull league logos (`data/ui/imgassets/league/`) alo
 team crests. New browsable **Team Picker** and **Stadium Picker** dialogs, with crest/logo
 previews and search, replace plain dropdowns in Kit Mixer's "Pick Team" flow and elsewhere.
 
+#### Gamepads Bridge (ViGEmBus + HidHide)
+A new **Gamepads** tab translates up to 4 physical controllers into virtual Xbox 360 pads through
+ViGEmBus/`vgamepad`, since FIFA 16 only reliably reads XInput input. It is app-level (starts with
+the app, not gated on FIFA running) and stores its config in `runtime/settings.json`.
+- **Install/Uninstall Driver** buttons for ViGEmBus and HidHide (UAC elevation, real install state
+  re-checked afterwards), each with a link to the official repository; ViGEmBus falls back to the
+  installer vendored inside `vgamepad`.
+- **Hide from FIFA** (per slot, optional) uses HidHide to cloak the physical pad from `fifa16.exe`,
+  because FIFA was confirmed to also read the raw device directly, causing garbled/phantom input.
+- **Test** button opens a live (~30Hz) panel showing raw physical input next to the translated
+  Xbox output; identical pads are resolved per slot.
+- **Remove** button resets a slot and lifts its HidHide cloak unless another slot of the same model
+  still needs it.
+- ViGEmBus and HidHide are credited in the About dialog. Hide-from-FIFA is not yet re-confirmed
+  live against a real FIFA session.
+
 #### Kit UI Thumbnail Import from PNG/JPG
 Kit Mixer can now bake a loose `.png`/`.jpg` image directly into a kit-selection UI thumbnail via
 a new 32-bit bridge, using `FifaLibrary`'s `DdsFile.ReplaceBitmap` — no more hand-preparing `.dds`
@@ -151,6 +170,16 @@ files just to customize a kit-selector thumbnail.
   checks, real (not fixed) buffer-capacity probing, and a bounded retry loop; also widened the
   memory-scan cap from 512MB to 4GB so a heavily modded process's full working set actually gets
   scanned instead of silently truncated.
+- **`scoreboardstdname` was intermittently late on the second match of a session.** The name
+  buffer only exists once match loading starts and the pre-match screen reads it around the
+  `TV/bumper` page, so slow scans could land after it was read. Scans now overlap instead of
+  queueing, and a fast ~150ms watch of the known memory window patches it as soon as it appears.
+- Fixed goalpost model/texture overrides (`[stadiumgoalpost]`/`[stadiumgoalposttexture]`) sticking
+  to whichever pack loaded first: packs share fixed filenames, so they are now installed under
+  per-slot (176/261) names, the same technique used for net colors.
+- Fixed a flood of memory-read errors in the log during pre-match menus (a new process handle was
+  opened on every read, and errors were never de-duplicated).
+- Fixed the PyInstaller build missing `ViGEmClient.dll` (crash at startup of the built exe).
 - Fixed stadium net color not updating between matches without restarting FIFA — the engine only
   re-reads the shared net texture file once per session, so a per-slot override path is now also
   written.
@@ -185,6 +214,9 @@ files just to customize a kit-selector thumbnail.
 - `ini_file.py` gained `import_sections()` (Replace/Merge); `KitExtractorHost.cs` gained a
   `leaguelogo` extraction mode and a second `DbFile` handle for the `leagues`/`leagueteamlinks`
   tables.
+- `gamepad_bridge_runtime.py`, `hidhide_runtime.py`, `win_elevation.py`, `gamepad_test_dialog.py`
+  (new); `Server16Python.spec`/`build_exe.bat` bundle `bin/ViGEmBus`, `bin/HidHide` and
+  `vgamepad`'s data files.
 - `en`/`es`/`pt` locale files updated throughout for all new UI strings.
 - Rebuilt `bin/cgfs16_overlay.dll`, `bin/cgfs16_inject.exe`, `bin/KitExtractorHost.exe` from the
   updated native sources.

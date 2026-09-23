@@ -9,7 +9,68 @@
 
 ⚠ This is a fork of the original project, continued by the community after the original author stopped developing the tool.
 
-**CGFS 16 Server 16** is a Windows desktop control panel and in-game overlay for **FIFA 16** modding. It watches the game's live memory state while you play and automatically swaps in the right stadium, scoreboard, TV logo, movie, chants, camera package, and kit assets for the match you're about to play — no manual file-copying or alt-tabbing required. This is a full Python rewrite of the classic Server 16 tool, aimed at being easier for the community to maintain, fix, and extend.
+**CGFS 16 Server 16** is a Windows desktop control panel and in-game overlay for **FIFA 16** modding. It watches the game's live memory state while you play and automatically swaps in the right stadium, scoreboard, TV logo, movie, chants, camera package, and kit assets for the match you're about to play — no manual file-copying or alt-tabbing required. This is a full Python rewrite of the classic Server 16 tool by shawminator, aimed at being easier for the community to maintain, fix, and extend.
+
+## Screenshots
+
+Dashboard:
+
+<img alt="dashboard" src="https://i.ibb.co/7xHy5y1C/image.jpg" />
+
+Kit server:
+
+<img alt="kits" src="https://i.ibb.co/WbtRwVZ/image.jpg" />
+
+Camera library:
+
+<img alt="Screenshot_1" src="https://i.ibb.co/845Kjjtz/image.png" />
+
+In-game overlay:
+
+<img alt="overlay" src="https://i.ibb.co/Xr6NDqqs/image.jpg" />
+
+## Feature Guide Index
+
+New here? Start with [Getting Started](#getting-started) to install the app, then use this table to jump straight to the setup guide for whichever feature you want to use — grouped by asset type, each row links to the exact section explaining the required folder layout, ini settings, or in-game controls.
+
+| Category | Feature | What it's for | Setup guide |
+|---|---|---|---|
+| Start here | New to the app / fastest path to a working setup | A short, ordered checklist covering install → assign → play | [Quick Guide](#quick-guide) |
+| Start here | First install / pointing the app at FIFA 16 | Getting the app running for the first time | [Getting Started](#getting-started) |
+| Start here | Antivirus flags the app or breaks FIFA | Understanding and fixing the false-positive detection | [Antivirus / Windows Defender Warnings](#antivirus--windows-defender-warnings) |
+| Overlay | The in-game F12 overlay menu | Opening/closing it, navigation, mouse support, known limitations | [In-Game Interactive Overlay](#in-game-interactive-overlay) |
+| Stadium | Loading stadium packs (folders/`.zip`/`.rar`) | Expected stadium folder contents and archive support | [Stadium Folder And Archive Loading](#stadium-folder-and-archive-loading) |
+| Stadium | Stadium preview thumbnails | Where to place preview images so they show up in the app/overlay | [Stadium Preview Images](#stadium-preview-images) |
+| Stadium | Assigning more than one stadium to a team, or picking manually in-game | Multi-stadium assignments and the manual in-game picker | [Manual Stadium Picker & Multi-Stadium Assignments](#manual-stadium-picker--multi-stadium-assignments) |
+| Stadium | Swapping a stadium's goalposts/net color | Model + texture pack folder layout | [Goalpost Model & Texture Packs](#goalpost-model--texture-packs) |
+| Stadium | Custom stadium name on the pre-match screen | Setting up the `scoreboardstdname` override | [Custom Stadium Display Name](#custom-stadium-display-name) |
+| Stadium | Per-stadium Broadcast camera tuning | `bcgameplay_176/261.dat` setup | [Gameplay Camera Files](#gameplay-camera-files) |
+| Scoreboard / TV Logo / Movie | Scoreboard packs | `ScoreBoardGBD` folder layout and round/tournament/home-team assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
+| Scoreboard / TV Logo / Movie | TV Logo packs | `TVLogoGBD` folder layout and assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
+| Scoreboard / TV Logo / Movie | Movie packs (intro movie / competition bumper) | `MoviesGBD` folder layout, assignment, and video preview | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
+| Camera | Camera mod packages (Anth's AIO Camera Mod) | Required folder layout and how applying a preset works | [Camera Packages](#camera-packages-1) |
+| Kits | Building custom kit packs for Kit Mixer | `FSW/Kits` folder structure | [Kit Mixer — `FSW/Kits` Package Structure](#kit-mixer--fswkits-package-structure) |
+| Kits | Ready-made kit sets + F7–F11 in-game hotkeys | Kit Sets folder layout and hotkey behavior | [Kit Sets](#kit-sets) |
+| Chants & Audio | Team/goal chants and the pre-kickoff entrance anthem | `FSW/Chants` layout, volumes, and the Team Entrance sequence | [Chants Audio Files](#chants-audio-files) · [Team Entrance](#team-entrance) |
+| Extra assets | Ball / Referee / Wipe / Adboard packs | Folder layout for each of the four extra asset modules | [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) |
+| Gameplay | Using non-Xbox controllers in FIFA | Bridging up to 4 physical pads into virtual Xbox 360 pads, optionally hiding the raw pad from FIFA | [Gamepads Bridge](#gamepads-bridge) |
+| Gameplay | Raising the 3-substitution match limit | Using the Substitutions control safely | [Custom Substitutions Details](#custom-substitutions-details) |
+| Tools & Settings | Unpacking vanilla game content (kits, crests, league logos, DB) | Using the Assets Extractor on a vanilla install | [Assets Extractor Details](#assets-extractor-details) |
+| Tools & Settings | Copying your bindings to another install | Exporting/importing `settings.ini` sections | [Settings Export & Import](#settings-export--import) |
+| Tools & Settings | Showing your match in Discord | Setup, plus why/how to switch to your own (optional) Client ID | [Discord Rich Presence](#discord-rich-presence) · [Using Your Own Client ID](#discord-rich-presence--using-your-own-client-id-recommended) · [DISCORD_SETUP.md](DISCORD_SETUP.md) |
+| Developers | Running from source / building the `.exe` | Developer setup, not needed just to use the app | [For Developers](#for-developers) |
+
+## Quick Guide
+
+The fastest path from "just downloaded it" to a working custom match:
+
+1. **Install & point at FIFA 16.** Download `Server16Python.exe` from [Releases](https://github.com/michelMK45/CG-File-Server-16---Python-Port/releases) and run it; if it doesn't auto-detect your install, point it at `FIFA 16.exe`. Details in [Getting Started](#getting-started).
+2. **Run Setup, then Regen BH** (Set Up tab → **Run Setup**, then **Regen BH** once it finishes) — do this the first time you point the app at an install, and again any time you need to repair a broken/incomplete one. **If you've already customized `FSW/settings.ini`, uncheck the `FSW/settings.ini` box in the Run Setup checklist first** — it's checked by default and will overwrite your existing assignments with the bundled template otherwise. Everything else in that checklist is safe to leave checked; Regen BH itself never touches `settings.ini`.
+3. **On a vanilla install, run the Assets Extractor once** (Setup tab → Database, then Kits/Crests/League Logos) so Kit Mixer and other in-place asset edits work without restarting FIFA. Skip this on a total-conversion mod like FIP — see [Assets Extractor Details](#assets-extractor-details).
+4. **Assign your first stadium, scoreboard, chants, etc.** from the desktop window's assignment dialogs, after dropping the relevant packs into their `FSW`/`StadiumGBD`/etc. folders per that feature's guide in the index above (e.g. [Stadium Folder And Archive Loading](#stadium-folder-and-archive-loading)).
+5. **Launch FIFA 16 and start a match** — the app watches the game and applies whatever you assigned automatically, no further action needed.
+6. **Open the in-game overlay with F12** (or hold Start/Menu on a gamepad) to browse and change assignments without leaving the game — see [In-Game Interactive Overlay](#in-game-interactive-overlay).
+7. **If something doesn't show up in-game**, check `runtime/server16.log` first, then that feature's specific guide in the index above — most "it doesn't apply" cases are already covered there. If assets aren't showing up in-game at all, re-running **Regen BH** is usually the first thing to try.
 
 ## Features
 
@@ -69,6 +130,10 @@ Unpacks vanilla FIFA game content (database, kit textures/numbers/thumbnails, te
 
 Raise FIFA 16's hardcoded 3-substitution-per-match limit to anywhere from 1–9 (1–5 have been validated in live testing). The app arms the change automatically at the right point in the match and applies it for both teams, with real-time status messages and an optional "auto-apply every match" toggle.
 
+### Gamepads Bridge
+
+A dedicated **Gamepads** tab that translates up to 4 physical controllers (non-Xbox pads) into virtual Xbox 360 pads, since FIFA 16 only reliably reads XInput/Xbox-layout input. It's app-level, not tied to FIFA being open — see [Gamepads Bridge Details](#gamepads-bridge-details).
+
 ### Chants & Audio
 
 Assign per-team/tournament chants and anthems under `FSW/Chants`, played back through the app's own audio engine during matches, including held goal-song playback that doesn't overlap the regular chants loop, plus an optional per-team entrance anthem (`Entrance.mp3`) played during the pre-kickoff walkout — see [Chants Audio Files](#chants-audio-files) below.
@@ -86,16 +151,6 @@ Movie assignment (the quick "Assign Movie" dialog and the larger version in the 
 Live previews now extend to every asset type across the Settings Editor and the assignment dialogs — thumbnail images for stadiums/scoreboards/TV logos/pitch/net/police, per-track play/stop for chants — instead of just a filename, plus a **"Reveal in Explorer"** button that opens the currently selected asset's folder or archive directly. A dedicated **Settings** tab groups App Settings and Overlay Settings separately from the Dashboard's Modules card, and a magnifying-glass **UI zoom control** scales fonts and window/dialog sizing app-wide.
 
 Bindings can also be shared between installs — see [Settings Export & Import](#settings-export--import).
-
-## Screenshots
-
-Main overlay:
-
-<img alt="Screenshot_2" src="https://i.ibb.co/Dq9hf5p/image.png" />
-
-<img alt="Screenshot_1" src="https://i.ibb.co/845Kjjtz/image.png" />
-
-<img alt="Screenshot_3" src="https://i.ibb.co/ymQqhYLp/image.png" />
 
 ## Project Status
 
@@ -169,6 +224,24 @@ FSW/Images/Police/
 Runtime bootstrap copying prefers the root `FSW/PitchMowPattern`, `FSW/Nets`, and `FSW/Police` folders when they exist. The stadium assignment dialog uses the `FSW/Images/...` folders first for selector values and preview PNGs, then falls back to the root folders.
 
 In both the `Assign Stadium` window and the Settings Editor's Stadium Settings tab, the Police / Pitch Mow Pattern / Net / Goalpost Model / Goalpost Texture dropdowns each have a small **▦** button beside them. It opens a grid with every available option shown as its preview image plus its name, so you can compare them at a glance and pick one (click to select, then double-click or **Select** to confirm) instead of stepping through the dropdown one value at a time. In the Settings Editor, select a single assigned stadium first, same as for the dropdowns. Goalpost Texture previews are rendered on demand from each pack's `.rx3`, so they fill in one by one the first time the grid opens; already-rendered ones are reused afterwards.
+
+### Scoreboard, TV Logo & Movie Packs
+
+These three are the other core per-match assets, alongside Stadium — each is a folder you drop into the matching `...GBD` directory, then bind to a team/round/tournament from the Settings Editor or the quick "Assign" dialogs, exactly like stadiums.
+
+```text
+ScoreBoardGBD/<pack name>/
+TVLogoGBD/<pack name>/
+MoviesGBD/<pack name>/
+  bootflowoutro.vp8
+  bumper.big
+```
+
+- **Scoreboard** — each `ScoreBoardGBD/<pack name>/` folder is assigned per round, tournament, or home team from the "Scoreboard" tab/section of the Settings Editor (`[Scoreboard]`/`[HomeTeamScoreBoard]`). Folders and `.zip`/`.rar` archives are both supported, the same as stadiums. A scoreboard pack can optionally ship per-TV-logo variant subfolders (matching whichever TV Logo the current match resolved to) — if one exists it's used instead of the pack's own top level. With no assignment, the vanilla default scoreboard stays active. Requires the **ScoreBoard** module enabled in the Modules card.
+- **TV Logo** — same idea, `TVLogoGBD/<pack name>/`, assigned via `[TVLogo]`/`[HomeTeamTvLogo]`. Requires the **TvLogo** module.
+- **Movie** — `MoviesGBD/<pack name>/` holding `bootflowoutro.vp8` (the pre-match intro movie) and/or `bumper.big` (the competition bumper). Assigned via the "Assign Movie" dialog or the Settings Editor's Movies/TeamMovies/DerbyMatch tabs, by round, tournament, derby match, or home team — see [Assignment & Settings Editors](#assignment--settings-editors) for the embedded video preview that dialog shows. If a stadium has its own `StadiumMovie.vp8`/`StadiumBumper.big` (§ [Stadium Folder And Archive Loading](#stadium-folder-and-archive-loading)), that takes priority over a Movie assignment for that match. Requires the **Movies** module.
+
+All three fall back to the vanilla defaults under `FSW/ScoreBoard`, `FSW/TVLogo`, and `FSW/Nav` respectively whenever nothing is assigned or a module is disabled, so turning a module off never leaves the game without a scoreboard/logo/movie.
 
 ### Stadium Preview Images
 
@@ -483,6 +556,19 @@ Share stadium/scoreboard/chants/etc. bindings between installs from the Settings
 
 Import shows a conflict preview before anything is overwritten, so you can see exactly what will change.
 
+### Gamepads Bridge Details
+
+The **Gamepads** tab lets you use controllers FIFA 16 doesn't handle well (generic DirectInput pads) by presenting each one to the game as a virtual Xbox 360 pad.
+
+1. **Install the drivers.** Click **Install Driver** for **ViGEmBus** (required — creates the virtual pads). The button asks for administrator permission (UAC); each driver row also has a link to its official repository if you'd like to verify it first. A bundled installer is used automatically; to ship a newer one, drop it in `bin\ViGEmBus\` next to the exe.
+2. **Pick a controller per slot** (up to 4), tick **Enabled**, and the app starts bridging it. Slot status updates live (Connected / Active). **Remove** clears a slot and lifts any hide rule it set.
+3. **Test** opens a live panel with the raw physical buttons/axes on one side and the translated Xbox output on the other — handy to check mappings or to diagnose a pad that seems to press buttons by itself.
+4. **Optional — Hide from FIFA (HidHide).** FIFA can also read the raw physical pad directly at the same time as the virtual one, which shows up as garbled or "phantom" input. Installing **HidHide** and ticking **Hide from FIFA** on a slot cloaks that physical controller from `fifa16.exe` only. This driver's installer isn't bundled by `vgamepad`: download it from [nefarius/HidHide releases](https://github.com/nefarius/HidHide/releases) and place it in `bin\HidHide\` before building, or install it yourself.
+
+The bridge runs with the app itself (not gated on FIFA running) and its config lives in `runtime/settings.json` (`gamepad_bridge`), not `settings.ini`. Requires the `vgamepad` and `pygame` Python packages; without them the tab just shows a "missing dependency" notice. ViGEmBus and HidHide are credited in the About dialog.
+
+⚠ Hide-from-FIFA has not yet been confirmed against a live FIFA session on every setup — if FIFA still reacts to the raw pad, check `runtime/server16.log` for `HidHide:` lines.
+
 ### Custom Substitutions Details
 
 The **Substitutions** control on the Matchup Live card lets you raise FIFA 16's hardcoded 3-substitution-per-match limit:
@@ -492,6 +578,18 @@ The **Substitutions** control on the Matchup Live card lets you raise FIFA 16's 
 3. Check **"Auto-apply every match"** to have this re-armed automatically at the start of every match instead of pressing Confirm each time.
 
 Status messages (`Waiting for match…`, `Armed…`, `Unrecognized FIFA build…`, etc.) report progress in real time. Safety checks run before anything is written to FIFA's memory, and the feature aborts without making changes if it can't verify it's safe to proceed.
+
+### Discord Rich Presence — Using Your Own Client ID (Recommended)
+
+Discord Rich Presence works out of the box through this project's own shared Discord Application (Client ID) — nothing to set up just to try it. That ID is shared by everyone running this build, though, so it's **recommended, but not required**, to create your own free Discord application and point the app at it instead: your status stops depending on anything happening to the shared community one, and you're free to customize its art assets.
+
+Quick version:
+
+1. Create a free application at the [Discord Developer Portal](https://discord.com/developers/applications) and copy its **Client ID**.
+2. Open `runtime/settings.json` and replace `discord_rpc.client_id` with your own Client ID.
+3. Restart the app.
+
+This is entirely optional — Rich Presence keeps working with the default shared ID if you skip it, and what data it shows (and that it's local/private) is unaffected either way. See [DISCORD_SETUP.md](DISCORD_SETUP.md#using-your-own-discord-application-optional) for the full walkthrough (including optional custom art assets), plus general setup, troubleshooting, and advanced configuration (update interval, disabling it, etc.) in the rest of that guide.
 
 ## How To Contribute
 
@@ -545,6 +643,8 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/chants_runtime.py`: chants and audio playback runtime.
 - `server16_py/camera_runtime.py`: Anth camera package discovery, preview, and application.
 - `server16_py/kit_mixer.py`: Kit Mixer runtime — mixes jersey/shorts textures, kit numbers, kit UI thumbnails, and jersey name color (Advanced tab), plus Kit Sets/`[kitgk]` linked-goalkeeper support (Simple tab), with a per-kit-type restore manager.
+- `server16_py/gamepad_bridge_runtime.py` / `server16_py/hidhide_runtime.py` / `server16_py/win_elevation.py`: Gamepads tab — physical-to-virtual Xbox 360 bridging (ViGEmBus), optional HidHide cloaking of the physical pad from FIFA, and shared UAC-elevation helpers.
+- `server16_py/gamepad_test_dialog.py`: live raw-vs-translated controller test panel.
 - `server16_py/substitution_runtime.py`: live in-game hook that lets you raise FIFA 16's hardcoded substitution limit for the current match.
 - `server16_py/entrance_runtime.py`: Team Entrance runtime — per-home-team walkout anthem playback.
 - `server16_py/match_string_patcher.py`: live memory scan-and-patch coordinators, including the one behind the `scoreboardstdname` fix.
@@ -575,6 +675,7 @@ Everything below is about building and working on the codebase itself — not ne
   - `Pillow`
   - `pygame`
   - `rarfile` for native RAR extraction when available
+  - `vgamepad` (Gamepads tab virtual Xbox 360 pads; optional — its bundled ViGEmBus installer is used by the Install Driver button)
   - `pypresence` for Discord Rich Presence (optional, see [DISCORD_SETUP.md](DISCORD_SETUP.md))
   - `ffpyplayer` for the embedded movie (`.vp8`) preview player in the Movie assignment/settings dialogs (optional — its prebuilt wheel bundles FFmpeg + SDL2 directly, so no separate player install is needed; the preview's Play button just disables itself if the package is missing)
   - `pyinstaller` for packaging

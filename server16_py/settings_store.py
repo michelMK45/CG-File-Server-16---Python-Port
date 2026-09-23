@@ -71,6 +71,21 @@ class SettingsStore:
             "stadium_preview_imgbb_api_key": "af421c8d5d14de2bbefc9697cbe5cae9",
             "stadium_preview_mode": "url"
         },
+        # App-level, FIFA-independent gamepad-to-virtual-Xbox360 bridge (see
+        # gamepad_bridge_runtime.py). Deliberately NOT in FSW/settings.ini's
+        # [Modules] grid -- this is general Windows input remapping, not a
+        # FIFA asset-injection feature, so it belongs with the rest of this
+        # app-level state instead. "slots" is always exactly 4 entries,
+        # index == physical slot 1-4 shown in the Gamepads tab; a slot with
+        # no device_guid is simply unconfigured.
+        "gamepad_bridge": {
+            "slots": [
+                {"enabled": False, "device_guid": "", "profile": "auto", "hide_from_fifa": False},
+                {"enabled": False, "device_guid": "", "profile": "auto", "hide_from_fifa": False},
+                {"enabled": False, "device_guid": "", "profile": "auto", "hide_from_fifa": False},
+                {"enabled": False, "device_guid": "", "profile": "auto", "hide_from_fifa": False},
+            ],
+        },
     }
 
     def __init__(self, path: Path) -> None:

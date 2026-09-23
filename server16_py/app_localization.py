@@ -77,6 +77,7 @@ class LocalizationMixin:
             self.tabview.tab(self.kits_tab, text=self.tr("tab.kits"))
             self.tabview.tab(self.audio_tab, text=self.tr("tab.chants"))
             self.tabview.tab(self.camera_tab, text=self.tr("tab.camera"))
+            self.tabview.tab(self.gamepads_tab, text=self.tr("tab.gamepads"))
             self.tabview.tab(self.settings_tab, text=self.tr("tab.settings"))
             self.tabview.tab(self.logs_tab, text=self.tr("tab.logs"))
         if self.logs_group is not None:
@@ -90,6 +91,26 @@ class LocalizationMixin:
         self._refresh_card_titles()
         self._apply_setup_notice_localization()
         self._apply_settings_tab_localization()
+        self._apply_gamepads_tab_localization()
+
+    def _apply_gamepads_tab_localization(self) -> None:
+        if getattr(self, "gamepad_driver_status_label", None) is None:
+            return
+        self._refresh_gamepad_driver_status()
+        self._refresh_hidhide_driver_status()
+        if getattr(self, "gamepad_driver_repo_button", None) is not None:
+            self.gamepad_driver_repo_button.configure(text=self.tr("button.gamepads.view_repo"))
+        if getattr(self, "hidhide_driver_repo_button", None) is not None:
+            self.hidhide_driver_repo_button.configure(text=self.tr("button.gamepads.view_repo"))
+        if self.gamepad_dependencies_notice is not None:
+            self.gamepad_dependencies_notice.configure(text=self.tr("status.gamepads.dependencies_missing"))
+        for idx, widgets in self.gamepad_slot_widgets.items():
+            widgets["label"].configure(text=self.tr("label.gamepads.slot", n=idx + 1))
+            widgets["check"].configure(text=self.tr("toggle.gamepads.enabled"))
+            widgets["test"].configure(text=self.tr("button.gamepads.test"))
+            widgets["remove"].configure(text=self.tr("button.gamepads.remove"))
+            widgets["hide_check"].configure(text=self.tr("toggle.gamepads.hide_from_fifa"))
+        self._refresh_gamepad_slot_rows()
 
     def _apply_settings_tab_localization(self) -> None:
         if self.notification_switch is not None:

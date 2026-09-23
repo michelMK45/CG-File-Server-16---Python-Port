@@ -1282,6 +1282,8 @@ class AboutDialog(BaseDialog):
     _TRELLO = "https://trello.com/b/Y5Akq5is/cg-file-server-16-python-port"
     _GITHUB_LEGACY = "https://github.com/igor1043/CG-File-Server-16---Python-Port"
     _DONATE = "https://paypal.me/michellmk"
+    _VIGEMBUS_REPO = "https://github.com/nefarius/ViGEmBus"
+    _HIDHIDE_REPO = "https://github.com/nefarius/HidHide"
 
     def __init__(self, master: tk.Misc, version: str) -> None:
         super().__init__(master, "dialog.about.title")
@@ -1335,6 +1337,16 @@ class AboutDialog(BaseDialog):
             tk.Label(row, text=names, bg=self.bg, fg=self.fg, font=("Bahnschrift", 10, "bold"),
                      wraplength=360, justify="left", anchor="w").pack(anchor="w", fill="x")
 
+        def library_link_row(parent: tk.Misc, label_key: str, name: str, url: str) -> None:
+            row = tk.Frame(parent, bg=self.bg)
+            row.pack(fill="x", pady=(9, 0))
+            tk.Label(row, text=self.tr(label_key), bg=self.bg, fg=self.muted,
+                     font=("Bahnschrift", 8)).pack(anchor="w")
+            lbl = tk.Label(row, text=name, bg=self.bg, fg=self.accent,
+                           font=("Bahnschrift", 10, "bold", "underline"), cursor="hand2", anchor="w")
+            lbl.pack(anchor="w", fill="x")
+            lbl.bind("<Button-1>", lambda _e, u=url: webbrowser.open(u))
+
         tk.Label(body, text=self.tr("dialog.about.credits"), bg=self.bg, fg=self.muted,
                  font=("Bahnschrift", 8, "bold")).pack(anchor="w")
 
@@ -1350,6 +1362,8 @@ class AboutDialog(BaseDialog):
         credit_row(body, "dialog.about.libraries_fifalib", "FifaLibrary16 (rzocc)")
         credit_row(body, "dialog.about.libraries_rmlui", "RmlUi (MIT License)")
         credit_row(body, "dialog.about.libraries_freetype", "FreeType (FreeType License)")
+        library_link_row(body, "dialog.about.libraries_vigembus", "ViGEmBus (Nefarius)", self._VIGEMBUS_REPO)
+        library_link_row(body, "dialog.about.libraries_hidhide", "HidHide (Nefarius)", self._HIDHIDE_REPO)
 
         tk.Frame(self, bg="#22314b", height=1).pack(fill="x")
         foot = tk.Frame(self, bg=self.panel, pady=10)

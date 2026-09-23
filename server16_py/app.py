@@ -20,6 +20,8 @@ from .entrance_runtime import TeamEntranceRuntime
 from .discord_rpc_runtime import DiscordRPCRuntime, StadiumPreviewUploader
 from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
+from .gamepad_bridge_runtime import VGAMEPAD_IMPORT_ERROR, GamepadBridgeRuntime
+from .hidhide_runtime import HidHideRuntime
 from .kit_mixer import KitMixRuntime
 from .match_string_patcher import MatchStringPatchCoordinator, StadiumDbNamePatchCoordinator
 from .memory_access import Memory
@@ -44,6 +46,12 @@ from .app_settings import SettingsMixin
 class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin, SettingsMixin, tk.Tk):
     UPDATE_REPO_OWNER = "michelMK45"
     UPDATE_REPO_NAME = "CG-File-Server-16---Python-Port"
+    # Official upstream repos for the two optional drivers the Gamepads tab
+    # can install -- linked next to their Install/Uninstall Driver buttons
+    # so a user who doesn't trust a random "Install Driver" click can verify
+    # the project themselves before accepting the UAC prompt.
+    VIGEMBUS_REPO_URL = "https://github.com/nefarius/ViGEmBus"
+    HIDHIDE_REPO_URL = "https://github.com/nefarius/HidHide"
 
     def __init__(self) -> None:
         super().__init__()
@@ -121,6 +129,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stats_job = None
         self._kickoff_retry_job = None
         self._overlay_job = None
+        self._gamepad_tab_job = None
         self._kickoff_retry_remaining = 0
         self._attached_once = False
         self._logs_visible = False
@@ -391,6 +400,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.random_stadium_switch = None
         self._setup_canvas = None
         self._setup_canvas_body = None
+        self._gamepads_canvas = None
+        self._gamepads_canvas_body = None
         self._assets_canvas = None
         self._assets_canvas_body = None
         self._kits_canvas = None
@@ -496,6 +507,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.movie_preview_runtime = MoviePreviewRuntime(self)
         self.assignment_runtime = AssignmentRuntime(self)
         self.camera_runtime = CameraRuntime(self)
+        self.gamepad_bridge = GamepadBridgeRuntime(self)
+        # HidHide (hidhide_runtime.py) -- a second, optional driver that
+        # hides a specific physical gamepad from fifa16.exe specifically.
+        # Referenced lazily as self.app.hidhide from GamepadBridgeRuntime
+        # (never a constructor dependency) so instantiation order between
+        # the two never matters.
+        self.hidhide = HidHideRuntime(self)
         self.kit_mixer = KitMixRuntime(self)
         self.substitution_runtime = SubstitutionRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
@@ -588,6 +606,31 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._build_ui()
         self._install_exception_hook()
         self._build_stadium_loading_modal()
+        # General Windows input remapping, not a FIFA feature -- started here,
+        # before the FIFA-location gate below, so it works even on an
+        # unconfigured install with no FIFA path set yet (see
+        # gamepad_bridge_runtime.py's own docstring).
+        try:
+            self.gamepad_bridge.start()
+            if not GamepadBridgeRuntime.dependencies_available() and GamepadBridgeRuntime.dependencies_installed():
+                self.log(
+                    "Gamepad bridge: vgamepad is installed but did not import successfully "
+                    f"({VGAMEPAD_IMPORT_ERROR}) -- the Gamepads tab's Install Driver button can "
+                    "still find and (re)install ViGEmBus; a fresh app launch after that installs "
+                    "cleanly is needed for bridging to become active."
+                )
+        except Exception:
+            pass
+        # Slot status (Connected/Active) flips asynchronously on a
+        # background thread once a slot starts -- a one-shot refresh right
+        # after the user toggles a row is too early to see it, and this app
+        # has no other timer touching this tab, so without this loop the
+        # status label can be permanently stale even once the bridge is
+        # genuinely running (reported live 2026-09-24, confirmed via
+        # server16.log: "bridging '...' " logged fine, UI still said
+        # "Disconnected"). Cheap no-op whenever the Gamepads tab isn't the
+        # one currently selected -- see _gamepad_tab_tick.
+        self._gamepad_tab_job = self.after(1000, self._gamepad_tab_tick)
         self.setuppaths()
         if not self._check_fifa_location():
             return
@@ -916,6 +959,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         except Exception:
             pass
         try:
+            if self._gamepad_tab_job is not None:
+                self.after_cancel(self._gamepad_tab_job)
+        except Exception:
+            pass
+        try:
             if self._kickoff_retry_job is not None:
                 self.after_cancel(self._kickoff_retry_job)
         except Exception:
@@ -960,6 +1008,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             pass
         try:
             self._uninstall_gamepad_poll_thread()
+        except Exception:
+            pass
+        try:
+            self.gamepad_bridge.stop()
         except Exception:
             pass
         try:

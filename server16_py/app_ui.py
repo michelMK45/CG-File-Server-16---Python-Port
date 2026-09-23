@@ -12,6 +12,7 @@ from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog
+from .gamepad_bridge_runtime import GamepadBridgeRuntime
 from .file_tools import (
     clear_generated_cache,
     gamepad_button_icon_dir,
@@ -518,11 +519,13 @@ class UIMixin:
         self.camera_tab = tk.Frame(self.tabview, bg=self.bg)
         self.setup_tab = tk.Frame(self.tabview, bg=self.bg)
         self.kits_tab = tk.Frame(self.tabview, bg=self.bg)
+        self.gamepads_tab = tk.Frame(self.tabview, bg=self.bg)
         self.settings_tab = tk.Frame(self.tabview, bg=self.bg)
         self.tabview.add(self.dashboard_tab, text=self.tr("tab.dashboard"))
         self.tabview.add(self.kits_tab, text=self.tr("tab.kits"))
         self.tabview.add(self.audio_tab, text=self.tr("tab.chants"))
         self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
+        self.tabview.add(self.gamepads_tab, text=self.tr("tab.gamepads"))
         self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
         self.tabview.add(self.settings_tab, text=self.tr("tab.settings"))
         self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
@@ -573,6 +576,7 @@ class UIMixin:
         self._build_modules_card(right, 1)
         self._build_audio_card()
         self._build_camera_tab()
+        self._build_gamepads_tab()
         self._build_setup_tab()
         self._build_kits_tab()
         self._build_settings_tab()
@@ -1269,6 +1273,16 @@ class UIMixin:
         if not self._event_widget_belongs_to(event, self._assets_canvas, self._assets_canvas_body):
             return
         self._assets_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _on_gamepads_mousewheel(self, event) -> None:
+        if self.tabview is None or self._gamepads_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.gamepads_tab:
+            return
+        if not self._event_widget_belongs_to(event, self._gamepads_canvas, self._gamepads_canvas_body):
+            return
+        self._gamepads_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _build_placeholder(self, parent: tk.Misc, width: int, height: int, text: str, bg: str | None = None) -> tk.Canvas:
         bg_color = bg or self.card_soft
@@ -3338,6 +3352,413 @@ class UIMixin:
         self.camera_apply_button = ttk.Button(detail_body, text=self.tr("button.apply_camera"), command=self.apply_selected_camera)
         self.camera_apply_button.grid(row=5, column=0, sticky="ew", pady=(12, 0))
 
+    def _build_gamepads_tab(self) -> None:
+        """Up to 4 physical gamepads, each independently bridged to a
+        virtual Xbox 360 controller (see gamepad_bridge_runtime.py) so FIFA
+        -- which only reliably reads XInput/Xbox-layout pads -- can use a
+        Switch Pro Controller or other non-Xbox pad. Deliberately independent
+        of FIFA's own process lifecycle: the bridge is started/stopped with
+        the app itself (app.py), never gated on FIFA being detected.
+
+        Scrollable, like the Setup tab -- 4 slot rows plus both driver
+        cards no longer fit a shorter window without this (reported live
+        2026-09-24: rows below the fold were simply unreachable)."""
+        scroll_host = tk.Frame(self.gamepads_tab, bg=self.bg)
+        scroll_host.pack(fill="both", expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(scroll_host, bg=self.bg, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        outer = tk.Frame(canvas, bg=self.bg)
+        canvas_win = canvas.create_window((0, 0), window=outer, anchor="nw")
+
+        def _on_body_configure(*_):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(e):
+            canvas.itemconfig(canvas_win, width=e.width)
+
+        outer.bind("<Configure>", _on_body_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+        self._gamepads_canvas = canvas
+        self._gamepads_canvas_body = outer
+        # add="+" — see the comment on the dashboard's own bind_all for why
+        # this must not replace other tabs' scoped mousewheel handlers.
+        canvas.bind_all("<MouseWheel>", self._on_gamepads_mousewheel, add="+")
+
+        driver_card = self._card(outer, "card.gamepads_driver.title", "card.gamepads_driver.subtitle")
+        driver_card.pack(fill="x", pady=(0, 12))
+        driver_body = tk.Frame(driver_card, bg=self.card)
+        driver_body.pack(fill="x", padx=12, pady=(6, 12))
+        self.gamepad_driver_status_label = tk.Label(
+            driver_body,
+            text=self.tr("status.gamepads.driver_missing"),
+            bg=self.card,
+            fg=self.muted,
+            font=("Bahnschrift", 10, "bold"),
+            anchor="w",
+        )
+        self.gamepad_driver_status_label.pack(side="left")
+        self.gamepad_driver_action_button = ttk.Button(
+            driver_body,
+            text=self.tr("button.gamepads.install_driver"),
+            command=self._on_gamepad_driver_action,
+        )
+        self.gamepad_driver_action_button.pack(side="right")
+        self.gamepad_driver_repo_button = ttk.Button(
+            driver_body,
+            text=self.tr("button.gamepads.view_repo"),
+            command=lambda: webbrowser.open(self.VIGEMBUS_REPO_URL),
+        )
+        self.gamepad_driver_repo_button.pack(side="right", padx=(0, 6))
+        self._add_tooltip(self.gamepad_driver_repo_button, "tooltip.gamepads.vigembus_repo")
+
+        # HidHide (hidhide_runtime.py) -- a second, entirely OPTIONAL driver
+        # that hides a slot's physical pad from fifa16.exe specifically.
+        # Deliberately a separate card with its own independent status/
+        # action button, never merged into the ViGEmBus card above: the
+        # core bridge already works without this, and a user who never hits
+        # double-input should never be told they need a second driver.
+        hidhide_card = self._card(outer, "card.gamepads_hidhide.title", "card.gamepads_hidhide.subtitle")
+        hidhide_card.pack(fill="x", pady=(0, 12))
+        hidhide_body = tk.Frame(hidhide_card, bg=self.card)
+        hidhide_body.pack(fill="x", padx=12, pady=(6, 12))
+        self.hidhide_driver_status_label = tk.Label(
+            hidhide_body,
+            text=self.tr("status.gamepads.hidhide_missing"),
+            bg=self.card,
+            fg=self.muted,
+            font=("Bahnschrift", 10, "bold"),
+            anchor="w",
+        )
+        self.hidhide_driver_status_label.pack(side="left")
+        self.hidhide_driver_action_button = ttk.Button(
+            hidhide_body,
+            text=self.tr("button.gamepads.install_hidhide"),
+            command=self._on_hidhide_driver_action,
+        )
+        self.hidhide_driver_action_button.pack(side="right")
+        self.hidhide_driver_repo_button = ttk.Button(
+            hidhide_body,
+            text=self.tr("button.gamepads.view_repo"),
+            command=lambda: webbrowser.open(self.HIDHIDE_REPO_URL),
+        )
+        self.hidhide_driver_repo_button.pack(side="right", padx=(0, 6))
+        self._add_tooltip(self.hidhide_driver_repo_button, "tooltip.gamepads.hidhide_repo")
+
+        self.gamepad_dependencies_notice = None
+        if not GamepadBridgeRuntime.dependencies_installed():
+            notice = tk.Label(
+                outer,
+                text=self.tr("status.gamepads.dependencies_missing"),
+                bg=self.bg,
+                fg=self.muted,
+                font=("Bahnschrift", 9),
+                anchor="w",
+                justify="left",
+                wraplength=640,
+            )
+            notice.pack(fill="x", pady=(0, 12))
+            self.gamepad_dependencies_notice = notice
+
+        slots_card = self._card(outer, "card.gamepads_slots.title", "card.gamepads_slots.subtitle")
+        slots_card.pack(fill="both", expand=True)
+        slots_body = tk.Frame(slots_card, bg=self.card)
+        slots_body.pack(fill="both", expand=True, padx=12, pady=(6, 12))
+        # Column 0 is the only column slots_body's grid actually uses (each
+        # row spans it whole) -- it needs the weight, not column 1, or the
+        # row (and therefore the device combo inside it) never stretches
+        # past its own minimum width. Confirmed live 2026-09-24: this is why
+        # the combo cut off a long controller name instead of growing into
+        # the tab's own free width.
+        slots_body.grid_columnconfigure(0, weight=1)
+
+        self.gamepad_slot_vars = {}
+        self.gamepad_slot_widgets = {}
+        self.gamepad_slot_devices = {i: [] for i in range(4)}
+
+        for idx in range(4):
+            row = tk.Frame(slots_body, bg=self.card)
+            row.grid(row=idx, column=0, sticky="ew", pady=6)
+            # No weighted column here on purpose: giving the combo (column 1)
+            # weight=1 used to make it swallow ALL of the row's stretched
+            # width (slots_body's own column 0 has weight=1, so the row
+            # itself fills the whole card) -- confirmed live 2026-09-24 that
+            # this pushed the Test button and Hide checkbox straight off the
+            # right edge of the window, invisible with no horizontal scroll
+            # to reach them. A generous fixed combo width (below) already
+            # fits any real controller name; the row simply stays
+            # left-aligned with blank card background to its right.
+
+            label = tk.Label(
+                row,
+                text=self.tr("label.gamepads.slot", n=idx + 1),
+                bg=self.card,
+                fg=self.fg,
+                font=("Bahnschrift", 10, "bold"),
+                width=8,
+                anchor="w",
+            )
+            label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+
+            device_var = tk.StringVar(value="")
+            device_combo = ttk.Combobox(
+                row, state="readonly", textvariable=device_var, width=40, style="Server16.TCombobox"
+            )
+            device_combo.grid(row=0, column=1, sticky="w", padx=(0, 8))
+            device_combo.bind("<<ComboboxSelected>>", lambda _e, i=idx: self._on_gamepad_slot_device_change(i))
+
+            enabled_var = tk.BooleanVar(value=False)
+            enabled_check = ttk.Checkbutton(
+                row,
+                style="Switch.TCheckbutton",
+                text=self.tr("toggle.gamepads.enabled"),
+                variable=enabled_var,
+                command=lambda i=idx: self._on_gamepad_slot_toggle(i),
+            )
+            enabled_check.grid(row=0, column=2, sticky="w", padx=(0, 8))
+
+            status_label = tk.Label(
+                row,
+                text=self.tr("status.gamepads.disconnected"),
+                bg=self.card,
+                fg=self.muted,
+                font=("Bahnschrift", 9),
+                width=16,
+                anchor="w",
+            )
+            status_label.grid(row=0, column=3, sticky="w", padx=(0, 8))
+
+            test_button = ttk.Button(
+                row,
+                text=self.tr("button.gamepads.test"),
+                width=6,
+                command=lambda i=idx: self._on_gamepad_slot_test(i),
+            )
+            test_button.grid(row=0, column=4, sticky="e", padx=(0, 8))
+
+            # Forgets this slot: bridge off + its saved device dropped from
+            # runtime/settings.json (see GamepadBridgeRuntime.clear_slot).
+            # Enabled only while there's something saved to forget, in
+            # _refresh_gamepad_slot_rows().
+            remove_button = ttk.Button(
+                row,
+                text=self.tr("button.gamepads.remove"),
+                width=8,
+                command=lambda i=idx: self._on_gamepad_slot_remove(i),
+            )
+            remove_button.grid(row=0, column=5, sticky="e", padx=(0, 8))
+            self._add_tooltip(remove_button, "tooltip.gamepads.remove")
+
+            # Only meaningful once HidHide is installed -- shown/hidden via
+            # grid()/grid_remove() in _refresh_gamepad_slot_rows(), not built
+            # conditionally here, so it can appear/disappear live the moment
+            # the user installs/uninstalls HidHide without rebuilding the tab.
+            hide_var = tk.BooleanVar(value=False)
+            hide_check = ttk.Checkbutton(
+                row,
+                style="Switch.TCheckbutton",
+                text=self.tr("toggle.gamepads.hide_from_fifa"),
+                variable=hide_var,
+                command=lambda i=idx: self._on_gamepad_slot_hide_toggle(i),
+            )
+            hide_check.grid(row=0, column=6, sticky="w")
+            self._add_tooltip(hide_check, "tooltip.gamepads.hide_from_fifa")
+
+            self.gamepad_slot_vars[idx] = {"device": device_var, "enabled": enabled_var, "hide_from_fifa": hide_var}
+            self.gamepad_slot_widgets[idx] = {
+                "label": label,
+                "combo": device_combo,
+                "check": enabled_check,
+                "status": status_label,
+                "test": test_button,
+                "remove": remove_button,
+                "hide_check": hide_check,
+            }
+
+        self._refresh_gamepad_driver_status()
+        self._refresh_hidhide_driver_status()
+        self._refresh_gamepad_slot_rows()
+
+    def _refresh_gamepad_driver_status(self) -> None:
+        if self.gamepad_driver_status_label is None or self.gamepad_driver_action_button is None:
+            return
+        installed = self.gamepad_bridge.is_vigembus_installed()
+        if installed:
+            self.gamepad_driver_status_label.configure(text=self.tr("status.gamepads.driver_installed"))
+            self.gamepad_driver_action_button.configure(text=self.tr("button.gamepads.uninstall_driver"))
+        else:
+            self.gamepad_driver_status_label.configure(text=self.tr("status.gamepads.driver_missing"))
+            self.gamepad_driver_action_button.configure(text=self.tr("button.gamepads.install_driver"))
+
+    def _on_gamepad_driver_action(self) -> None:
+        installed = self.gamepad_bridge.is_vigembus_installed()
+        self.gamepad_driver_action_button.configure(state="disabled")
+
+        def _done(success: bool, message: str) -> None:
+            self.log(f"Gamepad driver: {message}")
+            self.gamepad_driver_action_button.configure(state="normal")
+            self._refresh_gamepad_driver_status()
+            self._refresh_gamepad_slot_rows()
+
+        if installed:
+            launched = self.gamepad_bridge.uninstall_vigembus(on_done=_done)
+        else:
+            launched = self.gamepad_bridge.install_vigembus(on_done=_done)
+        if not launched:
+            self.gamepad_driver_action_button.configure(state="normal")
+            self.log("Gamepad driver: installer .msi not found in bin/ViGEmBus")
+
+    def _refresh_hidhide_driver_status(self) -> None:
+        if self.hidhide_driver_status_label is None or self.hidhide_driver_action_button is None:
+            return
+        installed = self.hidhide.is_hidhide_installed()
+        if installed:
+            self.hidhide_driver_status_label.configure(text=self.tr("status.gamepads.hidhide_installed"))
+            self.hidhide_driver_action_button.configure(text=self.tr("button.gamepads.uninstall_hidhide"))
+        else:
+            self.hidhide_driver_status_label.configure(text=self.tr("status.gamepads.hidhide_missing"))
+            self.hidhide_driver_action_button.configure(text=self.tr("button.gamepads.install_hidhide"))
+
+    def _on_hidhide_driver_action(self) -> None:
+        installed = self.hidhide.is_hidhide_installed()
+        self.hidhide_driver_action_button.configure(state="disabled")
+
+        def _done(success: bool, message: str) -> None:
+            self.log(f"HidHide driver: {message}")
+            self.hidhide_driver_action_button.configure(state="normal")
+            self._refresh_hidhide_driver_status()
+            self._refresh_gamepad_slot_rows()
+
+        if installed:
+            launched = self.hidhide.uninstall_hidhide(on_done=_done)
+        else:
+            launched = self.hidhide.install_hidhide(on_done=_done)
+        if not launched:
+            self.hidhide_driver_action_button.configure(state="normal")
+            self.log("HidHide driver: installer not found in bin/HidHide")
+
+    def _refresh_gamepad_slot_rows(self) -> None:
+        if not getattr(self, "gamepad_slot_widgets", None):
+            return
+        devices = self.gamepad_bridge.list_devices()
+        display_values = [d.name for d in devices]
+        hidhide_installed = self.hidhide.is_hidhide_installed()
+        for idx in range(4):
+            widgets = self.gamepad_slot_widgets.get(idx)
+            vars_ = self.gamepad_slot_vars.get(idx)
+            if not widgets or not vars_:
+                continue
+            self.gamepad_slot_devices[idx] = devices
+            widgets["combo"].configure(values=display_values)
+            snapshot = self.gamepad_bridge.get_slot_snapshot(idx)
+            vars_["enabled"].set(snapshot["enabled"])
+            match = next((d for d in devices if d.guid == snapshot["device_guid"]), None)
+            if match is not None:
+                vars_["device"].set(match.name)
+            elif not snapshot["device_guid"]:
+                vars_["device"].set("")
+            status_key = {
+                "active": "status.gamepads.active",
+                "connected": "status.gamepads.connected",
+                "busy": "status.gamepads.busy",
+            }.get(snapshot["status"], "status.gamepads.disconnected")
+            widgets["status"].configure(text=self.tr(status_key))
+            has_saved_config = bool(
+                snapshot["device_guid"]
+                or snapshot["enabled"]
+                or snapshot["hide_from_fifa"]
+                or snapshot["profile"] != "auto"
+            )
+            widgets["remove"].configure(state="normal" if has_saved_config else "disabled")
+            hide_check = widgets.get("hide_check")
+            if hide_check is not None:
+                if hidhide_installed:
+                    vars_["hide_from_fifa"].set(snapshot["hide_from_fifa"])
+                    hide_check.grid()
+                else:
+                    hide_check.grid_remove()
+
+    def _on_gamepad_slot_device_change(self, index: int) -> None:
+        vars_ = self.gamepad_slot_vars.get(index)
+        if not vars_:
+            return
+        selected_name = vars_["device"].get()
+        devices = self.gamepad_slot_devices.get(index, [])
+        match = next((d for d in devices if d.name == selected_name), None)
+        guid = match.guid if match is not None else ""
+        self.gamepad_bridge.set_slot_config(index, enabled=vars_["enabled"].get(), device_guid=guid)
+        self._refresh_gamepad_slot_rows()
+
+    def _on_gamepad_slot_toggle(self, index: int) -> None:
+        vars_ = self.gamepad_slot_vars.get(index)
+        if not vars_:
+            return
+        snapshot = self.gamepad_bridge.get_slot_snapshot(index)
+        self.gamepad_bridge.set_slot_config(
+            index,
+            enabled=vars_["enabled"].get(),
+            device_guid=snapshot["device_guid"],
+            profile=snapshot["profile"],
+        )
+        self._refresh_gamepad_slot_rows()
+
+    def _on_gamepad_slot_hide_toggle(self, index: int) -> None:
+        vars_ = self.gamepad_slot_vars.get(index)
+        if not vars_:
+            return
+        snapshot = self.gamepad_bridge.get_slot_snapshot(index)
+        self.gamepad_bridge.set_slot_config(
+            index,
+            enabled=snapshot["enabled"],
+            device_guid=snapshot["device_guid"],
+            profile=snapshot["profile"],
+            hide_from_fifa=vars_["hide_from_fifa"].get(),
+        )
+        self._refresh_gamepad_slot_rows()
+
+    def _on_gamepad_slot_remove(self, index: int) -> None:
+        self.gamepad_bridge.clear_slot(index)
+        self.log(f"Gamepad slot {index + 1}: removed (bridge off, saved device cleared from settings)")
+        self._refresh_gamepad_slot_rows()
+
+    def _on_gamepad_slot_test(self, index: int) -> None:
+        snapshot = self.gamepad_bridge.get_slot_snapshot(index)
+        devices = self.gamepad_slot_devices.get(index, [])
+        match = next((d for d in devices if d.guid == snapshot["device_guid"]), None)
+        if match is None:
+            self.log(f"Gamepad slot {index + 1}: no device selected to test")
+            return
+        if match.is_controller and snapshot["profile"] == "auto":
+            profile_name = "standard"
+        else:
+            profile_name = self.gamepad_bridge.resolve_profile(match.name, match.guid, snapshot["profile"])
+        from .gamepad_test_dialog import GamepadTestDialog
+
+        GamepadTestDialog(self, self.gamepad_bridge, match.guid, match.name, profile_name, slot_index=index)
+
+    def _gamepad_tab_tick(self) -> None:
+        """Self-rescheduling ~1Hz refresh, only while the Gamepads tab is
+        actually selected -- a slot's status (Connected/Active) flips on a
+        background worker thread asynchronously after enabling it, so the
+        one-shot refresh _on_gamepad_slot_toggle/_on_gamepad_slot_device_change
+        already do right after calling set_slot_config() can catch the
+        status before the worker has had a chance to update it, leaving a
+        stale "Disconnected" label even once bridging is genuinely active
+        (reported live 2026-09-24 -- confirmed via server16.log: the bridge
+        started and logged fine, the tab just never looked again)."""
+        try:
+            if self.tabview is not None:
+                current = self.tabview.nametowidget(self.tabview.select())
+                if current is self.gamepads_tab:
+                    self._refresh_gamepad_slot_rows()
+        except Exception:
+            pass
+        self._gamepad_tab_job = self.after(1000, self._gamepad_tab_tick)
+
     def _build_setup_tab(self) -> None:
         outer = tk.Frame(self.setup_tab, bg=self.bg)
         outer.pack(fill="both", expand=True, padx=10, pady=10)
@@ -3744,6 +4165,10 @@ class UIMixin:
             self.refresh_setup_tab()
         elif current is self.kits_tab:
             self._on_kits_subtab_changed()
+        elif current is self.gamepads_tab:
+            self._refresh_gamepad_driver_status()
+            self._refresh_hidhide_driver_status()
+            self._refresh_gamepad_slot_rows()
 
     def _lua_assets_missing_files(self) -> list[str] | None:
         """Compare data/fifarna/lua file-by-file against the bundled install_data source.

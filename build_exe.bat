@@ -53,6 +53,28 @@ if errorlevel 1 exit /b 1
 call :require_file "%ZLIB_NET_DLL%" "zlib.net.dll (Extract Kit UI decompressor, ships with Creation Master 16)"
 if errorlevel 1 exit /b 1
 
+REM ViGEmBus (Gamepads tab driver, gamepad_bridge_runtime.py) does NOT need
+REM anything placed here for a normal build: the vgamepad pip package
+REM already vendors its own ViGEmBusSetup_x64.msi/_x86.msi, and
+REM find_vigembus_installer() falls back to that automatically. bin\ViGEmBus\
+REM is only an OVERRIDE for shipping a newer/different installer (e.g. the
+REM current combined ViGEmBus_<version>_x64_x86_arm64.exe from
+REM https://github.com/nefarius/ViGEmBus/releases instead of whatever
+REM version vgamepad happens to bundle) -- this is just an FYI, not a
+REM warning to act on.
+if exist "bin\ViGEmBus\*.exe" echo [INFO] Using bin\ViGEmBus\ override installer instead of vgamepad's bundled one.
+if exist "bin\ViGEmBus\*.msi" echo [INFO] Using bin\ViGEmBus\ override installer instead of vgamepad's bundled one.
+
+REM HidHide (hidhide_runtime.py) is a SECOND, entirely optional driver --
+REM hides a slot's physical controller from fifa16.exe to avoid double
+REM input, but the core gamepad bridge already works without it. No Python
+REM package vendors a copy (unlike ViGEmBus/vgamepad), so bin\HidHide\ is
+REM the only source; download from https://github.com/nefarius/HidHide/releases
+REM and place it there if you want the Gamepads tab's "Install Driver"
+REM button for it to find anything. This is informational only -- not even
+REM a [WARN], since this feature is more optional than ViGEmBus itself.
+if not exist "bin\HidHide\*.exe" if not exist "bin\HidHide\*.msi" echo [INFO] No installer under bin\HidHide\ -- HidHide install/uninstall in the Gamepads tab will be unavailable until one is placed there (optional).
+
 echo [3/4] Setting up 32-bit Python for BH regeneration...
 call "scripts\setup_python32.bat"
 if errorlevel 1 exit /b 1
