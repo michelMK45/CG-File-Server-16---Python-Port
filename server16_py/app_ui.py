@@ -11,7 +11,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
-from .dialogs import AboutDialog
+from .dialogs import AboutDialog, ImgbbApiKeyDialog
 from .gamepad_bridge_runtime import GamepadBridgeRuntime
 from .file_tools import (
     clear_generated_cache,
@@ -2892,8 +2892,16 @@ class UIMixin:
             text=self.tr("button.clean_cache"),
             command=self._clean_generated_cache,
         )
-        self.clean_cache_button.pack(anchor="w", padx=12, pady=(0, 10))
+        self.clean_cache_button.pack(anchor="w", padx=12, pady=(0, 4))
         self._add_tooltip(self.clean_cache_button, "tooltip.clean_cache")
+
+        self.imgbb_key_button = ttk.Button(
+            card,
+            text=self.tr("button.imgbb_key"),
+            command=self._change_imgbb_api_key,
+        )
+        self.imgbb_key_button.pack(anchor="w", padx=12, pady=(0, 10))
+        self._add_tooltip(self.imgbb_key_button, "tooltip.imgbb_key")
 
     def _build_overlay_settings_card(self, parent: tk.Misc) -> None:
         card = self._card(parent, "card.overlay_settings.title", "card.overlay_settings.subtitle")
@@ -2972,6 +2980,18 @@ class UIMixin:
     def _toggle_keep_open(self) -> None:
         self.settings.keep_open_on_game_close = self.keep_open_var.get()
         self.settings.save()
+
+    def _change_imgbb_api_key(self) -> None:
+        dialog = ImgbbApiKeyDialog(self, self.get_imgbb_api_key())
+        self.wait_window(dialog)
+        new_key = dialog.result
+        if new_key is None:
+            return
+        self.set_imgbb_api_key(new_key)
+        self._rebuild_stadium_preview_uploader()
+        self._discord_rpc_last_presence = None
+        self.log("ImgBB API key updated")
+        messagebox.showinfo(self.tr("dialog.imgbb_key.title"), self.tr("message.imgbb_key_saved"))
 
     def _clean_generated_cache(self) -> None:
         """Deletes the goalpost/kit preview PNG caches and converted kit-UI

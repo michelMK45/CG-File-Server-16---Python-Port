@@ -92,6 +92,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.memory = Memory()
         self.pagechange = False
         self.skillgamechange = False
+        self._left_match_reset_done = False
         self.bumperpagechange = False
         self.matchstarted = False
         self.lastpagename = ""
@@ -524,24 +525,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         _preview_provider = (discord_rpc_config.get("stadium_preview_provider", "discord_webhook") or "discord_webhook").strip().lower()
         _webhook_url = discord_rpc_config.get("stadium_preview_webhook", "")
         _imgur_client_id = (discord_rpc_config.get("stadium_preview_imgur_client_id", "") or "").strip()
-        _imgbb_api_key = (discord_rpc_config.get("stadium_preview_imgbb_api_key", "") or "").strip()
-        _uploader_enabled = (
-            bool(_webhook_url)
-            or (_preview_provider == "imgur" and bool(_imgur_client_id))
-            or (_preview_provider == "imgbb" and bool(_imgbb_api_key))
-        )
-        self._stadium_preview_uploader: StadiumPreviewUploader | None = (
-            StadiumPreviewUploader(
-                _webhook_url,
-                provider=_preview_provider,
-                imgur_client_id=_imgur_client_id,
-                imgbb_api_key=_imgbb_api_key,
-            )
-            if _uploader_enabled
-            else None
-        )
-        if self._stadium_preview_uploader is not None:
-            self._stadium_preview_uploader.add_upload_callback(self._on_stadium_preview_uploaded)
+        self._stadium_preview_uploader: StadiumPreviewUploader | None = None
+        self._rebuild_stadium_preview_uploader()
         if self._discord_rpc_enabled:
             self.discord_rpc.connect()
         self.team_db: FifaDatabase | None = None
@@ -651,6 +636,44 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.log("DiscordRPC initialized (disabled in settings)")
 
     # ── Core runtime orchestration ─────────────────────────────────────────────
+
+    def get_imgbb_api_key(self) -> str:
+        """ImgBB key, stored in runtime/settings.json (discord_rpc block)."""
+        discord_config = self.settings.data.get("discord_rpc", {})
+        return (discord_config.get("stadium_preview_imgbb_api_key", "") or "").strip()
+
+    def set_imgbb_api_key(self, key: str) -> None:
+        # Copy the block instead of mutating it in place: it can still be the
+        # dict shared with SettingsStore.DEFAULTS when settings.json didn't exist.
+        discord_config = dict(self.settings.data.get("discord_rpc", {}))
+        discord_config["stadium_preview_imgbb_api_key"] = (key or "").strip()
+        self.settings.data["discord_rpc"] = discord_config
+        self.settings.save()
+
+    def _rebuild_stadium_preview_uploader(self) -> None:
+        """(Re)creates the stadium-preview uploader from current settings, so a
+        changed ImgBB key takes effect without restarting the app."""
+        discord_config = self.settings.data.get("discord_rpc", {})
+        provider = (discord_config.get("stadium_preview_provider", "discord_webhook") or "discord_webhook").strip().lower()
+        webhook_url = discord_config.get("stadium_preview_webhook", "")
+        imgur_client_id = (discord_config.get("stadium_preview_imgur_client_id", "") or "").strip()
+        imgbb_api_key = self.get_imgbb_api_key()
+        enabled = (
+            bool(webhook_url)
+            or (provider == "imgur" and bool(imgur_client_id))
+            or (provider == "imgbb" and bool(imgbb_api_key))
+        )
+        if not enabled:
+            self._stadium_preview_uploader = None
+            return
+        uploader = StadiumPreviewUploader(
+            webhook_url,
+            provider=provider,
+            imgur_client_id=imgur_client_id,
+            imgbb_api_key=imgbb_api_key,
+        )
+        uploader.add_upload_callback(self._on_stadium_preview_uploaded)
+        self._stadium_preview_uploader = uploader
 
     def apply_bootstrap_files(self) -> None:
         if self.fifaEXE == "default":

@@ -295,5 +295,60 @@ class StadiumNameFastWatchTriggerTests(unittest.TestCase):
         game._start_scoreboard_name_fast_watch()  # must not touch missing attrs
 
 
+class LeavingMatchGame(FakeGame):
+    def __init__(self) -> None:
+        super().__init__()
+        self._left_match_reset_done = False
+        self._kickoff_generation = 0
+        self._last_stadium_applied_signature = "sig"
+        self.HID = "456"
+        self.clears = 0
+        self.chants_resets = 0
+        self.sub_resets = 0
+
+        class _Subs:
+            def reset_for_new_match(inner) -> None:
+                self.sub_resets += 1
+
+        self.substitution_runtime = _Subs()
+
+    def _clear_live_context(self) -> None:
+        self.clears += 1
+        self.HID = ""
+
+    def _reset_chants_state(self) -> None:
+        self.chants_resets += 1
+        self.matchstarted = False
+
+
+class LeavingMatchTests(unittest.TestCase):
+    def test_training_page_resets_match_state_once(self) -> None:
+        game = LeavingMatchGame()
+        game.matchstarted = True
+        game._entrance_armed = True
+        game._handle_page_transition("game/screens/training/SkillGamesHub")
+        self.assertEqual((game.clears, game.chants_resets, game.sub_resets), (1, 1, 1))
+        self.assertEqual(game.HID, "")
+        self.assertFalse(game.matchstarted)
+        self.assertFalse(game._entrance_armed)
+        self.assertEqual(game._kickoff_generation, 1)
+
+        # Moving around the training screens must not re-clear.
+        game._handle_page_transition("game/screens/misc/ArenaPlayer")
+        self.assertEqual((game.clears, game.chants_resets), (1, 1))
+
+    def test_pause_menu_and_settings_are_not_outside_a_match(self) -> None:
+        game = LeavingMatchGame()
+        for page in (
+            "game/screens/fluxHub/FluxHub",
+            "game/screens/settings/GameSettings",
+            "game/screens/instantReplay/ReplayScreen",
+            "game/screens/TV/bumper",
+            "",
+        ):
+            game._handle_page_transition(page)
+            self.assertEqual(game.clears, 0, page)
+
+
 if __name__ == "__main__":
     unittest.main()

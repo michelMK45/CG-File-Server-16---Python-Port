@@ -660,5 +660,12 @@
   "message.kitsimple.apply_success": "Conjunto de kit aplicado para o time {team}.",
   "message.kitsimple.apply_failed": "Falha ao aplicar o conjunto de kit:\n{error}",
   "message.kitmix.restore_success": "Kit original restaurado para o time {team}.",
-  "message.kitmix.restore_failed": "Falha ao restaurar o kit:\n{error}"
+  "message.kitmix.restore_failed": "Falha ao restaurar o kit:\n{error}",
+  "button.imgbb_key": "API Key do ImgBB",
+  "tooltip.imgbb_key": "Define a API key do ImgBB usada para enviar as imagens de pré-visualização de estádios no Discord Rich Presence. Salva em settings.json.",
+  "dialog.imgbb_key.title": "API Key do ImgBB",
+  "dialog.imgbb_key.prompt": "Esta key é usada para enviar as imagens de pré-visualização de estádios exibidas no seu Discord Rich Presence. Insira sua API key do ImgBB; se não tiver uma, registre-se no ImgBB e gere uma key na página da API.",
+  "dialog.imgbb_key.get_key": "Abrir ImgBB (registrar / obter key)",
+  "dialog.imgbb_key.save": "Salvar",
+  "message.imgbb_key_saved": "API key do ImgBB salva."
 }

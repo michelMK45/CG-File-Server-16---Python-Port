@@ -1276,6 +1276,49 @@ class ImportModeDialog(BaseDialog):
         _option("dialog.settings_io.mode_merge", "dialog.settings_io.mode_merge_desc", "merge")
 
 
+class ImgbbApiKeyDialog(BaseDialog):
+    """Asks for the ImgBB API key used to upload stadium previews for Discord
+    Rich Presence. `result` is the stripped key on Save, None on cancel."""
+
+    _API_URL = "https://api.imgbb.com/"
+
+    def __init__(self, master: tk.Misc, current_key: str = "") -> None:
+        super().__init__(master, "dialog.imgbb_key.title")
+        self.resizable(False, False)
+        self.key_var = tk.StringVar(value=current_key)
+
+        body = tk.Frame(self, bg=self.bg, padx=20, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body, text=self.tr("dialog.imgbb_key.prompt"), bg=self.bg, fg=self.fg,
+            justify="left", wraplength=420, font=("Bahnschrift", 10),
+        ).pack(anchor="w")
+        entry = tk.Entry(
+            body, textvariable=self.key_var, width=48, bg=self.panel, fg=self.fg,
+            insertbackground=self.fg, relief="flat", highlightthickness=1,
+            highlightbackground="#243654", highlightcolor=self.accent,
+        )
+        entry.pack(fill="x", pady=(10, 10), ipady=4)
+        ttk.Button(
+            body, text=self.tr("dialog.imgbb_key.get_key"),
+            command=lambda: webbrowser.open(self._API_URL),
+        ).pack(anchor="w")
+
+        buttons = tk.Frame(body, bg=self.bg)
+        buttons.pack(fill="x", pady=(16, 0))
+        ttk.Button(buttons, text=self.tr("button.cancel"), command=lambda: self.close_ok(None)).pack(side="right")
+        ttk.Button(
+            buttons, text=self.tr("dialog.imgbb_key.save"),
+            command=lambda: self.close_ok(self.key_var.get().strip()),
+        ).pack(side="right", padx=(0, 8))
+
+        entry.bind("<Return>", lambda _e: self.close_ok(self.key_var.get().strip()))
+        entry.bind("<Escape>", lambda _e: self.close_ok(None))
+        entry.focus_set()
+        self.update_idletasks()
+        self.geometry(f"{self.winfo_reqwidth()}x{self.winfo_reqheight()}")
+
+
 class AboutDialog(BaseDialog):
     _GITHUB = "https://github.com/michelMK45/CG-File-Server-16---Python-Port"
     _FORUM = "https://soccergaming.com/forums/threads/cg-file-server-16-python-port.6475909/"

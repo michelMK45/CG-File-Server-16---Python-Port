@@ -171,7 +171,10 @@ class GameMixin:
             # currently live, so reflect that immediately instead of
             # waiting on Chants' independently-clocked poll to catch up.
             self.matchstarted = False
+        if self._page_is_outside_match(page_name):
+            self._reset_for_leaving_match(page_name)
         if page_name == "game/screens/playNow/KickOffHub":
+            self._left_match_reset_done = False
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None
             self.pagechange = True
@@ -287,6 +290,47 @@ class GameMixin:
         self.pagechange = False
         self.bumperpagechange = False
         self.skillgamechange = False
+
+    @staticmethod
+    def _page_is_outside_match(page_name: str) -> bool:
+        """True for pages that can only be reached after the previous match
+        is over: the training hub / skill games / practice arena.
+
+        Deliberately NOT the same vocabulary as `_page_blocks_team_entrance`:
+        FluxHub is both the in-match pause menu and the main menu, and
+        Settings/Profile can be opened from the pause menu, so none of those
+        prove the match is gone. Training screens are only reachable from the
+        main menu. FIFA leaves the abandoned match's started/clock/HID/AID
+        memory untouched there (only KickOffHub used to clear it), so without
+        this the practice arena looked like a live match to CGFS and played
+        the abandoned match's chants (reported live 2026-09-23).
+        """
+        lowered = (page_name or "").lower()
+        return any(token in lowered for token in ("training/", "skillgames/", "misc/arenaplayer"))
+
+    def _reset_for_leaving_match(self, page_name: str) -> None:
+        """Forget the previous match once, on the first out-of-match page.
+
+        Same teardown a KickOffHub visit does (context, chants, entrance,
+        substitution addresses) minus arming anything for a new match. Runs
+        once per departure: `_left_match_reset_done` is re-armed at the next
+        KickOffHub so moving between training pages does not re-clear.
+        """
+        if getattr(self, "_left_match_reset_done", False):
+            return
+        self._left_match_reset_done = True
+        self.log(f"Left match for {page_name!r}: resetting chants, entrance and live context")
+        # Bumped like a KickOffHub visit so stale chains keyed on the
+        # generation (scoreboard-name progress, entrance match key) stop.
+        self._kickoff_generation += 1
+        self._last_stadium_applied_signature = None
+        self.pagechange = False
+        self.bumperpagechange = False
+        self._entrance_armed = False
+        self._entrance_pre_match_guard = False
+        self._clear_live_context()
+        self.substitution_runtime.reset_for_new_match()
+        self._reset_chants_state()
 
     def _start_scoreboard_name_progress(self, injid: str, std_name: str) -> None:
         """Show a loading bar for the scoreboardstdname patch and drive it
@@ -869,7 +913,7 @@ class GameMixin:
         try:
             started = self.memory.get_int(self.offsets.GAMESTARTEDBINARYBASE, self.offsets.GAMESTARTEDBINARY)
             ran_time = self.memory.get_int(self.offsets.GAMESTATSBASE, self.offsets.GAMERANTIME)
-            return started == 1 and ran_time >= 1 and "training/SkillGame" not in self.lastpagename
+            return started == 1 and ran_time >= 1 and not self._page_is_outside_match(self.lastpagename)
         except Exception:
             return False
 
@@ -877,7 +921,7 @@ class GameMixin:
         try:
             started = memory.get_int(self.offsets.GAMESTARTEDBINARYBASE, self.offsets.GAMESTARTEDBINARY)
             ran_time = memory.get_int(self.offsets.GAMESTATSBASE, self.offsets.GAMERANTIME)
-            return started == 1 and ran_time >= 1 and "training/SkillGame" not in self.lastpagename
+            return started == 1 and ran_time >= 1 and not self._page_is_outside_match(self.lastpagename)
         except Exception:
             return False
 
