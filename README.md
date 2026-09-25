@@ -7,6 +7,8 @@
   <br>
 </p>
 
+<img alt="main" src="https://i.ibb.co/xN3vf95/main.png" />
+
 ⚠ This is a fork of the original project, continued by the community after the original author stopped developing the tool.
 
 **CGFS 16 Server 16** is a Windows desktop control panel and in-game overlay for **FIFA 16** modding. It watches the game's live memory state while you play and automatically swaps in the right stadium, scoreboard, TV logo, movie, chants, camera package, and kit assets for the match you're about to play — no manual file-copying or alt-tabbing required. This is a full Python rewrite of the classic Server 16 tool by shawminator, aimed at being easier for the community to maintain, fix, and extend.
@@ -89,6 +91,7 @@ A fullscreen overlay renders directly on top of FIFA 16 — even in exclusive fu
 - A live **scoreboard widget** (both crests, score, match clock) on the dashboard.
 - A **country filter panel** on the Stadiums tab (gamepad Y, or a mouse "Filter" button) with multi-select by country code and an A-Z/Z-A sort toggle.
 - A manual **in-game stadium picker** when random stadium selection is turned off — see [Manual Stadium Picker & Multi-Stadium Assignments](#manual-stadium-picker--multi-stadium-assignments).
+- The Stadiums tab's assign wizard also covers **Goalpost Model** and **Goalpost Texture** (after Police/Pitch/Net), with previews — see [Goalpost Model & Texture Packs](#goalpost-model--texture-packs).
 - A **Kits** tab to cycle Kit Sets in-game with F7–F11 — see [Kit Sets](#kit-sets).
 - Shows the active assignment mode (Round, Tournament, Home Team, or Default) for each asset type.
 - Can be disabled entirely from the settings panel if you only want the desktop window; an overlay performance mode is also available for lower-end setups, which skips thumbnail/preview rendering in the overlay.
@@ -140,7 +143,7 @@ Assign per-team/tournament chants and anthems under `FSW/Chants`, played back th
 
 ### Discord Rich Presence
 
-Optionally shows your current match, teams, and stadium in your Discord status via local IPC — fully optional, and entirely local/private (no data leaves your machine except to your own Discord client). See [DISCORD_SETUP.md](DISCORD_SETUP.md) for setup.
+Optionally shows your current match, teams, and stadium in your Discord status via local IPC — fully optional, and entirely local/private (no data leaves your machine except to your own Discord client). If you want stadium preview images in your status, the **ImgBB API Key** button in Settings sets the uploader's key without editing `settings.json` (applied immediately, no restart). See [DISCORD_SETUP.md](DISCORD_SETUP.md) for setup.
 
 ### Assignment & Settings Editors
 
@@ -164,6 +167,8 @@ The goal is to preserve and evolve the FIFA 16 Server 16 experience in a modern 
 2. Point it to your `FIFA 16.exe` if it isn't auto-detected.
 3. Let it detect the game folder and related `FSW`, `StadiumGBD`, `ScoreBoardGBD`, `TVLogoGBD`, `MoviesGBD`, and other data folders.
 4. Start FIFA 16, then use the tool in normal window mode or arm the in-game overlay.
+
+A small splash window (app icon, version and a spinner) appears while the app starts and again while it closes; the single-file `.exe` shows a static one while it unpacks itself.
 
 The app stores local settings in `runtime/settings.json` and reads/writes Server 16 assignment data from `FSW/settings.ini` inside the detected FIFA 16 folder.
 
@@ -412,7 +417,7 @@ FSW/Goalpost/
     specificnetsupportpost_0_0_textures.rx3
 ```
 
-Pick a **Goalpost Model** and/or **Goalpost Texture** per stadium name from the "Assign Stadium" dialog's Visual Details card, or from the Settings Editor's Stadium Settings tab — both write to the same shared, stadium-name-keyed settings, alongside Police/Pitch/Net. Leaving both unset keeps the legacy behavior (the stadium's own `GoalpostGBD` folder, if any). The model preview is a static image (`preview.png`/`.jpg`/`.jpeg` inside the model folder); the texture/color has no preview-image convention, so a small preview is instead rendered directly from its `.rx3`.
+Pick a **Goalpost Model** and/or **Goalpost Texture** per stadium name from the "Assign Stadium" dialog's Visual Details card, from the Settings Editor's Stadium Settings tab, or from the F12 overlay's Stadiums wizard (its last two steps) — both write to the same shared, stadium-name-keyed settings, alongside Police/Pitch/Net. Leaving both unset keeps the legacy behavior (the stadium's own `GoalpostGBD` folder, if any). The model preview is a static image (`preview.png`/`.jpg`/`.jpeg` inside the model folder); the texture/color has no preview-image convention, so a small preview is instead rendered directly from its `.rx3`.
 
 ### Manual Stadium Picker & Multi-Stadium Assignments
 

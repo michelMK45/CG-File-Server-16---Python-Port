@@ -55,3 +55,9 @@ server16_py/native_tools/kit_extractor/KitExtractorHost.exe
 
 # Local agent context notes, not part of the shipped project.
 CLAUDE.md
+
+# Claude Code local config
+.claude/
+
+# Local-only Claude context docs (referenced from CLAUDE.md)
+docs/*.md

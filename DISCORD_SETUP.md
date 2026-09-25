@@ -163,13 +163,48 @@ This is normal if Discord is briefly closed or restarted. Server16 will automati
 
 ---
 
+## Stadium Preview Images (ImgBB)
+
+Discord can only show images from a public URL, so when a stadium has a preview image the app
+uploads a resized copy of that image to [ImgBB](https://imgbb.com/) and sends the resulting link to
+Discord as the presence picture. Uploads happen in the background, are cached per stadium for the
+session, and never block the presence update. If it isn't configured or an upload fails, Rich
+Presence keeps working, just without the stadium picture.
+
+### Setting your own ImgBB API key
+
+The app ships with a default shared key so this works out of the box, but you can use your own
+(recommended, so you don't depend on a shared quota):
+
+1. Create a free account at [imgbb.com](https://imgbb.com/) and generate a key from its API page.
+2. In Server16 open the **Settings** tab and click **ImgBB API Key** (the dialog also has an
+   **Open ImgBB** button that takes you to the site).
+3. Paste the key and click **Save**. It applies immediately, no restart needed.
+
+The key is stored in `runtime/settings.json` under `discord_rpc.stadium_preview_imgbb_api_key`, so
+you can also edit it there by hand (restart afterwards if you do).
+
+```json
+{
+  "discord_rpc": {
+    "stadium_preview_provider": "imgbb",
+    "stadium_preview_imgbb_api_key": "YOUR_IMGBB_KEY"
+  }
+}
+```
+
+If you don't want anything uploaded at all, see [Disabling Discord RPC](#disabling-discord-rpc), or
+clear the key: with no key set, the app logs a warning and skips the upload.
+
+---
+
 ## Privacy & Security
 
 ### What Data is Sent?
 
 - **Game State**: Team IDs, score, time, tournament name, stadium name
 - **Discord**: Sends only to your local Discord application (IPC)
-- **External Servers**: Nothing is sent to FIFA16Tools or any external server
+- **External Servers**: Nothing is sent to FIFA16Tools. The only external upload is the stadium preview image, sent to ImgBB (see [Stadium Preview Images](#stadium-preview-images-imgbb)) when a stadium has one
 
 ### What's NOT Tracked?
 

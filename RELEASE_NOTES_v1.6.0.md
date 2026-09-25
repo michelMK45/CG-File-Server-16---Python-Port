@@ -157,6 +157,14 @@ files just to customize a kit-selector thumbnail.
   launch if a newer release exists, instead of only surfacing status on a manual check.
 - **FIFA install-location mismatch warning** — warns (and offers to close, or continue in an
   unsupported mode) if CGFS16 isn't running from the same folder as the linked `fifa16.exe`.
+- **Launch and close splash screen** — a small loading window with the app icon, name/version and a
+  spinner now shows while the app starts and again while it shuts down. The single-file `.exe` also
+  shows a static splash while it unpacks, so there is no blank wait after double-clicking it.
+- **Goalpost Model / Texture steps in the F12 overlay** — the Stadiums tab's assign wizard now
+  continues past Police/Pitch/Net with **Goalpost Model** and **Goalpost Texture** steps, with the
+  same previews and `None` option as the Assign Stadium dialog.
+- **ImgBB API key setting** — a new "ImgBB API Key" button in Settings lets you configure the
+  Discord stadium-preview uploader without editing `settings.json`; it applies without a restart.
 - **"Clean Cache" button** (Setup tab) — clears generated goalpost/kit preview PNGs and
   kit-import temp files.
 - **About dialog** now credits RmlUi and FreeType.
@@ -179,6 +187,10 @@ files just to customize a kit-selector thumbnail.
   per-slot (176/261) names, the same technique used for net colors.
 - Fixed a flood of memory-read errors in the log during pre-match menus (a new process handle was
   opened on every read, and errors were never de-duplicated).
+- Fixed the practice arena playing the chants of the match you had just abandoned: after Abandon →
+  main menu → training, CGFS still saw the old match as running. Reaching the first out-of-match
+  page (training/skill games/arena) now clears the live match state, chants, entrance anthem and
+  substitution state once, until the next KickOffHub.
 - Fixed the PyInstaller build missing `ViGEmClient.dll` (crash at startup of the built exe).
 - Fixed stadium net color not updating between matches without restarting FIFA — the engine only
   re-reads the shared net texture file once per session, so a per-slot override path is now also
