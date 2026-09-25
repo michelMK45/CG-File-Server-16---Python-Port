@@ -303,7 +303,19 @@ class OverlayMixin:
         # it's pending — it's a one-shot decision the player must resolve
         # (or close) before doing anything else; popping the full F12 menu
         # open on top of it would be confusing and was never intended.
-        can_toggle = (menu_input_fg or self._d3d_menu_visible) and now >= self._overlay_toggle_ready_at and not self._stadium_picker_pending
+        # Gated on stadium_picker_awaiting_selection(), NOT on
+        # _stadium_picker_pending alone: pending stays True after a
+        # resolution until apply_stadium_runtime consumes it, and the panel
+        # is already off screen by then (_resolve_stadium_picker ->
+        # _hide_stadium_picker), so there is nothing left for the player to
+        # resolve. Any bug that leaves pending stuck True (one did, see
+        # stadium_runtime.py's picker_branch consume) used to kill F12 and
+        # Start-hold for the rest of the session with no way back.
+        can_toggle = (
+            (menu_input_fg or self._d3d_menu_visible)
+            and now >= self._overlay_toggle_ready_at
+            and not self.stadium_picker_awaiting_selection()
+        )
 
         # Each key edge below is OR'd with its hook-latched counterpart
         # (_consume_overlay_key_edge) — see that method's docstring: a plain
@@ -1289,9 +1301,15 @@ class OverlayMixin:
                 self._d3d_menu_visible = False
                 self._overlay_scope_phase = False
                 self._overlay_selected_scope = None
+                self._overlay_filter_phase = False
+                self._clear_overlay_wizard_state()
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
+                # Every other close path logs; this one didn't, which is why a
+                # session's log could show "D3D menu opened" with no matching
+                # "closed" and look like the menu was still open (2026-09-25).
+                self.log(f"D3D menu closed after assignment ({source})")
             # Stadium assignments need the full runtime (may trigger loading modal).
             # Movie/scoreboard assignments skip apply_stadium_runtime to avoid
             # triggering a stadium reload as a side effect.

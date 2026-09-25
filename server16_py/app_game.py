@@ -151,7 +151,12 @@ class GameMixin:
         # situations" safety-net pattern as the Team Entrance saga (CLAUDE.md
         # §7) — deliberately checked before any early return below so it
         # fires no matter what the new page turns out to be.
-        if self._stadium_picker_pending and page_name != "game/screens/playNow/KickOffHub":
+        # stadium_picker_awaiting_selection(), not _stadium_picker_pending:
+        # pending stays True after a resolution until apply_stadium_runtime
+        # consumes it, and _resolve_stadium_picker is a no-op once resolved —
+        # so the raw flag logged "abandoned" on EVERY later transition while
+        # actually abandoning nothing (2026-09-25 log: nine of them in 40s).
+        if self.stadium_picker_awaiting_selection() and page_name != "game/screens/playNow/KickOffHub":
             self.log(f"Stadium picker abandoned (left KickOffHub for {page_name!r}); falling back to random")
             self._resolve_stadium_picker(None)
         if self._page_blocks_team_entrance(page_name):

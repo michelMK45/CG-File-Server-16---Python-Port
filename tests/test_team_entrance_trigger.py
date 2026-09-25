@@ -26,6 +26,7 @@ class FakeGame(GameMixin):
         self._entrance_armed = False
         self._entrance_pre_match_guard = False
         self._stadium_picker_pending = False
+        self._stadium_picker_resolved = False
         self.curstad = ""
         self.entrance_starts = 0
         self.chants_starts = 0
@@ -33,6 +34,11 @@ class FakeGame(GameMixin):
 
     def log(self, *_args, **_kwargs) -> None:
         pass
+
+    def stadium_picker_awaiting_selection(self) -> bool:
+        # Mirrors App.stadium_picker_awaiting_selection (app.py) — the real
+        # method lives on App, not on GameMixin, so the fake has to supply it.
+        return bool(self._stadium_picker_pending and not self._stadium_picker_resolved)
 
     def _start_team_entrance(self) -> bool:
         self.entrance_starts += 1

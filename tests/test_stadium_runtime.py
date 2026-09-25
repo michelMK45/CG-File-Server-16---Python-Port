@@ -306,6 +306,111 @@ class ApplyStadiumRuntimePickerReentryTests(unittest.TestCase):
             self.assertEqual(started[0], started[1], "must not re-roll a different stadium on the re-entrant call")
 
 
+class ApplyStadiumRuntimeStuckPickerFlagTests(unittest.TestCase):
+    """Regression coverage for the F12 overlay refusing to open again for the
+    rest of the session after a stadium was assigned through it (reported live
+    2026-09-25).
+
+    _write_overlay_assignment (app_overlay.py) pre-resolves the manual picker
+    for the assignment it just wrote -- pending=True, resolved=True,
+    chosen=<the stadium the player picked in the wizard> -- and relies on the
+    next apply_stadium_runtime() to consume that session and clear pending.
+    But the only code that cleared pending lived inside the
+    `len(valid_stadiums) > 1 and manual_mode` branch, and the wizard writes a
+    SINGLE stadium, so the flag stayed True forever. app_overlay.py's
+    can_toggle refuses F12/Start-hold while a picker is pending, so the
+    overlay went permanently dead (and every page transition logged "Stadium
+    picker abandoned" without abandoning anything). Same stuck flag with
+    "random stadium selection" checked, which drops manual_mode entirely.
+    """
+
+    class FakeVar:
+        def __init__(self, value: bool) -> None:
+            self._value = value
+
+        def get(self) -> bool:
+            return self._value
+
+    def make_app(self, tmp_path: Path, raw_value: str, random_mode: bool) -> SimpleNamespace:
+        for name in ("StadiumA", "StadiumB"):
+            (tmp_path / name).mkdir()
+        app = SimpleNamespace(
+            settings_ini=FakeSettingsIni({"stadium": {"Team123": raw_value}}),
+            targetpath=tmp_path,
+            HID="Team123",
+            TOURNAME="",
+            TOURROUNDID="",
+            AID="",
+            curstad="",
+            CCount="0",
+            injID=None,
+            PoliceNum=None,
+            gold=None,
+            _kickoff_generation=1,
+            _d3d_injector=object(),
+            random_stadium_selection_var=self.FakeVar(random_mode),
+            _stadium_picker_pending=False,
+            _stadium_picker_signature=None,
+            _stadium_picker_resolved=False,
+            _stadium_picker_chosen=None,
+            _stadium_picker_decided_signature=None,
+            _stadium_picker_decided_stadium=None,
+            _stadium_task_running=False,
+            _stadium_task_signature=None,
+            _last_stadium_applied_signature=None,
+            log=lambda *a, **k: None,
+            _set_progress=lambda *a, **k: None,
+            _set_process_status=lambda *a, **k: None,
+        )
+        app.hide_calls = []
+        app._hide_stadium_picker = lambda: app.hide_calls.append(True)
+        return app
+
+    def _run(self, raw_value: str, random_mode: bool, chosen: str) -> SimpleNamespace:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp), raw_value, random_mode)
+            runtime = StadiumRuntime(app)
+
+            opened: list[tuple] = []
+            runtime._open_stadium_picker = lambda candidates, signature: opened.append(signature)
+            started: list[str] = []
+            runtime.start_stadium_task = (
+                lambda section_id, section_name, injid, signature, request_key, chosen_stadium:
+                    started.append(chosen_stadium)
+            )
+
+            # Exactly the state _write_overlay_assignment leaves behind for the
+            # signature apply_stadium_runtime is about to recompute.
+            app._stadium_picker_signature = (
+                app._kickoff_generation, "stadium", "Team123", raw_value,
+                app.HID, app.TOURNAME, app.TOURROUNDID,
+            )
+            app._stadium_picker_pending = True
+            app._stadium_picker_resolved = True
+            app._stadium_picker_chosen = chosen
+
+            runtime.apply_stadium_runtime()
+            app.opened = opened
+            app.started = started
+            return app
+
+    def test_single_stadium_assignment_does_not_leave_the_picker_pending(self) -> None:
+        app = self._run("StadiumA,4,1,1", random_mode=False, chosen="StadiumA")
+        self.assertFalse(
+            app._stadium_picker_pending,
+            "a stuck pending flag kills the F12/Start overlay toggle for the whole session",
+        )
+        self.assertEqual(app.opened, [], "one candidate must never pop the picker")
+        self.assertEqual(app.started, ["StadiumA"])
+        self.assertEqual(app.hide_calls, [True], "any panel left over for that session must be dropped")
+
+    def test_random_selection_mode_does_not_leave_the_picker_pending(self) -> None:
+        app = self._run("StadiumA,4,1,1;StadiumB,4,1,1", random_mode=True, chosen="StadiumB")
+        self.assertFalse(app._stadium_picker_pending)
+        self.assertEqual(app.opened, [], "random mode must never pop the picker")
+        self.assertEqual(len(app.started), 1)
+
+
 class RenderGoalpostTexturePreviewCacheTests(unittest.TestCase):
     """reuse_cached=True lets the asset grid preview every GoalpostColor pack
     at once without re-running the ~seconds-long 32-bit subprocess for packs

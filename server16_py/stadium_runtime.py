@@ -446,7 +446,34 @@ class StadiumRuntime:
                 not app.random_stadium_selection_var.get()
                 and getattr(app, "_d3d_injector", None) is not None
             )
-            if len(valid_stadiums) > 1 and manual_mode:
+            picker_branch = len(valid_stadiums) > 1 and manual_mode
+            if app._stadium_picker_pending and not picker_branch:
+                # _stadium_picker_pending is only ever CLEARED inside the
+                # manual-picker branch below (that's the deal
+                # _resolve_stadium_picker's docstring describes), so any path
+                # that marks a picker session pending and then doesn't reach
+                # that branch leaves the flag stuck True for the rest of the
+                # session. Two real ways in: the F12 overlay wizard writes a
+                # single-stadium entry and still pre-resolves the picker (see
+                # _write_overlay_assignment), which lands here with
+                # len(valid_stadiums) == 1; and "random stadium selection"
+                # being checked drops manual_mode entirely. A stuck flag
+                # permanently kills the F12/Start overlay toggle
+                # (app_overlay.py's can_toggle) and makes every page
+                # transition log "Stadium picker abandoned" — reported live
+                # 2026-09-25: the overlay stopped opening for the rest of the
+                # session right after assigning a stadium through it.
+                # Nothing is waiting on a player decision once this call
+                # decides the stadium on its own, so consume the session here
+                # and drop any panel still on screen for it.
+                app._stadium_picker_pending = False
+                app._stadium_picker_resolved = False
+                app._stadium_picker_chosen = None
+                try:
+                    app._hide_stadium_picker()
+                except Exception:
+                    pass
+            if picker_branch:
                 # Manual mode: let the player pick via the in-game stadium
                 # picker instead of rolling randomly. Only one picker session
                 # is ever open at a time — a matching pending signature means
