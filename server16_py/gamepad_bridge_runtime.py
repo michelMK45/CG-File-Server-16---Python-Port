@@ -1,17 +1,18 @@
 from __future__ import annotations
 
 import ctypes
+import gc
 import importlib.util
 import os
 import sys
 import threading
 import time
-import winreg
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, TYPE_CHECKING
 
-from .win_elevation import shell_execute_elevated_and_wait
+from . import vigembus_uninstall
+from .win_elevation import run_elevated_capture_many, shell_execute_elevated_and_wait
 
 try:
     import pygame
@@ -68,6 +69,53 @@ except Exception as _vgamepad_exc:
         VGAMEPAD_PACKAGE_PRESENT = importlib.util.find_spec("vgamepad") is not None
     except Exception:
         VGAMEPAD_PACKAGE_PRESENT = False
+
+_VGAMEPAD_BUS_MODULE = "vgamepad.win.virtual_gamepad"
+
+
+def _release_vigem_bus() -> bool:
+    """Lets go of the handle vgamepad keeps open on the ViGEmBus driver.
+
+    That handle is the module-level `VBUS = VBus()` described above: it stays
+    open for the whole session, and a driver with an open handle can't be
+    unloaded -- the uninstaller marks it for removal and the service, the
+    .sys and the device linger until the next restart. That is what made the
+    Uninstall Driver button "leave leftovers" even with a correct uninstaller.
+    Dropping the last reference runs VBus.__del__, which disconnects and frees
+    the bus. Every VX360Gamepad holds a reference too, so the caller must
+    release its virtual pads first (stop()).
+
+    Marks vgamepad unavailable so nothing tries to plug a pad into a bus that
+    is gone; `vg` itself stays bound, since its XUSB_BUTTON constants are
+    plain data the test dialog's mapping still reads. Returns whether there
+    was a connected bus to release -- pass that to _restore_vigem_bus() if the
+    driver turns out to still be installed."""
+    global VGAMEPAD_AVAILABLE
+    if not VGAMEPAD_AVAILABLE:
+        return False
+    VGAMEPAD_AVAILABLE = False
+    module = sys.modules.get(_VGAMEPAD_BUS_MODULE)
+    if module is not None:
+        module.VBUS = None
+    gc.collect()
+    return True
+
+
+def _restore_vigem_bus() -> bool:
+    """Reconnects the bus _release_vigem_bus() dropped, for when the uninstall
+    didn't go through (elevation declined, driver still installed) so the
+    bridge keeps working instead of staying dead until the next launch."""
+    global VGAMEPAD_AVAILABLE
+    module = sys.modules.get(_VGAMEPAD_BUS_MODULE)
+    if module is None:
+        return False
+    try:
+        module.VBUS = module.VBus()
+    except Exception:
+        module.VBUS = None
+        return False
+    VGAMEPAD_AVAILABLE = True
+    return True
 
 
 if TYPE_CHECKING:
@@ -492,12 +540,14 @@ class GamepadBridgeRuntime:
         kernel-mode service named "ViGEmBus"; the key's mere presence under
         Services means the driver package is installed, independent of
         whether the service happens to be running right now -- the same
-        registry-presence check other ViGEm-based tools use for this."""
-        try:
-            with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Services\ViGEmBus"):
-                return True
-        except OSError:
-            return False
+        registry-presence check other ViGEm-based tools use for this.
+
+        A service already marked for deletion (`sc delete` on a driver that
+        is still loaded, finished at the next restart) counts as not
+        installed: it is gone as far as the user can act on it, and
+        reporting it installed would offer an Uninstall that can't do more."""
+        present, pending_delete = vigembus_uninstall.service_state()
+        return present and not pending_delete
 
     def find_vigembus_installer(self) -> Path | None:
         """Prefers whatever installer a contributor has placed under
@@ -578,47 +628,37 @@ class GamepadBridgeRuntime:
         installer_path = self.find_vigembus_installer()
         if installer_path is None:
             return False
-        self._run_elevated_installer(installer_path, uninstall=False, on_done=on_done)
-        return True
-
-    def uninstall_vigembus(self, on_done: Callable[[bool, str], None] | None = None) -> bool:
-        installer_path = self.find_vigembus_installer()
-        if installer_path is None:
-            return False
-        # A virtual pad can't be torn down mid-use by the driver it depends
-        # on -- release every slot first.
-        self.stop()
-        self._run_elevated_installer(installer_path, uninstall=True, on_done=on_done)
+        self._run_elevated_installer(installer_path, on_done=on_done)
         return True
 
     def _run_elevated_installer(
-        self, installer_path: Path, uninstall: bool, on_done: Callable[[bool, str], None] | None
+        self, installer_path: Path, on_done: Callable[[bool, str], None] | None
     ) -> None:
         """Launches the installer elevated and waits for it on a background
         thread. Dispatches by extension:
         - .msi (older ViGEmBusSetup_x64.msi/_x86.msi releases): via
-          msiexec.exe, `/i`/`/x` + `/qn` -- well-documented, standard.
+          msiexec.exe, `/i` + `/qn` -- well-documented, standard.
         - .exe (the current, as of 1.22.0, combined
           ViGEmBus_<version>_x64_x86_arm64.exe bootstrapper): launched
-          directly. `/exenoui /qn /norestart` for install and
-          `/uninstall /exenoui /qn /norestart` for uninstall are the
-          community-sourced best-effort silent switches for this newer
-          installer format -- Nefarius's own docs are still written for the
-          old .msi and don't cover this one, and there's at least one open
-          upstream report of the silent switch not always fully suppressing
-          UI (nefarius/ViGEmBus#108). That's why success here is decided by
+          directly. `/exenoui /qn /norestart` are the community-sourced
+          best-effort silent switches for this newer installer format --
+          Nefarius's own docs are still written for the old .msi and don't
+          cover this one, and there's at least one open upstream report of
+          the silent switch not always fully suppressing UI
+          (nefarius/ViGEmBus#108). That's why success here is decided by
           re-checking is_vigembus_installed() after the process exits, never
           by the exit code or by assuming the switches worked -- if the
           installer's own UI ends up showing anyway, this still waits for it
-          and still reports the real outcome once the user closes it."""
-        is_msi = installer_path.suffix.lower() == ".msi"
-        if is_msi:
-            flag = "/x" if uninstall else "/i"
+          and still reports the real outcome once the user closes it.
+
+        Install only: removal deliberately does NOT go back through this
+        installer -- see uninstall_vigembus()."""
+        if installer_path.suffix.lower() == ".msi":
             launch_file = "msiexec.exe"
-            params = f'{flag} "{installer_path}" /qn'
+            params = f'/i "{installer_path}" /qn'
         else:
             launch_file = str(installer_path)
-            params = ("/uninstall " if uninstall else "") + "/exenoui /qn /norestart"
+            params = "/exenoui /qn /norestart"
 
         def _worker() -> None:
             launched = shell_execute_elevated_and_wait(launch_file, params)
@@ -627,22 +667,71 @@ class GamepadBridgeRuntime:
                     on_done, False, "Elevation was declined, or the installer could not be launched."
                 )
                 return
-            installed = self.is_vigembus_installed()
-            success = (not installed) if uninstall else installed
-            if success:
-                message = "ViGEmBus uninstalled." if uninstall else "ViGEmBus installed."
+            if self.is_vigembus_installed():
+                success, message = True, "ViGEmBus installed."
             else:
+                success = False
                 message = (
-                    "Uninstall finished but the driver still looks installed -- if the installer showed its "
-                    "own window, check whether it was actually confirmed, or uninstall from Windows' Apps & "
-                    "Features (\"Nefarius Virtual Gamepad Emulation Bus\")."
-                    if uninstall
-                    else "Installer finished but the driver still isn't detected -- if a window appeared, "
+                    "Installer finished but the driver still isn't detected -- if a window appeared, "
                     "check whether the install was actually completed/confirmed there."
                 )
             self._finish_install_action(on_done, success, message)
 
         threading.Thread(target=_worker, name="vigembus-installer", daemon=True).start()
+
+    def uninstall_vigembus(self, on_done: Callable[[bool, str], None] | None = None) -> bool:
+        """Removes ViGEmBus completely: whichever build is installed, plus
+        everything it leaves behind (vigembus_uninstall.py has the why).
+        Never blocks the caller -- on_done(success, message) fires later on
+        the Tk main thread. Always starts (returns True): unlike installing,
+        it needs no installer file, because it drives the uninstall entry
+        Windows already holds for the installed copy.
+
+        The bridge is stopped and vgamepad's own bus handle dropped FIRST
+        (see _release_vigem_bus): with either still open the driver can't be
+        unloaded and the removal only finishes after a restart. If the driver
+        turns out to still be installed afterwards (UAC declined, uninstall
+        failed) the bus is reconnected, so the bridge isn't left dead."""
+        self.stop()
+        bus_released = _release_vigem_bus()
+
+        def _worker() -> None:
+            try:
+                success, message = self._remove_vigembus()
+            except Exception as exc:
+                success, message = False, f"Uninstall failed unexpectedly ({exc})."
+            if bus_released and self.is_vigembus_installed():
+                _restore_vigem_bus()
+            self._finish_install_action(on_done, success, message)
+
+        threading.Thread(target=_worker, name="vigembus-uninstaller", daemon=True).start()
+        return True
+
+    def _remove_vigembus(self) -> tuple[bool, str]:
+        before = vigembus_uninstall.scan()
+        if before.is_clean:
+            return True, "ViGEmBus is not installed -- nothing to remove."
+        commands = vigembus_uninstall.build_cleanup_commands(before)
+        exit_codes, output = run_elevated_capture_many(commands)
+        if not exit_codes:
+            return False, "Elevation was declined, or the uninstaller could not be launched."
+        for (exe, args), code in zip(commands, exit_codes):
+            self.app.log(f"Gamepad driver: {exe} {' '.join(str(arg) for arg in args[:3])} -> exit {code}")
+        if output.strip():
+            self.app.log("Gamepad driver: uninstall output:\n" + output.strip())
+        after = vigembus_uninstall.scan()
+        if after.is_clean:
+            return True, "ViGEmBus fully uninstalled (driver, virtual device, driver package and files)."
+        if after.restart_pending:
+            return True, (
+                "ViGEmBus was removed, but Windows still has the driver loaded -- restart the PC to "
+                "finish removing it."
+            )
+        return False, (
+            "Uninstall incomplete -- still present: "
+            + "; ".join(after.leftovers())
+            + ". Close programs that use virtual controllers (Steam, DS4Windows...) and try again."
+        )
 
     def _finish_install_action(
         self, on_done: Callable[[bool, str], None] | None, success: bool, message: str
@@ -910,6 +999,46 @@ class GamepadBridgeRuntime:
         if thread is not None and thread is not threading.current_thread():
             thread.join(timeout=3.0)
         self._thread = None
+
+    def release_hidhide_cloaks_on_shutdown(self) -> None:
+        """Lifts every slot's HidHide cloak on a clean app exit, WITHOUT
+        touching the persisted hide_from_fifa preference in settings.json --
+        start()'s own _reapply_hidden_slots() re-hides it (unelevated, no
+        UAC prompt) the next time this app launches, exactly like it does
+        for a fresh session today.
+
+        The cloak lives in HidHide's own driver config, not in this
+        process, which is exactly why it was made to survive an app restart
+        in the first place (_reapply_hidden_slots' whole point). But that
+        also means it survives the app simply not running at all -- closing
+        it, or a full PC restart before it's opened again -- and HidHide's
+        allow-list only exempts THIS app's own exe (see
+        HidHideRuntime.ensure_own_process_excluded), so every other
+        program, Steam included, stays blind to the real physical pad until
+        this app is relaunched and the user manually unchecks both boxes.
+        Reported live 2026-09-25. Called from on_close() so "this app isn't
+        running" and "the physical pad is hidden from everything else"
+        can't drift apart the way they did before -- the cloak is only
+        ever supposed to apply while this app is actually alive to
+        translate the pad, not indefinitely.
+
+        Synchronous (blocks on_close(), same as stop()'s own thread.join)
+        rather than fire-and-forget on a background thread -- a daemon
+        thread started here could be killed mid-IOCTL by the process exit
+        that follows self.destroy() a few lines later in on_close(), which
+        would silently reproduce the exact bug this exists to fix. Every
+        call this makes is already confirmed live to run unelevated (no UAC
+        prompt), so this adds no new blocking prompt to shutdown."""
+        hidhide = getattr(self.app, "hidhide", None)
+        if hidhide is None:
+            return
+        with self._lock:
+            guids = sorted({s.device_guid for s in self._slots if s.hide_from_fifa and s.device_guid})
+        for guid in guids:
+            try:
+                hidhide.unhide_device_for_slot(guid)
+            except Exception as exc:
+                self.app.log(f"HidHide: could not lift the cloak on shutdown ({exc})")
 
     def _ensure_thread(self) -> bool:
         if not PYGAME_AVAILABLE:

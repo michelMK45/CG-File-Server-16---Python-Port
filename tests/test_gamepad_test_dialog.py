@@ -8,19 +8,25 @@ from server16_py.gamepad_test_dialog import GamepadTestDialog
 _STRINGS = {
     "label.gamepads.slot": "Slot {n}",
     "dialog.gamepad_test.title": "Gamepad Test - {device}",
+    "dialog.gamepad_test.virtual_disabled": "Enable the virtual gamepad",
 }
 
 
 class FakeBridge:
     def __init__(self) -> None:
         self.reads: list[tuple[str, int | None]] = []
+        self.enabled = True
+        self.state = None
 
     def read_raw_state(self, device_guid: str, slot_index: int | None = None):
         self.reads.append((device_guid, slot_index))
-        return None
+        return self.state
 
     def is_device_busy(self, device_guid: str) -> bool:
         return False
+
+    def get_slot_snapshot(self, index: int) -> dict:
+        return {"enabled": self.enabled}
 
 
 def _all_label_texts(widget: tk.Misc) -> list[str]:
@@ -80,6 +86,56 @@ class GamepadTestDialogSlotTests(unittest.TestCase):
     def test_reads_the_state_of_that_slots_pad(self) -> None:
         self._open(3)
         self.assertEqual(self.bridge.reads[0], ("guid-1", 3))
+
+
+_PRESSED_STATE = {
+    "buttons": [True],
+    "axes": [],
+    "hats": [],
+    "mapped": {
+        "buttons": {"XUSB_GAMEPAD_A": True},
+        "left_stick": (0.0, 0.0),
+        "right_stick": (0.0, 0.0),
+        "left_trigger": 0.0,
+        "right_trigger": 0.0,
+    },
+}
+
+
+class GamepadTestDialogVirtualPadTests(GamepadTestDialogSlotTests):
+    """The translated-output panel only reflects the virtual pad while the
+    slot has it enabled; otherwise only the raw panel is live."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.bridge.state = _PRESSED_STATE
+
+    def _a_light(self, dialog):
+        return dialog._mapped_button_lights["XUSB_GAMEPAD_A"]
+
+    def test_mapped_panel_lights_up_when_virtual_pad_enabled(self) -> None:
+        dialog = self._open(0)
+        self.assertEqual(self._a_light(dialog).cget("bg"), dialog.success)
+        self.assertFalse(dialog._virtual_disabled_label.winfo_manager())
+
+    def test_mapped_panel_stays_dark_and_explains_when_disabled(self) -> None:
+        self.bridge.enabled = False
+        dialog = self._open(0)
+        self.assertNotEqual(self._a_light(dialog).cget("bg"), dialog.success)
+        self.assertEqual(dialog._sticks_label.cget("text"), "")
+        self.assertTrue(dialog._virtual_disabled_label.winfo_manager())
+        # Raw panel is unaffected.
+        self.assertEqual(dialog._raw_button_lights[0].cget("bg"), dialog.success)
+
+    def test_toggling_the_slot_while_open_takes_effect(self) -> None:
+        dialog = self._open(0)
+        self.bridge.enabled = False
+        dialog._poll()
+        self.assertNotEqual(self._a_light(dialog).cget("bg"), dialog.success)
+        self.bridge.enabled = True
+        dialog._poll()
+        self.assertEqual(self._a_light(dialog).cget("bg"), dialog.success)
+        self.assertFalse(dialog._virtual_disabled_label.winfo_manager())
 
 
 if __name__ == "__main__":

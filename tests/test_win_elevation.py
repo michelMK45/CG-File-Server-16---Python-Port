@@ -85,6 +85,33 @@ class RunElevatedCaptureManyTests(unittest.TestCase):
         self.assertEqual(len(codes), 0)
         self.assertEqual(output, "")
 
+    def test_raw_args_are_written_unquoted_and_everything_else_stays_quoted(self) -> None:
+        # msiexec.exe does not strip quotes from its own switches: `"/x"` is
+        # not an uninstall, it opens msiexec's usage window and waits
+        # (confirmed live). RawArg is the opt-out; the quoting default that
+        # HidHideCLI/pnputil/sc/powershell rely on must not change.
+        captured: dict[str, str] = {}
+        original = we.shell_execute_elevated_and_wait
+
+        def fake_run(file: str, params: str) -> bool:
+            with open(file, "r", encoding="utf-8") as f:
+                captured["script"] = f.read()
+            return True
+
+        we.shell_execute_elevated_and_wait = fake_run
+        try:
+            we.run_elevated_capture_many(
+                [
+                    ("msiexec.exe", [we.RawArg("/x"), we.RawArg("{93D91F60-7C94-4A79-863F-EA713D2EB3F3}"), we.RawArg("/qn")]),
+                    ("sc.exe", ["stop", "ViGEmBus"]),
+                ]
+            )
+        finally:
+            we.shell_execute_elevated_and_wait = original
+        script = captured["script"]
+        self.assertIn('"msiexec.exe" /x {93D91F60-7C94-4A79-863F-EA713D2EB3F3} /qn >>', script)
+        self.assertIn('"sc.exe" "stop" "ViGEmBus" >>', script)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -3077,8 +3077,7 @@ class UIMixin:
         self.settings.save()
         if not self.show_overlay_var.get() and self._d3d_menu_visible:
             self._d3d_menu_visible = False
-            self._overlay_wizard_phase = None
-            self._overlay_wizard_stadium = None
+            self._clear_overlay_wizard_state()
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
@@ -3623,6 +3622,13 @@ class UIMixin:
             self.gamepad_driver_action_button.configure(state="normal")
             self._refresh_gamepad_driver_status()
             self._refresh_gamepad_slot_rows()
+            if success and not installed:
+                # vgamepad only connects to ViGEmBus while it is being
+                # imported at launch, so bridging can't start until the app
+                # is relaunched (see gamepad_bridge_runtime.py's import guard).
+                messagebox.showinfo(
+                    self.tr("dialog.gamepads.restart_title"), self.tr("message.gamepads.restart_required")
+                )
 
         if installed:
             launched = self.gamepad_bridge.uninstall_vigembus(on_done=_done)

@@ -53,8 +53,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     VIGEMBUS_REPO_URL = "https://github.com/nefarius/ViGEmBus"
     HIDHIDE_REPO_URL = "https://github.com/nefarius/HidHide"
 
-    def __init__(self) -> None:
+    def __init__(self, splash=None) -> None:
         super().__init__()
+        self._launch_splash = splash
         self.protocol("WM_DELETE_WINDOW", self.on_close)
         self.withdraw()
         self.base_dir = self._resolve_base_dir()
@@ -86,6 +87,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.overlay_performance_mode_var = tk.BooleanVar(value=self.settings.overlay_performance_mode)
         self.random_stadium_selection_var = tk.BooleanVar(value=self.settings.random_stadium_selection)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
+        if self._launch_splash is not None:
+            self._launch_splash.set_message(self.tr("splash.starting"))
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
         self.offsets = Offsets.load()
@@ -269,6 +272,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_wizard_stadium: str | None = None
         self._overlay_wizard_police: str | None = None
         self._overlay_wizard_pitch: str | None = None
+        self._overlay_wizard_net: str | None = None
+        self._overlay_wizard_goalpost: str | None = None
+        # Serializes the 32-bit renders behind the goalpost-texture wizard
+        # step's preview — see _resolve_goalpost_texture_menu_preview.
+        self._overlay_goalpost_render_lock = threading.Lock()
         self._overlay_selected_kittype: str | None = None
         self._overlay_kit_sets_cache: list[dict | None] = []
         self._overlay_kit_preview_cache: dict[str, str] = {}
@@ -958,8 +966,38 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
 
     # ── Shutdown ───────────────────────────────────────────────────────────────
 
+    def _dismiss_launch_splash(self) -> None:
+        splash, self._launch_splash = self._launch_splash, None
+        if splash is not None:
+            # wait=False: the app keeps running, the fade-out can finish on
+            # the splash's own thread without holding up the main window.
+            try:
+                splash.close(wait=False)
+            except Exception:
+                pass
+
+    def _show_closing_splash(self):
+        """Spinner over the shutdown work below, which can block for a
+        while (HidHide calls, thread joins). Shown before the windows are
+        hidden so the screen is never left empty."""
+        try:
+            from .splash import SplashScreen
+
+            splash = SplashScreen(self.tr("splash.closing"))
+        except Exception:
+            return None
+        for child in list(self.winfo_children()):
+            if isinstance(child, tk.Toplevel):
+                try:
+                    child.withdraw()
+                except Exception:
+                    pass
+        return splash
+
     def on_close(self) -> None:
         self._closing = True
+        self._dismiss_launch_splash()
+        closing_splash = self._show_closing_splash()
         self._chants_stop.set()
         self._reset_chants_state()
         try:
@@ -1034,6 +1072,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         except Exception:
             pass
         try:
+            self.gamepad_bridge.release_hidhide_cloaks_on_shutdown()
+        except Exception:
+            pass
+        try:
             self.gamepad_bridge.stop()
         except Exception:
             pass
@@ -1041,6 +1083,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.memory.close()
         except Exception:
             pass
+        if closing_splash is not None:
+            # Held a moment so a fast shutdown doesn't just flash it, and
+            # joined so its Tk interpreter is gone before the process exits.
+            try:
+                closing_splash.close(min_visible=0.7)
+            except Exception:
+                pass
         try:
             self.quit()
         except Exception:
@@ -1048,7 +1097,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.destroy()
 
 
-def main() -> None:
+def main(splash=None) -> None:
     # Per-monitor DPI awareness: without this, GetCursorPos()/ScreenToClient()
     # (used to feed mouse input to the RmlUi menu, e.g.
     # app_overlay.py's _sync_rmlui_menu_mouse_feed) return coordinates in this
@@ -1060,7 +1109,7 @@ def main() -> None:
         ctypes.windll.shcore.SetProcessDpiAwareness(2)  # PROCESS_PER_MONITOR_DPI_AWARE
     except Exception:
         pass
-    app = Server16App()
+    app = Server16App(splash=splash)
     # __init__ returns early (skipping the rest of its own setup) when the user chose to
     # close the app from the FIFA-location-mismatch warning (see
     # _check_fifa_location / on_close, app_settings.py) -- on_close() already
@@ -1068,4 +1117,7 @@ def main() -> None:
     # a dead Tcl interpreter.
     if app._closing:
         return
+    # Give the main window a moment to map before the splash fades out, so
+    # the handoff never shows an empty desktop in between.
+    app.after(150, app._dismiss_launch_splash)
     app.mainloop()

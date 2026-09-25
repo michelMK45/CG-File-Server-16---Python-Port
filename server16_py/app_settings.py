@@ -149,6 +149,8 @@ class SettingsMixin:
             f"CGFS16 is not in the same folder as the linked FIFA 16 executable "
             f"(app: {app_dir}, FIFA: {fifa_dir}) -- Launch FIFA and file operations may not work correctly"
         )
+        # The launch splash is topmost and would sit on top of this modal.
+        self._dismiss_launch_splash()
         dialog = FifaLocationWarningDialog(self, fifa_dir, app_dir)
         self.wait_window(dialog)
         if dialog.result:

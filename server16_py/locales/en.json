@@ -71,6 +71,8 @@
   "tooltip.gamepads.remove": "Forget this controller: turns this slot's bridge off and deletes its saved device from settings so it isn't kept around.",
   "status.gamepads.driver_missing": "Driver not installed",
   "status.gamepads.driver_installed": "Driver installed",
+  "dialog.gamepads.restart_title": "Restart required",
+  "message.gamepads.restart_required": "The virtual controller driver was installed.\n\nClose and reopen this program so it can start using it.",
   "status.gamepads.dependencies_missing": "Missing Python packages (pygame / vgamepad) -- install them to enable gamepad bridging.",
   "status.gamepads.disconnected": "Disconnected",
   "status.gamepads.connected": "Connected",
@@ -94,6 +96,7 @@
   "dialog.gamepad_test.raw_input_subtitle": "What this app reads directly from the physical device.",
   "dialog.gamepad_test.mapped_output": "Translated Xbox Output",
   "dialog.gamepad_test.mapped_output_subtitle": "What FIFA sees through the virtual pad ({profile} profile).",
+  "dialog.gamepad_test.virtual_disabled": "Enable the virtual gamepad for this slot to see the translated output here.",
   "dialog.gamepad_test.dpad": "D-Pad",
   "dialog.gamepad_test.axes": "Raw Axes",
   "dialog.gamepad_test.axes_note": "Small fluctuations (a few hundredths) at rest are normal for most controllers. A value swinging all the way toward +1/-1 without you touching a stick usually means an unlabeled axis is actually a trigger (ZL/ZR) rather than a button.",
@@ -725,5 +728,7 @@
   "dialog.imgbb_key.prompt": "This key is used to upload stadium preview images shown in your Discord Rich Presence. Enter your ImgBB API key; if you don't have one, register on ImgBB and generate a key from the API page.",
   "dialog.imgbb_key.get_key": "Open ImgBB (register / get key)",
   "dialog.imgbb_key.save": "Save",
-  "message.imgbb_key_saved": "ImgBB API key saved."
+  "message.imgbb_key_saved": "ImgBB API key saved.",
+  "splash.starting": "Starting…",
+  "splash.closing": "Closing…"
 }

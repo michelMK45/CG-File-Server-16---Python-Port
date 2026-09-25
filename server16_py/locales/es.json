@@ -65,6 +65,8 @@
   "tooltip.gamepads.remove": "Olvidar este mando: apaga el puente de esta ranura y borra su dispositivo guardado de los ajustes para que no quede almacenado.",
   "status.gamepads.driver_missing": "Driver no instalado",
   "status.gamepads.driver_installed": "Driver instalado",
+  "dialog.gamepads.restart_title": "Reinicio necesario",
+  "message.gamepads.restart_required": "El driver de mando virtual se ha instalado.\n\nCierra y vuelve a abrir este programa para que empiece a usarlo.",
   "status.gamepads.dependencies_missing": "Faltan paquetes de Python (pygame / vgamepad) -- instálalos para activar la traducción de mandos.",
   "status.gamepads.disconnected": "Desconectado",
   "status.gamepads.connected": "Conectado",
@@ -88,6 +90,7 @@
   "dialog.gamepad_test.raw_input_subtitle": "Lo que esta aplicación lee directamente del dispositivo físico.",
   "dialog.gamepad_test.mapped_output": "Salida Xbox traducida",
   "dialog.gamepad_test.mapped_output_subtitle": "Lo que FIFA ve a través del mando virtual (perfil {profile}).",
+  "dialog.gamepad_test.virtual_disabled": "Activa el mando virtual de este slot para ver aquí la salida traducida.",
   "dialog.gamepad_test.dpad": "Cruceta",
   "dialog.gamepad_test.axes": "Ejes en crudo",
   "dialog.gamepad_test.axes_note": "Pequeñas fluctuaciones (centésimas) en reposo son normales en la mayoría de mandos. Si un valor llega hasta +1/-1 sin tocar ningún stick, probablemente ese eje sin etiquetar es en realidad un gatillo (ZL/ZR) y no un botón.",
@@ -627,5 +630,7 @@
   "dialog.imgbb_key.prompt": "Esta key se usa para subir las imágenes de vista previa de estadios que se muestran en tu Discord Rich Presence. Introduce tu API key de ImgBB; si no tienes una, regístrate en ImgBB y genera una key desde la página de la API.",
   "dialog.imgbb_key.get_key": "Abrir ImgBB (registrarse / obtener key)",
   "dialog.imgbb_key.save": "Guardar",
-  "message.imgbb_key_saved": "API key de ImgBB guardada."
+  "message.imgbb_key_saved": "API key de ImgBB guardada.",
+  "splash.starting": "Iniciando…",
+  "splash.closing": "Cerrando…"
 }

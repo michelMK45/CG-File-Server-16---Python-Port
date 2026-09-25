@@ -32,6 +32,8 @@ from .file_tools import (
     discover_stadium_names,
     kit_ui_placeholder_path,
     resolve_asset_thumbnail_path,
+    resolve_goalpost_model_preview_path,
+    resolve_goalpost_texture_rx3_path,
     resolve_movie_preview_path,
     rmlui_icon_path,
     stadium_country_code,
@@ -63,6 +65,15 @@ _FILTER_GRID_COLS_FALLBACK = 7
 # shared-memory struct), not real work, so this is expected to have
 # negligible CPU cost, but has not been profiled live.
 _OVERLAY_POLL_MS = 40
+
+# The Stadiums tab's assign wizard, in step order (police -> ... -> goalpost
+# texture is the last step, which writes the assignment — see
+# _activate_wizard_step). The two goalpost steps mirror the Goalpost Model /
+# Goalpost Texture combos of the desktop Assign Stadium dialog and pick a
+# subfolder of FSW/Goalpost/<subdir>/, same folders StadiumRuntime.
+# resolve_goalpost_sources reads back.
+_STADIUM_WIZARD_PHASES = ("police", "pitch", "net", "goalpost", "goalposttexture")
+_GOALPOST_WIZARD_SUBDIRS = {"goalpost": "GoalpostModel", "goalposttexture": "GoalpostColor"}
 
 
 class OverlayMixin:
@@ -138,8 +149,7 @@ class OverlayMixin:
             # respond to anything.
             if self._d3d_menu_visible:
                 self._d3d_menu_visible = False
-                self._overlay_wizard_phase = None
-                self._overlay_wizard_stadium = None
+                self._clear_overlay_wizard_state()
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
@@ -353,10 +363,7 @@ class OverlayMixin:
             if self._d3d_menu_visible:
                 self._install_mouse_wheel_hook()
                 self._install_keyboard_hook()
-                self._overlay_wizard_phase = None
-                self._overlay_wizard_stadium = None
-                self._overlay_wizard_police = None
-                self._overlay_wizard_pitch = None
+                self._clear_overlay_wizard_state()
                 self._overlay_selected_scope = None
                 self._overlay_selected_kittype = None
                 self._overlay_kit_sets_cache = []
@@ -366,10 +373,7 @@ class OverlayMixin:
                 self._overlay_stadium_sort_desc = False
                 self._update_menu_content()
             else:
-                self._overlay_wizard_phase = None
-                self._overlay_wizard_stadium = None
-                self._overlay_wizard_police = None
-                self._overlay_wizard_pitch = None
+                self._clear_overlay_wizard_state()
                 self._overlay_selected_scope = None
                 self._overlay_selected_kittype = None
                 self._overlay_kit_sets_cache = []
@@ -753,8 +757,7 @@ class OverlayMixin:
         # Auto-close if FIFA exits
         if self._d3d_menu_visible and not self._fifa_hwnd:
             self._d3d_menu_visible = False
-            self._overlay_wizard_phase = None
-            self._overlay_wizard_stadium = None
+            self._clear_overlay_wizard_state()
             self._overlay_filter_phase = False
             self._overlay_stadium_country_filter = set()
             self._overlay_stadium_sort_desc = False
@@ -906,10 +909,7 @@ class OverlayMixin:
         self._overlay_tab_index = normalized
         tab_name = self._overlay_tab_names[self._overlay_tab_index]
         self.log(f"Overlay menu tab changed to {tab_name} via {source}")
-        self._overlay_wizard_phase = None
-        self._overlay_wizard_stadium = None
-        self._overlay_wizard_police = None
-        self._overlay_wizard_pitch = None
+        self._clear_overlay_wizard_state()
         self._overlay_selected_scope = None
         self._overlay_selected_kittype = None
         self._overlay_kit_sets_cache = []
@@ -1031,6 +1031,12 @@ class OverlayMixin:
                         Path(exedir) / "FSW" / "Nets",
                     ) if exedir else None
                     items = _list_file_stems(img_dir) or ["0"]
+                elif self._overlay_wizard_phase in _GOALPOST_WIZARD_SUBDIRS:
+                    # Same list the desktop Assign Stadium dialog's Goalpost
+                    # Model/Texture combos offer: a leading "None" (= no
+                    # override, the stadium keeps its own GoalpostGBD) then
+                    # every pack folder.
+                    items = ["None"] + _list_dirs(self._overlay_goalpost_dir(self._overlay_wizard_phase))
                 elif self._overlay_wizard_phase == "kittype":
                     items = [self.kitmix_kittype_labels[k] for k in KIT_TYPES]
                 else:
@@ -1080,6 +1086,8 @@ class OverlayMixin:
             else:
                 self._overlay_selected_index = 0
                 self._overlay_scroll_offset  = 0
+                if self._overlay_wizard_phase in _GOALPOST_WIZARD_SUBDIRS:
+                    self._preselect_current_goalpost(items)
             self._overlay_item_count     = len(items)
             self._overlay_window_base    = 0
 
@@ -1097,6 +1105,10 @@ class OverlayMixin:
                 header = f"Police: {self._overlay_wizard_police or '?'}  ->  Pitch Mow Pattern"
             elif phase == "net":
                 header = f"Pitch: {self._overlay_wizard_pitch or '?'}  ->  Net Pattern"
+            elif phase == "goalpost":
+                header = f"Net: {self._overlay_wizard_net or '?'}  ->  Goalpost Model"
+            elif phase == "goalposttexture":
+                header = f"Model: {self._overlay_wizard_goalpost or '?'}  ->  Goalpost Texture"
             elif phase == "kittype":
                 team_label = "Home Team" if self._overlay_selected_scope == "home" else "Away Team"
                 header = f"{team_label}  ->  Select Kit Type"
@@ -1310,7 +1322,7 @@ class OverlayMixin:
 
     def _append_overlay_stadium(self, comp: str, key: str, stadium: str, police: str, pitch: str, net: str) -> str:
         """Compose the settings.ini value for the F12 overlay's stadium-assign
-        wizard (_activate_wizard_step's "net" phase). If this key already has
+        wizard (_activate_wizard_step's final "goalposttexture" phase). If this key already has
         one or more stadiums assigned -- e.g. from the desktop Stadium
         Settings editor's multi-stadium support -- the newly picked one is
         APPENDED, each stadium keeping its own police/pitch/net, instead of
@@ -1351,8 +1363,53 @@ class OverlayMixin:
             self._overlay_selected_scope = None
         self._update_menu_content()
 
+    def _clear_overlay_wizard_state(self) -> None:
+        """Drops the Stadiums assign wizard back to "not started": no phase,
+        no stadium, none of its per-step picks. Every place that abandons or
+        restarts the wizard goes through here so a newly added step's pick
+        can't be left stale by one of them forgetting it."""
+        self._overlay_wizard_phase = None
+        self._overlay_wizard_stadium = None
+        self._overlay_wizard_police = None
+        self._overlay_wizard_pitch = None
+        self._overlay_wizard_net = None
+        self._overlay_wizard_goalpost = None
+
+    def _overlay_goalpost_dir(self, phase: str) -> Path | None:
+        """FSW/Goalpost/GoalpostModel (phase "goalpost") or .../GoalpostColor
+        (phase "goalposttexture") — None until the FIFA folder is known."""
+        exedir = getattr(self, "exedir", None)
+        subdir = _GOALPOST_WIZARD_SUBDIRS.get(phase)
+        if not exedir or not subdir:
+            return None
+        return Path(exedir) / "FSW" / "Goalpost" / subdir
+
+    def _preselect_current_goalpost(self, items: list[str]) -> None:
+        """Puts the cursor on the pack this stadium already has configured, if
+        any. Picking "None" here CLEARS the stadium's existing override (same
+        as the desktop dialog), so a player who just wants to keep one — e.g.
+        re-assigning the stadium to another team, or changing only the model —
+        can confirm straight through instead of having to find it again in the
+        list. Falls back to row 0 ("None") when nothing is set or the pack no
+        longer exists."""
+        stadium = self._overlay_wizard_stadium
+        if not stadium:
+            return
+        try:
+            model, texture = self.stadium_runtime._read_goalpost_override_names(self, stadium)
+        except Exception:
+            return
+        current = model if self._overlay_wizard_phase == "goalpost" else texture
+        if current and current in items:
+            self._overlay_selected_index = items.index(current)
+            self._scroll_to_selection(self._overlay_selected_index)
+
     def _wizard_back(self) -> None:
-        if self._overlay_wizard_phase == "net":
+        if self._overlay_wizard_phase == "goalposttexture":
+            self._overlay_wizard_phase = "goalpost"
+        elif self._overlay_wizard_phase == "goalpost":
+            self._overlay_wizard_phase = "net"
+        elif self._overlay_wizard_phase == "net":
             self._overlay_wizard_phase = "pitch"
         elif self._overlay_wizard_phase == "pitch":
             self._overlay_wizard_phase = "police"
@@ -1366,10 +1423,7 @@ class OverlayMixin:
             self._overlay_selected_scope = None
             self._overlay_selected_kittype = None
         else:
-            self._overlay_wizard_phase = None
-            self._overlay_wizard_stadium = None
-            self._overlay_wizard_police = None
-            self._overlay_wizard_pitch = None
+            self._clear_overlay_wizard_state()
         self._update_menu_content()
 
     def _toggle_stadium_filter_panel(self) -> None:
@@ -1481,10 +1535,9 @@ class OverlayMixin:
             self._write_overlay_assignment(key, comp, selected_item, source)
             return
         if tab_name == "stadiums":
+            self._clear_overlay_wizard_state()
             self._overlay_wizard_stadium = selected_item
             self._overlay_wizard_phase = "police"
-            self._overlay_wizard_police = None
-            self._overlay_wizard_pitch = None
             self._update_menu_content()
             return
 
@@ -1543,20 +1596,45 @@ class OverlayMixin:
             self._overlay_wizard_phase = "net"
             self._update_menu_content()
         elif self._overlay_wizard_phase == "net":
+            self._overlay_wizard_net = selected_item
+            self._overlay_wizard_phase = "goalpost"
+            self._update_menu_content()
+        elif self._overlay_wizard_phase == "goalpost":
+            self._overlay_wizard_goalpost = selected_item
+            self._overlay_wizard_phase = "goalposttexture"
+            self._update_menu_content()
+        elif self._overlay_wizard_phase == "goalposttexture":
             police = self._overlay_wizard_police or "4"
             pitch = self._overlay_wizard_pitch or "0"
-            net = selected_item
+            net = self._overlay_wizard_net or "0"
+            goalpost = self._overlay_wizard_goalpost or "None"
+            goalpost_texture = selected_item
             stadium = self._overlay_wizard_stadium or ""
-            self._overlay_wizard_phase = None
-            self._overlay_wizard_stadium = None
-            self._overlay_wizard_police = None
-            self._overlay_wizard_pitch = None
+            self._clear_overlay_wizard_state()
             if stadium:
                 self.assignment_runtime.refresh_context_for_assignment()
                 comp, resolved = self._resolve_overlay_assignment_target("stadiums", scope_override=self._overlay_selected_scope)
                 if comp:
                     key = "stadium" if resolved == "Home Team" else "comp"
                     payload = self._append_overlay_stadium(comp, key, stadium, police, pitch, net)
+                    # Goalpost picks live in their own [stadiumgoalpost]/
+                    # [stadiumgoalposttexture] sections keyed by stadium name,
+                    # not inside the [stadium]/[comp] value. They must be
+                    # written (and saved) BEFORE _write_overlay_assignment,
+                    # which ends by applying the stadium — that apply is what
+                    # reads them back (StadiumRuntime.resolve_goalpost_sources).
+                    # Kept as two fully-completed save cycles rather than one
+                    # merged write: the overrides' delete_key() reloads from
+                    # disk first, which would discard an unsaved assignment
+                    # write made before it. A failure here must not lose the
+                    # assignment itself — goalposts are optional.
+                    try:
+                        self.assignment_runtime._write_stadium_goalpost_overrides(
+                            [stadium],
+                            {"stadiumgoalpost": goalpost, "stadiumgoalposttexture": goalpost_texture},
+                        )
+                    except Exception as exc:
+                        self.log(f"Overlay goalpost override save failed ({source})", exc, exc_info=sys.exc_info())
                     self._write_overlay_assignment(key, comp, payload, source, chosen_stadium=stadium)
                 else:
                     self.log(f"Overlay wizard apply skipped ({source}): no match context")
@@ -1601,16 +1679,38 @@ class OverlayMixin:
 
         if self._overlay_wizard_phase is not None:
             phase = self._overlay_wizard_phase
-            phase_labels = {"police": "Police", "pitch": "Pitch Pattern", "net": "Net Pattern"}
-            police_val = "[selecting...]" if phase == "police" else (self._overlay_wizard_police or "-")
-            pitch_val = "-" if phase == "police" else "[selecting...]" if phase == "pitch" else (self._overlay_wizard_pitch or "-")
-            net_val = "[selecting...]" if phase == "net" else "-"
+            phase_labels = {
+                "police": "Police",
+                "pitch": "Pitch Pattern",
+                "net": "Net Pattern",
+                "goalpost": "Goalpost Model",
+                "goalposttexture": "Goalpost Texture",
+            }
+            picks = {
+                "police": self._overlay_wizard_police,
+                "pitch": self._overlay_wizard_pitch,
+                "net": self._overlay_wizard_net,
+                "goalpost": self._overlay_wizard_goalpost,
+            }
+
+            def _step_value(step: str) -> str:
+                # Already chosen -> the pick, current step -> a marker, a step
+                # still ahead -> "-". The last step's own pick is never shown:
+                # choosing it applies the assignment and leaves the wizard.
+                if step == phase:
+                    return "[selecting...]"
+                if _STADIUM_WIZARD_PHASES.index(step) > _STADIUM_WIZARD_PHASES.index(phase):
+                    return "-"
+                return picks.get(step) or "-"
+
             return [
                 "-- STADIUM CONFIG --",
                 f"Stadium: {self._overlay_wizard_stadium or '-'}",
-                f"Police:  {police_val}",
-                f"Pitch:   {pitch_val}",
-                f"Net:     {net_val}",
+                f"Police:  {_step_value('police')}",
+                f"Pitch:   {_step_value('pitch')}",
+                f"Net:     {_step_value('net')}",
+                f"Goalpost model:   {_step_value('goalpost')}",
+                f"Goalpost texture: {_step_value('goalposttexture')}",
                 f">> Select {phase_labels.get(phase, phase)} <<",
                 "",
                 "B / Esc = back",
@@ -1699,6 +1799,15 @@ class OverlayMixin:
                         if p.exists():
                             preview_path = str(p)
                             break
+                elif phase == "goalpost":
+                    # A model pack's own preview.<ext> (none for "None" or a
+                    # pack that hasn't been given one yet — see
+                    # resolve_goalpost_model_preview_path).
+                    model_dir = self._overlay_goalpost_dir("goalpost")
+                    image = resolve_goalpost_model_preview_path(model_dir, selected_item) if model_dir else None
+                    preview_path = str(image) if image else ""
+                elif phase == "goalposttexture":
+                    preview_path = self._resolve_goalpost_texture_menu_preview(selected_item)
         elif self._overlay_filter_phase:
             pass
         elif tab_name == "stadiums" and selected_item and not self.overlay_performance_mode_var.get():
@@ -1893,6 +2002,76 @@ class OverlayMixin:
             threading.Thread(target=worker, daemon=True).start()
 
         return fallback_path
+
+    def _goalpost_texture_step_is_on(self, name: str) -> bool:
+        """True while the goalpost-texture wizard step is up with `name`
+        highlighted — what a background preview render checks before it
+        renders, or pushes its result, so it never touches an item the
+        player has already scrolled past."""
+        if not self._d3d_menu_visible or self._overlay_wizard_phase != "goalposttexture":
+            return False
+        sel = self._overlay_selected_index
+        return 0 <= sel < len(self._overlay_items) and self._overlay_items[sel] == name
+
+    def _resolve_goalpost_texture_menu_preview(self, name: str) -> str:
+        """Preview path for the highlighted GoalpostColor pack in the wizard's
+        texture step — synchronous and never blocks. Unlike every other wizard
+        preview there is no image on disk to point at: the pack ships only an
+        .rx3, which the 32-bit FifaLibrary bridge has to render into a PNG
+        (StadiumRuntime.render_goalpost_texture_preview, the same call the
+        desktop dialog's preview box makes), taking seconds. So this returns
+        the cached PNG when one exists, "" (no preview yet) otherwise, and
+        renders on a background thread that pushes the image once it's ready —
+        the same cache-then-async shape as _resolve_kits_menu_preview, sharing
+        its cache/pending sets under a distinct "goalposttex_" key prefix.
+
+        Renders are serialized behind one lock and each re-checks that its
+        pack is still highlighted once it gets its turn, so holding Down
+        through a long list costs one render for wherever the cursor rests,
+        not one 32-bit subprocess per row passed. Skipped in performance mode
+        (same rule as the Stadiums tab's thumbnails and video previews) — a
+        render there is exactly the kind of extra work that mode exists to
+        avoid."""
+        color_dir = self._overlay_goalpost_dir("goalposttexture")
+        source_rx3 = resolve_goalpost_texture_rx3_path(color_dir, name) if color_dir else None
+        if source_rx3 is None:
+            return ""  # "None", or a pack folder with no .rx3 to render
+        cache_key = f"goalposttex_{name}"
+        cached = self._overlay_kit_preview_cache.get(cache_key)
+        if cached:
+            return cached
+        if self.overlay_performance_mode_var.get() or cache_key in self._overlay_kit_preview_pending:
+            return ""
+        self._overlay_kit_preview_pending.add(cache_key)
+
+        def worker() -> None:
+            png_str = None
+            try:
+                with self._overlay_goalpost_render_lock:
+                    if self._goalpost_texture_step_is_on(name):
+                        png_str = str(self.stadium_runtime.render_goalpost_texture_preview(
+                            source_rx3, cache_key=name, reuse_cached=True,
+                        ))
+            except Exception:
+                png_str = None
+            finally:
+                # Discarded even when skipped/failed, so coming back to this
+                # pack later starts a fresh attempt instead of finding a
+                # permanently "pending" entry.
+                self._overlay_kit_preview_pending.discard(cache_key)
+            if not png_str:
+                return
+            self._overlay_kit_preview_cache[cache_key] = png_str
+            if self._goalpost_texture_step_is_on(name):
+                inj = self._d3d_injector
+                if inj is not None:
+                    try:
+                        inj.set_preview_image(png_str)
+                    except Exception:
+                        pass
+
+        threading.Thread(target=worker, daemon=True).start()
+        return ""
 
     def _navigate_menu_items(self, delta: int) -> None:
         """Move selection up/down (or, in the Stadiums filter grid, one cell) in the current tab list."""

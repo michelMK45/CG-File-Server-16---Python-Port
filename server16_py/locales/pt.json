@@ -71,6 +71,8 @@
   "tooltip.gamepads.remove": "Esquecer este controle: desliga a ponte deste slot e apaga o dispositivo salvo das configurações para que não fique armazenado.",
   "status.gamepads.driver_missing": "Driver não instalado",
   "status.gamepads.driver_installed": "Driver instalado",
+  "dialog.gamepads.restart_title": "Reinício necessário",
+  "message.gamepads.restart_required": "O driver de controle virtual foi instalado.\n\nFeche e abra este programa novamente para que ele comece a usá-lo.",
   "status.gamepads.dependencies_missing": "Faltam pacotes Python (pygame / vgamepad) -- instale-os para ativar a ponte de controles.",
   "status.gamepads.disconnected": "Desconectado",
   "status.gamepads.connected": "Conectado",
@@ -94,6 +96,7 @@
   "dialog.gamepad_test.raw_input_subtitle": "O que este aplicativo lê diretamente do dispositivo físico.",
   "dialog.gamepad_test.mapped_output": "Saída Xbox traduzida",
   "dialog.gamepad_test.mapped_output_subtitle": "O que o FIFA vê através do controle virtual (perfil {profile}).",
+  "dialog.gamepad_test.virtual_disabled": "Ative o controle virtual deste slot para ver aqui a saída traduzida.",
   "dialog.gamepad_test.dpad": "Direcional",
   "dialog.gamepad_test.axes": "Eixos brutos",
   "dialog.gamepad_test.axes_note": "Pequenas flutuações (centésimos) em repouso são normais na maioria dos controles. Se um valor chega até +1/-1 sem tocar em nenhum analógico, esse eixo sem rótulo provavelmente é um gatilho (ZL/ZR), não um botão.",
@@ -667,5 +670,7 @@
   "dialog.imgbb_key.prompt": "Esta key é usada para enviar as imagens de pré-visualização de estádios exibidas no seu Discord Rich Presence. Insira sua API key do ImgBB; se não tiver uma, registre-se no ImgBB e gere uma key na página da API.",
   "dialog.imgbb_key.get_key": "Abrir ImgBB (registrar / obter key)",
   "dialog.imgbb_key.save": "Salvar",
-  "message.imgbb_key_saved": "API key do ImgBB salva."
+  "message.imgbb_key_saved": "API key do ImgBB salva.",
+  "splash.starting": "Iniciando…",
+  "splash.closing": "Fechando…"
 }

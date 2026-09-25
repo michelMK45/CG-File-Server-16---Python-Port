@@ -7,8 +7,10 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
+from unittest import mock
 
 from server16_py import gamepad_bridge_runtime as gbr
+from server16_py import vigembus_uninstall as vu
 from server16_py.settings_store import SettingsStore
 
 
@@ -994,6 +996,246 @@ class StartReappliesHideFromFifaTests(unittest.TestCase):
             hidhide, [{"enabled": True, "device_guid": "guid-1", "profile": "auto", "hide_from_fifa": False}]
         )
         runtime.start()
+
+
+class ReleaseHidhideCloaksOnShutdownTests(unittest.TestCase):
+    """Reported live 2026-09-25: closing the app (or restarting the PC)
+    with a slot's Hide from FIFA left on kept the physical pad hidden from
+    every OTHER program (Steam included) until this app was reopened and
+    the user manually unchecked both boxes -- because the HidHide cloak
+    lives in the driver, not this process, and nothing lifted it on exit.
+    on_close() now calls release_hidhide_cloaks_on_shutdown() before
+    gamepad_bridge.stop(); start()'s existing _reapply_hidden_slots()
+    re-hides it (unelevated) the next time this app actually launches."""
+
+    def _runtime(self, hidhide) -> gbr.GamepadBridgeRuntime:
+        settings = SimpleNamespace(data={"gamepad_bridge": {"slots": []}}, save=lambda: None)
+        runtime = gbr.GamepadBridgeRuntime.__new__(gbr.GamepadBridgeRuntime)
+        runtime.app = SimpleNamespace(settings=settings, hidhide=hidhide, log=lambda *a, **k: None)
+        runtime._lock = threading.Lock()
+        runtime._slots = [gbr.SlotState() for _ in range(gbr.SLOT_COUNT)]
+        return runtime
+
+    def test_unhides_every_slot_still_marked_hide_from_fifa(self) -> None:
+        hidhide = FakeHidHide()
+        runtime = self._runtime(hidhide)
+        runtime._slots[0].device_guid = "guid-1"
+        runtime._slots[0].hide_from_fifa = True
+        runtime._slots[2].device_guid = "guid-3"
+        runtime._slots[2].hide_from_fifa = True
+        runtime.release_hidhide_cloaks_on_shutdown()
+        self.assertEqual(hidhide.unhidden, ["guid-1", "guid-3"])
+        self.assertEqual(hidhide.hidden, [])
+
+    def test_never_touches_the_persisted_hide_from_fifa_preference(self) -> None:
+        # The next launch's start()/_reapply_hidden_slots() relies on this
+        # still reading True to re-hide the pad -- shutdown must only
+        # affect HidHide's live state, never settings.json.
+        hidhide = FakeHidHide()
+        runtime = self._runtime(hidhide)
+        runtime._slots[0].device_guid = "guid-1"
+        runtime._slots[0].hide_from_fifa = True
+        runtime.release_hidhide_cloaks_on_shutdown()
+        self.assertTrue(runtime._slots[0].hide_from_fifa)
+        self.assertEqual(runtime._slots[0].device_guid, "guid-1")
+
+    def test_does_nothing_for_slots_not_hiding(self) -> None:
+        hidhide = FakeHidHide()
+        runtime = self._runtime(hidhide)
+        runtime._slots[0].device_guid = "guid-1"
+        runtime._slots[0].hide_from_fifa = False
+        runtime.release_hidhide_cloaks_on_shutdown()
+        self.assertEqual(hidhide.unhidden, [])
+
+    def test_works_without_hidhide_installed_or_wired_up(self) -> None:
+        runtime = self._runtime(None)
+        runtime._slots[0].device_guid = "guid-1"
+        runtime._slots[0].hide_from_fifa = True
+        runtime.release_hidhide_cloaks_on_shutdown()  # must not raise
+
+    def test_is_synchronous_not_a_background_thread(self) -> None:
+        # Deliberately not threaded (unlike _apply_hidhide_preference) --
+        # a daemon thread here could be killed mid-IOCTL by the process
+        # exit that follows self.destroy() a few lines later in on_close().
+        hidhide = FakeHidHide()
+        runtime = self._runtime(hidhide)
+        runtime._slots[0].device_guid = "guid-1"
+        runtime._slots[0].hide_from_fifa = True
+        runtime.release_hidhide_cloaks_on_shutdown()
+        self.assertEqual(hidhide.unhidden, ["guid-1"])  # already done, no wait needed
+
+
+class IsVigembusInstalledPendingDeleteTests(unittest.TestCase):
+    """A service `sc delete` accepted while the driver was still loaded stays
+    in the registry until the next restart (DeleteFlag=1) -- gone for every
+    practical purpose, so the tab must offer Install, not another Uninstall
+    that can't do anything."""
+
+    def setUp(self) -> None:
+        self.runtime = gbr.GamepadBridgeRuntime.__new__(gbr.GamepadBridgeRuntime)
+
+    def _installed_with(self, service_state: tuple[bool, bool]) -> bool:
+        with mock.patch.object(vu, "service_state", return_value=service_state):
+            return self.runtime.is_vigembus_installed()
+
+    def test_present_service_is_installed(self) -> None:
+        self.assertTrue(self._installed_with((True, False)))
+
+    def test_missing_service_is_not_installed(self) -> None:
+        self.assertFalse(self._installed_with((False, False)))
+
+    def test_service_pending_deletion_is_not_installed(self) -> None:
+        self.assertFalse(self._installed_with((True, True)))
+
+
+class UninstallVigembusTests(unittest.TestCase):
+    """The whole Uninstall Driver flow with the Windows side mocked: the
+    scans (before/after), the one elevated run, the bus handle, and what
+    on_done is told. Reported live 2026-09-24: the button left the driver
+    installed -- it re-ran the bundled 1.22 installer's /uninstall against a
+    machine holding a different (1.17.333 MSI) product, a silent no-op."""
+
+    DIRTY = vu.ViGEmBusState(
+        uninstalls=[
+            vu.RegisteredUninstall(
+                "Nefarius Virtual Gamepad Emulation Bus Driver", "{93D91F60-7C94-4A79-863F-EA713D2EB3F3}"
+            )
+        ],
+        service_present=True,
+        devices=["ROOT\\SYSTEM\\0004"],
+        driver_packages=["oem15.inf"],
+    )
+
+    def setUp(self) -> None:
+        self.logs: list[str] = []
+        self.runtime = gbr.GamepadBridgeRuntime.__new__(gbr.GamepadBridgeRuntime)
+        self.runtime.app = SimpleNamespace(log=self.logs.append, after=lambda _ms, fn: fn())
+        self.runtime.stop = mock.Mock()
+
+    def _uninstall(self, scans, run_result=([0, 0, 0, 0, 0], ""), still_installed=False, bus_released=True):
+        """Runs uninstall_vigembus() to completion; returns (on_done args, mocks)."""
+        done = threading.Event()
+        result: list[tuple[bool, str]] = []
+
+        def on_done(success: bool, message: str) -> None:
+            result.append((success, message))
+            done.set()
+
+        with mock.patch.object(vu, "scan", side_effect=list(scans)) as scan, mock.patch.object(
+            gbr, "run_elevated_capture_many", return_value=run_result
+        ) as run, mock.patch.object(gbr, "_release_vigem_bus", return_value=bus_released) as release, mock.patch.object(
+            gbr, "_restore_vigem_bus", return_value=True
+        ) as restore, mock.patch.object(self.runtime, "is_vigembus_installed", return_value=still_installed):
+            self.assertTrue(self.runtime.uninstall_vigembus(on_done=on_done))
+            self.assertTrue(done.wait(10), "on_done was never called")
+        return result[0], SimpleNamespace(scan=scan, run=run, release=release, restore=restore)
+
+    def test_success_removes_everything_in_one_elevated_run(self) -> None:
+        (success, message), mocks = self._uninstall([self.DIRTY, vu.ViGEmBusState()])
+        self.assertTrue(success)
+        self.assertIn("fully uninstalled", message)
+        mocks.run.assert_called_once()
+        commands = mocks.run.call_args.args[0]
+        self.assertEqual(commands[0][0], "msiexec.exe")
+        self.assertIn("pnputil.exe", [exe for exe, _ in commands])
+
+    def test_bridge_and_bus_handle_are_released_before_anything_is_removed(self) -> None:
+        order: list[str] = []
+        self.runtime.stop = lambda: order.append("stop")
+        done = threading.Event()
+        with mock.patch.object(vu, "scan", side_effect=[self.DIRTY, vu.ViGEmBusState()]), mock.patch.object(
+            gbr, "run_elevated_capture_many", side_effect=lambda cmds: order.append("elevated run") or ([0], "")
+        ), mock.patch.object(
+            gbr, "_release_vigem_bus", side_effect=lambda: order.append("release") or True
+        ), mock.patch.object(self.runtime, "is_vigembus_installed", return_value=False):
+            self.runtime.uninstall_vigembus(on_done=lambda *_: done.set())
+            self.assertTrue(done.wait(10))
+        self.assertEqual(order, ["stop", "release", "elevated run"])
+
+    def test_the_bus_is_not_reconnected_after_a_real_uninstall(self) -> None:
+        _, mocks = self._uninstall([self.DIRTY, vu.ViGEmBusState()], still_installed=False)
+        mocks.restore.assert_not_called()
+
+    def test_declined_uac_reports_it_and_reconnects_the_bus(self) -> None:
+        (success, message), mocks = self._uninstall([self.DIRTY], run_result=([], ""), still_installed=True)
+        self.assertFalse(success)
+        self.assertIn("declined", message)
+        mocks.restore.assert_called_once()
+
+    def test_incomplete_uninstall_names_what_is_left_and_reconnects_the_bus(self) -> None:
+        leftover = vu.ViGEmBusState(service_present=True, devices=["ROOT\\SYSTEM\\0004"])
+        (success, message), mocks = self._uninstall([self.DIRTY, leftover], still_installed=True)
+        self.assertFalse(success)
+        self.assertIn("still present", message)
+        self.assertIn("ROOT\\SYSTEM\\0004", message)
+        mocks.restore.assert_called_once()
+
+    def test_a_driver_that_only_needs_a_restart_counts_as_removed(self) -> None:
+        pending = vu.ViGEmBusState(service_present=True, service_pending_delete=True)
+        (success, message), mocks = self._uninstall([self.DIRTY, pending], still_installed=False)
+        self.assertTrue(success)
+        self.assertIn("restart", message)
+        mocks.restore.assert_not_called()
+
+    def test_nothing_installed_is_a_no_op_without_a_uac_prompt(self) -> None:
+        (success, message), mocks = self._uninstall([vu.ViGEmBusState()])
+        self.assertTrue(success)
+        self.assertIn("nothing to remove", message)
+        mocks.run.assert_not_called()
+
+    def test_an_unexpected_error_still_completes_so_the_button_re_enables(self) -> None:
+        (success, message), _ = self._uninstall([RuntimeError("registry exploded")])
+        self.assertFalse(success)
+        self.assertIn("registry exploded", message)
+
+    def test_does_not_reconnect_a_bus_that_was_never_connected(self) -> None:
+        _, mocks = self._uninstall([self.DIRTY], run_result=([], ""), still_installed=True, bus_released=False)
+        mocks.restore.assert_not_called()
+
+
+class ReleaseVigemBusTests(unittest.TestCase):
+    """vgamepad keeps the ViGEmBus device open for the whole session
+    (module-level VBUS); releasing it is what lets the driver unload."""
+
+    def setUp(self) -> None:
+        self._original_available = gbr.VGAMEPAD_AVAILABLE
+        self.module = SimpleNamespace(VBUS=object(), VBus=lambda: "new-bus")
+        self._modules = mock.patch.dict(sys.modules, {gbr._VGAMEPAD_BUS_MODULE: self.module})
+        self._modules.start()
+
+    def tearDown(self) -> None:
+        self._modules.stop()
+        gbr.VGAMEPAD_AVAILABLE = self._original_available
+
+    def test_release_drops_the_bus_and_marks_vgamepad_unavailable(self) -> None:
+        gbr.VGAMEPAD_AVAILABLE = True
+        self.assertTrue(gbr._release_vigem_bus())
+        self.assertIsNone(self.module.VBUS)
+        self.assertFalse(gbr.VGAMEPAD_AVAILABLE)
+        self.assertFalse(gbr.GamepadBridgeRuntime.dependencies_available())
+
+    def test_release_is_a_no_op_when_vgamepad_never_connected(self) -> None:
+        gbr.VGAMEPAD_AVAILABLE = False
+        sentinel = self.module.VBUS
+        self.assertFalse(gbr._release_vigem_bus())
+        self.assertIs(self.module.VBUS, sentinel)
+
+    def test_restore_reconnects_and_marks_vgamepad_available_again(self) -> None:
+        gbr.VGAMEPAD_AVAILABLE = False
+        self.module.VBUS = None
+        self.assertTrue(gbr._restore_vigem_bus())
+        self.assertEqual(self.module.VBUS, "new-bus")
+        self.assertTrue(gbr.VGAMEPAD_AVAILABLE)
+
+    def test_restore_failing_leaves_vgamepad_unavailable(self) -> None:
+        def broken_bus():
+            raise Exception("VIGEM_ERROR_BUS_NOT_FOUND")
+
+        self.module.VBus = broken_bus
+        gbr.VGAMEPAD_AVAILABLE = False
+        self.assertFalse(gbr._restore_vigem_bus())
+        self.assertIsNone(self.module.VBUS)
+        self.assertFalse(gbr.VGAMEPAD_AVAILABLE)
 
 
 if __name__ == "__main__":

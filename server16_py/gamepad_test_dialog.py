@@ -188,8 +188,23 @@ class GamepadTestDialog(BaseDialog):
             wraplength=300,
         ).pack(anchor="w", pady=(4, 0))
 
+        # Shown instead of the translated output while this slot's virtual
+        # pad is off (see _virtual_pad_enabled).
+        self._virtual_disabled_label = tk.Label(
+            mapped_card,
+            text=self.tr("dialog.gamepad_test.virtual_disabled"),
+            bg=self.card,
+            fg=self.muted,
+            font=("Bahnschrift", 9),
+            anchor="w",
+            justify="left",
+            wraplength=300,
+        )
+        self._virtual_disabled_shown = False
+
         self._mapped_button_lights: dict[str, tk.Label] = {}
         mapped_buttons_wrap = tk.Frame(mapped_card, bg=self.card)
+        self._mapped_first_widget = mapped_buttons_wrap
         mapped_buttons_wrap.pack(fill="x", padx=12, pady=(0, 8))
         _MAPPED_BUTTONS_PER_ROW = 5
         for i, (xusb_name, label_text) in enumerate(_XBOX_BUTTON_LAYOUT):
@@ -269,6 +284,26 @@ class GamepadTestDialog(BaseDialog):
             self._raw_button_lights.append(light)
         self._built_raw_lights = True
 
+    def _virtual_pad_enabled(self) -> bool:
+        """Whether this slot's virtual pad is switched on. Read every poll so
+        ticking/unticking the slot's checkbox while the dialog is open takes
+        effect at once. Opened without a slot there is nothing to ask."""
+        if self._slot_index is None:
+            return True
+        try:
+            return bool(self._bridge.get_slot_snapshot(self._slot_index)["enabled"])
+        except Exception:
+            return True
+
+    def _show_virtual_disabled(self, disabled: bool) -> None:
+        if disabled == self._virtual_disabled_shown:
+            return
+        self._virtual_disabled_shown = disabled
+        if disabled:
+            self._virtual_disabled_label.pack(anchor="w", padx=12, pady=(0, 8), before=self._mapped_first_widget)
+        else:
+            self._virtual_disabled_label.pack_forget()
+
     def _poll(self) -> None:
         state = self._bridge.read_raw_state(self._device_guid, self._slot_index)
         if state is None:
@@ -297,19 +332,27 @@ class GamepadTestDialog(BaseDialog):
             )
             self._axes_label.configure(text=axes_text or "-")
 
-            # Pads SDL recognizes publish the exact standard-Xbox state the
-            # bridge sends; only unrecognized ones fall back to the raw map.
-            mapped = state.get("mapped") or resolve_mapped_state(state, self._profile_name)
-            for xusb_name, light in self._mapped_button_lights.items():
-                self._set_light(light, mapped["buttons"].get(xusb_name, False))
-            lx, ly = mapped["left_stick"]
-            rx, ry = mapped["right_stick"]
-            self._sticks_label.configure(
-                text=(
-                    f"LS: {lx:+.2f}, {ly:+.2f}    RS: {rx:+.2f}, {ry:+.2f}\n"
-                    f"LT: {mapped['left_trigger']:.2f}    RT: {mapped['right_trigger']:.2f}"
+            if self._virtual_pad_enabled():
+                self._show_virtual_disabled(False)
+                # Pads SDL recognizes publish the exact standard-Xbox state
+                # the bridge sends; only unrecognized ones fall back to the
+                # raw map.
+                mapped = state.get("mapped") or resolve_mapped_state(state, self._profile_name)
+                for xusb_name, light in self._mapped_button_lights.items():
+                    self._set_light(light, mapped["buttons"].get(xusb_name, False))
+                lx, ly = mapped["left_stick"]
+                rx, ry = mapped["right_stick"]
+                self._sticks_label.configure(
+                    text=(
+                        f"LS: {lx:+.2f}, {ly:+.2f}    RS: {rx:+.2f}, {ry:+.2f}\n"
+                        f"LT: {mapped['left_trigger']:.2f}    RT: {mapped['right_trigger']:.2f}"
+                    )
                 )
-            )
+            else:
+                self._show_virtual_disabled(True)
+                for light in self._mapped_button_lights.values():
+                    self._set_light(light, False)
+                self._sticks_label.configure(text="")
 
         if not self._closed:
             self._poll_job = self.after(POLL_MS, self._poll)

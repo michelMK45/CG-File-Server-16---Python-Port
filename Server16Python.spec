@@ -1,6 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+import importlib.util
 from pathlib import Path
+
+from PyInstaller.building.splash import Splash
 
 # bin/ViGEmBus/*.{exe,msi} (an ADDITIONAL/override ViGEmBus driver installer
 # for the Gamepads tab, see gamepad_bridge_runtime.py's find_vigembus_installer())
@@ -79,9 +82,43 @@ a = Analysis(
 )
 pyz = PYZ(a.pure)
 
+# A onefile exe unpacks itself before any Python runs, and server16_py/splash.py
+# (the live, animated splash) can only appear once Python is up -- so on this
+# ~200MB exe the first seconds would show nothing. PyInstaller's bootloader can
+# show a static image during that stretch; scripts/make_boot_splash.py draws it
+# with the live splash's own geometry (so the handoff looks like the spinner
+# starting to turn), and main.py closes it once the live splash is on screen.
+# Never fatal: if the image can't be rendered the build just has no boot splash.
+def _boot_splash_image():
+    try:
+        script = Path(SPECPATH) / "scripts" / "make_boot_splash.py"
+        module_spec = importlib.util.spec_from_file_location("make_boot_splash", script)
+        module = importlib.util.module_from_spec(module_spec)
+        module_spec.loader.exec_module(module)
+        return str(module.render(Path(SPECPATH) / "build" / "boot_splash.png"))
+    except Exception as exc:
+        print(f"WARNING: boot splash image not generated ({exc}); building without it")
+        return None
+
+
+def _boot_splash_target():
+    image = _boot_splash_image()
+    if image is None:
+        return None
+    try:
+        return Splash(image, binaries=a.binaries, datas=a.datas)
+    except (Exception, SystemExit) as exc:  # Splash exits the build if Tcl/Tk is unusable
+        print(f"WARNING: PyInstaller boot splash unavailable ({exc}); building without it")
+        return None
+
+
+splash = _boot_splash_target()
+_splash_targets = [splash, splash.binaries] if splash is not None else []
+
 exe = EXE(
     pyz,
     a.scripts,
+    *_splash_targets,
     a.binaries,
     a.datas,
     [],

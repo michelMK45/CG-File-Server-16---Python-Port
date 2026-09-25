@@ -91,6 +91,25 @@ def run_elevated_capture(exe_path: Path, args: list[str]) -> tuple[int | None, s
 _EXIT_MARKER = "EXITCODE:"
 
 
+class RawArg(str):
+    """A command-line argument written into the elevated .bat exactly as-is,
+    without the surrounding quotes every other argument gets.
+
+    Needed for msiexec.exe, whose own command-line parser does not strip
+    quotes from its switches: `msiexec "/x" "{GUID}"` is not recognized as an
+    uninstall, it pops up msiexec's usage window and waits for someone to
+    close it (confirmed live 2026-09-24 -- it would hang a silent uninstall
+    forever). Console programs parsed by the C runtime (HidHideCLI, pnputil,
+    sc, powershell) are fine with quotes, which is why quoting stays the
+    default. The caller owns making a RawArg free of spaces/cmd metacharacters."""
+
+    __slots__ = ()
+
+
+def _quote_arg(arg: str) -> str:
+    return str(arg) if isinstance(arg, RawArg) else f'"{arg}"'
+
+
 def run_elevated_capture_many(commands: list[tuple[Path | str, list[str]]]) -> tuple[list[int | None], str]:
     """Like run_elevated_capture(), but runs several commands in order from
     the SAME elevated .bat -- one UAC prompt for all of them (e.g. HidHide's
@@ -107,7 +126,7 @@ def run_elevated_capture_many(commands: list[tuple[Path | str, list[str]]]) -> t
     out_path, bat_path = Path(out_path_str), Path(bat_path_str)
     lines = ["@echo off"]
     for exe_path, args in commands:
-        quoted_args = " ".join(f'"{a}"' for a in args)
+        quoted_args = " ".join(_quote_arg(a) for a in args)
         lines.append(f'"{exe_path}" {quoted_args} >> "{out_path}" 2>&1')
         lines.append(f'echo {_EXIT_MARKER}%errorlevel%>> "{out_path}"')
     script = "\r\n".join(lines) + "\r\n"
