@@ -34,6 +34,7 @@ from .stadium_runtime import StadiumRuntime
 from .substitution_runtime import SubstitutionRuntime
 from .update_checker import GithubReleaseChecker
 from .win32_types import RECT, POINT
+from . import window_fit
 
 from .app_localization import LocalizationMixin
 from .app_logging import LogMixin
@@ -631,6 +632,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.refresh_camera_catalog()
         self.refresh_modules()
         self.log("Bootstrap file writes are deferred until an explicit runtime action")
+        # Display diagnostics on every start: an oversized-window report from
+        # a 4K/150% machine (window_fit.py) could not be diagnosed because the
+        # log said nothing about DPI, work area or scaling.
+        self.log(f"Display: {window_fit.describe(self)}")
+        splash_warning = getattr(self._launch_splash, "diagnostics", None)
+        if splash_warning:
+            self.log(f"Splash: {splash_warning}")
         self.log("Application started")
         self._poll_job = self.after(500, self.poll_process)
         self._stats_job = self.after(250, self.stats_loop)
@@ -1032,6 +1040,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         try:
             if self._worker_poll_job is not None:
                 self.after_cancel(self._worker_poll_job)
+        except Exception:
+            pass
+        try:
+            if getattr(self, "_geometry_guard_job", None) is not None:
+                self.after_cancel(self._geometry_guard_job)
         except Exception:
             pass
         try:

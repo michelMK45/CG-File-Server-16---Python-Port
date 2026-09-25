@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from . import __version__
+from . import window_fit
 
 BG = "#0b1220"
 PANEL = "#111a2b"
@@ -34,6 +35,10 @@ _TAIL_SEGMENTS = 12.0
 _REVOLUTION_SECONDS = 1.2
 _FADE_OUT_SECONDS = 0.12
 _FRAME_MS = 15
+# How long, and how often, the splash keeps re-checking that its window still
+# has the size it asked for (see _SplashWindow._guard_geometry).
+_GEOMETRY_GUARD_SECONDS = 4.0
+_GEOMETRY_GUARD_INTERVAL = 0.25
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 
 
@@ -107,11 +112,18 @@ def enable_dpi_awareness() -> None:
         pass
 
 
-def dpi_scale() -> float:
+def dpi_scale(window=None) -> float:
+    """Display scale to draw the splash at. Delegates to window_fit so the
+    scale comes from the monitor the splash will actually appear on rather
+    than from the primary one (GetDpiForSystem), which is the wrong number
+    on a mixed-DPI desktop."""
     try:
-        return max(1.0, ctypes.windll.user32.GetDpiForSystem() / 96.0)
+        return window_fit.display_scale(window)
     except Exception:
-        return 1.0
+        try:
+            return max(1.0, ctypes.windll.user32.GetDpiForSystem() / 96.0)
+        except Exception:
+            return 1.0
 
 
 def find_icon_path() -> Path | None:
@@ -204,6 +216,9 @@ class SplashScreen:
 
     def __init__(self, message: str = "") -> None:
         self._message = message
+        # Set by the splash thread when its window came up at the wrong size;
+        # read (and logged) by the app on the main thread once it has a log.
+        self.diagnostics: str | None = None
         self._stop = threading.Event()
         self._ready = threading.Event()
         self._shown_at = 0.0
@@ -258,7 +273,7 @@ class _SplashWindow:
         # master -- the app creates dozens of those on the main thread.
         if getattr(tk, "_default_root", None) is self.root:
             tk._default_root = None
-        self.scale = dpi_scale()
+        self.scale = dpi_scale(self.root)
         self.layout = compute_layout(self.scale)
         self.canvas: tk.Canvas | None = None
         self.icon: tk.PhotoImage | None = None
@@ -267,6 +282,8 @@ class _SplashWindow:
         self.shown_message = ""
         self.started_at = 0.0
         self.fade_out_at: float | None = None
+        self.applied_size = (self.layout.width, self.layout.height)
+        self.last_geometry_check = 0.0
         self._build()
 
     def _build(self) -> None:
@@ -276,13 +293,24 @@ class _SplashWindow:
         root.withdraw()
         root.overrideredirect(True)
         root.configure(bg=PANEL)
-        x = (root.winfo_screenwidth() - layout.width) // 2
-        y = (root.winfo_screenheight() - layout.height) // 2
-        root.geometry(f"{layout.width}x{layout.height}+{x}+{y}")
+        # Centered on the *work area* of the monitor under the cursor, not on
+        # winfo_screenwidth()'s primary-monitor size -- and clamped to it, so
+        # the window box can never end up larger than the screen the way it
+        # did in the 4K/150% report window_fit.py documents.
+        root.resizable(False, False)
         try:
             root.attributes("-topmost", True)
         except Exception:
             pass
+        try:
+            self.applied_size = window_fit.apply_centered(root, layout.width, layout.height)
+        except Exception:
+            # Never worth losing the splash over: fall back to the old
+            # primary-screen centering.
+            x = (root.winfo_screenwidth() - layout.width) // 2
+            y = (root.winfo_screenheight() - layout.height) // 2
+            root.geometry(f"{layout.width}x{layout.height}+{max(0, x)}+{max(0, y)}")
+            self.applied_size = (layout.width, layout.height)
         canvas = tk.Canvas(root, width=layout.width, height=layout.height, bg=PANEL, highlightthickness=0, bd=0)
         canvas.place(x=0, y=0)
         self.canvas = canvas
@@ -331,6 +359,11 @@ class _SplashWindow:
         self._apply_message()
         root.deiconify()
         root.update()
+        # Only meaningful once the window is mapped: if Windows handed it a
+        # different size than asked for, fix it and hand the detail to the
+        # app, which logs it from the main thread (see app.py's __init__).
+        if not window_fit.verify(root, *self.applied_size, log=self._note, label="splash"):
+            root.update()
         self.started_at = time.perf_counter()
         self.owner._shown_at = self.started_at
 
@@ -339,6 +372,30 @@ class _SplashWindow:
         assert root is not None
         root.after(0, self._tick)
         root.mainloop()
+
+    def _guard_geometry(self, now: float) -> None:
+        """Keep re-checking the window's size for the first few seconds.
+
+        show() already checks once, but whatever oversizes the window on the
+        machines in window_fit.py's report is environmental and unidentified,
+        so it may not have struck by then. Re-centering (rather than clamping
+        in place) is right here: the splash's whole job is to sit in the
+        middle of the screen. Bounded in time and throttled to ~4 checks a
+        second so the spinner's 15ms tick stays cheap."""
+        if self.root is None or now - self.started_at > _GEOMETRY_GUARD_SECONDS:
+            return
+        if now - self.last_geometry_check < _GEOMETRY_GUARD_INTERVAL:
+            return
+        self.last_geometry_check = now
+        try:
+            window_fit.verify(self.root, *self.applied_size, log=self._note, label="splash")
+        except Exception:
+            pass
+
+    def _note(self, message: str) -> None:
+        """Plain-attribute handoff to the main thread -- the splash owns no
+        logger, and nothing here may touch the app's Tk objects."""
+        self.owner.diagnostics = message
 
     def _apply_message(self) -> None:
         message = self.owner._message
@@ -352,6 +409,7 @@ class _SplashWindow:
             return
         now = time.perf_counter()
         self._apply_message()
+        self._guard_geometry(now)
 
         head = ((now - self.started_at) / _REVOLUTION_SECONDS * _SEGMENTS) % _SEGMENTS
         canvas = self.canvas

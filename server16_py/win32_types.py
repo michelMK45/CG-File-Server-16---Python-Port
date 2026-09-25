@@ -21,6 +21,18 @@ class POINT(ctypes.Structure):
     ]
 
 
+class MONITORINFO(ctypes.Structure):
+    """GetMonitorInfoW output -- rcWork is the monitor minus the taskbar,
+    which is what a window should be sized/centered against (see
+    window_fit.py)."""
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("rcMonitor", RECT),
+        ("rcWork", RECT),
+        ("dwFlags", wintypes.DWORD),
+    ]
+
+
 class MSLLHOOKSTRUCT(ctypes.Structure):
     _fields_ = [
         ("pt", POINT),
@@ -82,6 +94,12 @@ class MEMORY_BASIC_INFORMATION(ctypes.Structure):
         ("Type",              ctypes.c_ulong),
     ]
 
+
+# MonitorFromWindow / MonitorFromPoint flags
+MONITOR_DEFAULTTONEAREST = 0x00000002
+
+# GetDpiForMonitor's MONITOR_DPI_TYPE
+MDT_EFFECTIVE_DPI = 0
 
 # Window style constants
 GWL_EXSTYLE = -20

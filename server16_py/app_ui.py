@@ -27,6 +27,7 @@ from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .team_picker_dialog import TeamPickerDialog
 from .update_checker import UpdateCheckResult
+from . import window_fit
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
 
 try:
@@ -414,8 +415,8 @@ class UIMixin:
     def _build_ui(self) -> None:
         root = tk.Toplevel(self)
         root.title(self.tr("app.title"))
-        root.geometry("1024x680")
-        root.minsize(980, 640)
+        window_fit.apply_centered(root, 1024, 680)
+        root.minsize(*window_fit.fit(980, 640, root))
         root.protocol("WM_DELETE_WINDOW", self.on_close)
         root.configure(bg=self.bg)
         self._apply_window_icon(root)
@@ -596,10 +597,77 @@ class UIMixin:
         # calling _required_top_bar_width() (and its global update_idletasks())
         # again — see that method's docstring for why a repeated call is unsafe.
         self._zoom_base_top_bar_width = top_min_w / zoom if zoom else top_min_w
-        root.geometry(f"{max(round(base_w * zoom), top_min_w)}x{round(base_h * zoom)}")
-        root.minsize(max(round(min_w * zoom), top_min_w), round(min_h * zoom))
+        # Clamped to the monitor's work area, and centered on it: a window
+        # wider or taller than the screen is unusable (its title bar controls
+        # and right-hand column land offscreen), and top_min_w is a *measured*
+        # width that grows with the user's Windows font/DPI settings, so it
+        # must never be trusted as a floor on its own. Verified again once the
+        # window is mapped -- see window_fit.py for the report behind this.
+        self._main_window_size = window_fit.apply_centered(
+            root, max(round(base_w * zoom), top_min_w), round(base_h * zoom)
+        )
+        root.minsize(*window_fit.fit(max(round(min_w * zoom), top_min_w), round(min_h * zoom), root))
         self._zoom_applied = zoom
         self._zoom_apply_job = None
+        # A standing guard, not a one-shot check: whatever oversizes the
+        # window on the machines in window_fit.py's report is environmental
+        # and unidentified, so it could strike at map time, at a later resize,
+        # or when the window is dragged to a monitor with a different DPI --
+        # <Configure> covers all three. Debounced, and a no-op comparison on a
+        # healthy window, so it cannot itself become a Configure storm (see
+        # _on_dashboard_configure for the same pattern).
+        self._geometry_guard_job = None
+        root.bind("<Configure>", self._on_main_window_configure, add="+")
+        # after() rather than update_idletasks() here on purpose: a nested
+        # idle flush at this exact point (right after _apply_ui_zoom_fonts
+        # resized every font) is what _required_top_bar_width's docstring
+        # documents as able to hang the app in a <Configure> cascade. This
+        # runs from the mainloop instead, once the window is really mapped,
+        # and covers the case where the inflated size raises no <Configure>.
+        root.after(400, self._verify_main_geometry)
+
+    def _on_main_window_configure(self, event=None) -> None:
+        root = self.ui_root
+        if root is None or getattr(self, "_closing", False):
+            return
+        # Only the window's own resize/move matters here; a child widget's
+        # <Configure> bubbling up would make this fire constantly.
+        if event is not None and getattr(event, "widget", root) is not root:
+            return
+        if getattr(self, "_geometry_guard_job", None) is not None:
+            try:
+                self.after_cancel(self._geometry_guard_job)
+            except Exception:
+                pass
+        self._geometry_guard_job = self.after(250, self._enforce_main_window_bounds)
+
+    def _enforce_main_window_bounds(self) -> None:
+        self._geometry_guard_job = None
+        root = self.ui_root
+        if root is None or getattr(self, "_closing", False):
+            return
+        if window_fit.clamp_in_place(root, log=self.log, label="Main window"):
+            try:
+                self._main_window_size = (root.winfo_width(), root.winfo_height())
+            except Exception:
+                pass
+
+    def _verify_main_geometry(self) -> None:
+        """Re-assert the main window's size if Windows didn't honour it.
+
+        Only ever fires on the environments this doesn't reproduce on here
+        (see window_fit.py); on a healthy one it compares two numbers and
+        returns."""
+        root = self.ui_root
+        size = getattr(self, "_main_window_size", None)
+        if root is None or size is None:
+            return
+        try:
+            if not root.winfo_exists() or root.wm_state() == "zoomed":
+                return
+        except Exception:
+            return
+        window_fit.verify(root, *size, log=self.log, label="Main window")
 
     def _required_top_bar_width(self) -> int:
         """The narrowest the window can get before the top bar's own buttons
@@ -767,9 +835,11 @@ class UIMixin:
             new_h = max(1, round(root.winfo_height() * ratio))
             top_min_w = self._scaled_top_bar_width(target)
             new_w = max(new_w, top_min_w)
+            new_w, new_h = window_fit.fit(new_w, new_h, root)
             root.geometry(f"{new_w}x{new_h}")
+            self._main_window_size = (new_w, new_h)
             min_w, min_h = self._zoom_base_minsize
-            root.minsize(max(round(min_w * target), top_min_w), round(min_h * target))
+            root.minsize(*window_fit.fit(max(round(min_w * target), top_min_w), round(min_h * target), root))
         self._zoom_applied = target
         self._update_zoom_label()
 
