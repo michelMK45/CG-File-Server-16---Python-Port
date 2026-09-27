@@ -889,6 +889,7 @@ class KitMixRuntime:
             except Exception as exc:
                 app.log(f"Kit set name color apply failed for team {team_id} ({live_kittype}): {exc}")
 
+        self._set_applied_pack_source(team_id, live_kittype, tourn_id)
         app.log(f"Kit set applied for team {team_id} ({kittype}->{live_kittype}, tourn {tourn_id}): {sorted(applied)}")
         return {
             "team_id": team_id, "kittype": kittype, "target_kittype": live_kittype, "tourn_id": tourn_id,
@@ -1071,6 +1072,129 @@ class KitMixRuntime:
                 self.restore_numbers_original(team_id, kittype, slot)
         if self.has_backup_kitui(team_id, kittype):
             self.restore_kitui_original(team_id, kittype)
+        self._set_applied_pack_source(team_id, kittype, None)
+
+    def restore_name_color_for_kittype(self, team_id: str, kittype: str) -> dict:
+        """Reverts just this kit type's assignKitDetails namecolour override
+        back to whatever the pre-patch backup had for that exact kittype (or
+        "-1" — "don't override", see _patch_assign_kit_details — if the
+        backup never had a call for it), leaving every other kit type's
+        current call in the same shared team_<id>.lua file byte-for-byte
+        untouched. Unlike restore_name_color_original (a whole-file
+        restore), this is safe to call even while another kit type still has
+        its own active custom name colour. Used by restore_kit_type_linked
+        for the F7-F11 hotkey carousel's "back to default" step — see that
+        method's docstring for why restore_kit_type itself deliberately
+        stays out of the name-color business."""
+        if not self.has_backup_name_color(team_id):
+            return {"team_id": team_id, "kittype": kittype, "applied": False}
+
+        live_path = self.team_lua_path(team_id)
+        if not live_path.exists():
+            return {"team_id": team_id, "kittype": kittype, "applied": False}
+
+        call_re = re.compile(
+            r"assignKitDetails\(\s*" + re.escape(team_id) + r"\s*,\s*" + re.escape(kittype) + r"\s*,\s*([^)]*)\)"
+        )
+        live_text = live_path.read_text(encoding="utf-8")
+        match = call_re.search(live_text)
+        if not match:
+            return {"team_id": team_id, "kittype": kittype, "applied": False}
+
+        args = [a.strip() for a in match.group(1).split(",")]
+        if len(args) < 8:
+            return {"team_id": team_id, "kittype": kittype, "applied": False}
+
+        backup_text = self.backup_path(live_path).read_text(encoding="utf-8")
+        orig_match = call_re.search(backup_text)
+        orig_namecolour = "-1"
+        if orig_match:
+            orig_args = [a.strip() for a in orig_match.group(1).split(",")]
+            if len(orig_args) >= 2:
+                orig_namecolour = orig_args[1]
+        args[1] = orig_namecolour
+        new_call = f"assignKitDetails({team_id},{kittype},{','.join(args)})"
+        new_text = live_text[: match.start()] + new_call + live_text[match.end() :]
+
+        fully_reverted = new_text == backup_text or (
+            # backup_text is the pristine pre-patch file. When it's the
+            # empty-marker case (this file didn't exist before any patch —
+            # see _backup_if_needed) there's no non-empty byte string it can
+            # ever equal, even once every override is back to "-1" (no
+            # override) -- so treat "no real colour left for any kit type"
+            # as equivalent to that empty original instead.
+            not backup_text.strip() and not _extract_assign_kit_details_colors(new_text)
+        )
+        if fully_reverted:
+            # Every kit type is back to its pre-patch state -- delegate to
+            # the whole-file restore so has_backup_name_color's bookkeeping
+            # (and list_modified_kits) correctly stop showing this team as
+            # modified, instead of leaving a now-redundant backup behind.
+            self._restore(live_path)
+        else:
+            live_path.write_text(new_text, encoding="utf-8")
+        self.app.log(f"Kit name color reset to default for team {team_id} ({kittype})")
+        return {"team_id": team_id, "kittype": kittype, "applied": True, "output": str(live_path)}
+
+    def restore_kit_type_linked(self, team_id: str, kittype: str) -> dict:
+        """Symmetric inverse of apply_kit_set_linked, for the F7-F11 hotkey
+        carousel's "back to default" step: restores this kit type's texture/
+        numbers/kitui (restore_kit_type) and its own scoped name colour
+        (restore_name_color_for_kittype — never restore_name_color_original,
+        which would wipe out any other kit type's still-active custom colour
+        in the same shared team_<id>.lua file), then — only when kittype is
+        the live home/away slot ("0"/"1") and the currently-applied
+        goalkeeper kit set is the one apply_kit_set_linked itself put there
+        (tracked via get_applied_pack_source, read *before* restore_kit_type
+        clears it) — reverts that linked goalkeeper kit back to default too,
+        the same way. A goalkeeper kit the user picked independently of the
+        link is left untouched. result["gk"] mirrors apply_kit_set_linked's
+        own shape (None, or a dict with "tourn_id") so the hotkey carousel's
+        notification toast can show it identically either direction."""
+        prior_tourn = self.get_applied_pack_source(team_id, kittype)
+        self.restore_kit_type(team_id, kittype)
+        self.restore_name_color_for_kittype(team_id, kittype)
+
+        gk_result = None
+        if kittype in ("0", "1") and prior_tourn:
+            gk_tourn = self.resolve_gk_tourn(team_id, prior_tourn)
+            if gk_tourn and self.get_applied_pack_source(team_id, "2") == gk_tourn:
+                self.restore_kit_type(team_id, "2")
+                self.restore_name_color_for_kittype(team_id, "2")
+                gk_result = {"team_id": team_id, "kittype": "2", "tourn_id": gk_tourn}
+
+        return {"team_id": team_id, "kittype": kittype, "gk": gk_result}
+
+    @staticmethod
+    def pack_source_key(team_id: str, kittype: str) -> str:
+        return f"{team_id}_{kittype}"
+
+    def get_applied_pack_source(self, team_id: str, kittype: str) -> str | None:
+        """The pack name (tourn_id) apply_kit_set most recently applied to this
+        team+live-kit-type slot, if any — settings.ini [kitsetpack], same
+        "<team_id>_<kittype>" key shape as [kitgk]/[kitgkauto]. None when this
+        slot was never filled from a named pack: hand-picked via the Advanced
+        tab instead, or last filled from the plain "0" root files (see
+        list_kit_sets — "0" is "what's already there," not a pack). Set by
+        apply_kit_set, cleared by restore_kit_type, and surfaced through
+        list_modified_kits so the Restore Manager can show which pack a kit
+        came from instead of just its asset kinds."""
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return None
+        value = settings_ini.read(self.pack_source_key(team_id, kittype), "kitsetpack")
+        return value or None
+
+    def _set_applied_pack_source(self, team_id: str, kittype: str, tourn_id: str | None) -> None:
+        settings_ini = getattr(self.app, "settings_ini", None)
+        if settings_ini is None:
+            return
+        key = self.pack_source_key(team_id, kittype)
+        if tourn_id and tourn_id != "0":
+            settings_ini.write(key, tourn_id, "kitsetpack")
+        else:
+            settings_ini.delete_key(key, "kitsetpack")
+        settings_ini.save()
 
     def list_modified_kits(self) -> list[dict]:
         """Scan every live location this runtime writes to for *.original.*
@@ -1082,8 +1206,13 @@ class KitMixRuntime:
         and can't be split the same way (see apply_name_color), so it gets
         its own entry per team instead, with kittype=None.
 
-        Each entry: {"team_id": ..., "kittype": "0"|None, "kinds": [...]},
-        kinds being a subset of {"kit", "numbers", "kitui", "name_color"}."""
+        Each entry: {"team_id": ..., "kittype": "0"|None, "kinds": [...],
+        "pack": tourn_id|None}, kinds being a subset of {"kit", "numbers",
+        "kitui", "name_color"}. "pack" (kittype entries only — always None
+        for the name_color entry) is get_applied_pack_source's record of
+        which named pack, if any, last filled this exact team+kittype slot —
+        lets the Restore Manager show a kit's source pack, not just what
+        asset kinds got backed up."""
         kinds_by_team_kit: dict[tuple[str, str], set[str]] = {}
         name_color_teams: set[str] = set()
 
@@ -1122,13 +1251,16 @@ class KitMixRuntime:
                     name_color_teams.add(m.group(1))
 
         entries = [
-            {"team_id": team_id, "kittype": kittype, "kinds": sorted(kinds)}
+            {
+                "team_id": team_id, "kittype": kittype, "kinds": sorted(kinds),
+                "pack": self.get_applied_pack_source(team_id, kittype),
+            }
             for (team_id, kittype), kinds in sorted(
                 kinds_by_team_kit.items(), key=lambda kv: (int(kv[0][0]), int(kv[0][1]))
             )
         ]
         for team_id in sorted(name_color_teams, key=int):
-            entries.append({"team_id": team_id, "kittype": None, "kinds": ["name_color"]})
+            entries.append({"team_id": team_id, "kittype": None, "kinds": ["name_color"], "pack": None})
         return entries
 
     def preview_dir(self) -> Path:

@@ -411,6 +411,19 @@ class UIMixin:
         self.option_add("*TCombobox*Listbox.selectForeground", self.fg)
         self.option_add("*TCombobox*Listbox.font", "Consolas 10")
         style.configure("Accent.Horizontal.TProgressbar", troughcolor=self.card_soft, background=self.accent, borderwidth=0, lightcolor=self.accent, darkcolor=self.accent)
+        style.configure(
+            "Server16.Treeview",
+            background=self.panel,
+            fieldbackground=self.panel,
+            foreground=self.fg,
+            borderwidth=0,
+            rowheight=24,
+        )
+        style.map(
+            "Server16.Treeview",
+            background=[("selected", "#19324d")],
+            foreground=[("selected", self.fg)],
+        )
 
     def _build_ui(self) -> None:
         root = tk.Toplevel(self)
@@ -896,9 +909,20 @@ class UIMixin:
             if not popup.winfo_exists():
                 return
             btn = self.zoom_toggle_button
-            x = btn.winfo_rootx() + btn.winfo_width() - popup.winfo_reqwidth()
+            req_w = popup.winfo_reqwidth()
+            req_h = popup.winfo_reqheight()
+            x = btn.winfo_rootx() + btn.winfo_width() - req_w
             y = btn.winfo_rooty() + btn.winfo_height() + 4
-            popup.geometry(f"+{max(0, x)}+{max(0, y)}")
+            # Clamp against the work area of the monitor the main window is
+            # actually on, not against 0,0 -- on a multi-monitor desktop where
+            # that monitor sits to the left of/above the primary one, its
+            # coordinates are negative, and max(0, x) was pulling the popup
+            # back onto the primary monitor every time (reported live: the
+            # popup never followed the main window to another screen).
+            left, top, area_w, area_h = window_fit.work_area(self._window())
+            x = min(max(x, left), left + max(0, area_w - req_w))
+            y = min(max(y, top), top + max(0, area_h - req_h))
+            popup.geometry(f"+{x}+{y}")
             popup.focus_force()
 
         popup.bind("<FocusOut>", lambda _e: self._close_zoom_popup())
@@ -2391,43 +2415,83 @@ class UIMixin:
             wraplength=420, justify="left",
         ).pack(fill="x", padx=12, pady=(12, 6))
 
-        listbox = self._dark_listbox(win, selectmode="extended", exportselection=False, font=("Consolas", 10))
-        listbox.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        tree_frame = tk.Frame(win, bg=self.card)
+        tree_frame.pack(fill="both", expand=True, padx=12, pady=(0, 6))
+        tree = ttk.Treeview(tree_frame, show="tree", selectmode="extended", style="Server16.Treeview")
+        tree_scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview, style="Server16.Vertical.TScrollbar")
+        tree.configure(yscrollcommand=tree_scroll.set)
+        tree_scroll.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+
+        # Maps a leaf item id ("entry:<i>") back to its index in `entries`,
+        # and a team item id ("team:<team_id>") to its own leaf children --
+        # so selecting a whole team node restores everything under it, same
+        # as selecting each of its rows individually. Leaves under one team
+        # node keep the team out of each row's own label (unlike the old
+        # flat list, which repeated it on every line); entry_labels rebuilds
+        # a "team — row" string per index purely for logs/messageboxes.
+        leaf_entry_index: dict[str, int] = {}
+        team_children: dict[str, list[str]] = {}
+        entry_labels: dict[int, str] = {}
 
         if not entries:
-            listbox.insert("end", self.tr("dialog.kitmix.restore_manager_none"))
-            listbox.configure(state="disabled")
+            tree.insert("", "end", text=self.tr("dialog.kitmix.restore_manager_none"))
         else:
-            for entry in entries:
+            for i, entry in enumerate(entries):
                 team_id = entry["team_id"]
+                team_item = f"team:{team_id}"
+                if not tree.exists(team_item):
+                    name = self._resolve_team_name(team_id) or ""
+                    team_label = f"{name} ({team_id})" if name else team_id
+                    tree.insert("", "end", iid=team_item, text=team_label, open=True)
+                    team_children[team_item] = []
+
                 kittype = entry["kittype"]
-                name = self._resolve_team_name(team_id) or ""
-                team_label = f"{name} ({team_id})" if name else team_id
                 if kittype is None:
-                    listbox.insert("end", f"{team_label} — {self.tr('dialog.kitmix.name_color_all_kits')}")
+                    label = self.tr("dialog.kitmix.name_color_all_kits")
                 else:
                     kittype_label = code_labels.get(kittype, kittype)
                     kinds = ", ".join(kind_labels.get(k, k) for k in entry["kinds"])
-                    listbox.insert("end", f"{team_label} — {kittype_label}: {kinds}")
+                    pack = entry.get("pack")
+                    if pack:
+                        label = f"{kittype_label} — {self.tr('dialog.kitmix.restore_manager_pack_prefix')}: {pack} ({kinds})"
+                    else:
+                        label = f"{kittype_label}: {kinds}"
+
+                item_id = f"entry:{i}"
+                tree.insert(team_item, "end", iid=item_id, text=label)
+                team_children[team_item].append(item_id)
+                leaf_entry_index[item_id] = i
+                entry_labels[i] = f"{tree.item(team_item, 'text')} — {label}"
 
         btn_row = tk.Frame(win, bg=self.card)
         btn_row.pack(fill="x", padx=12, pady=(0, 12))
 
         def select_all() -> None:
-            listbox.selection_set(0, "end")
+            tree.selection_set(list(leaf_entry_index.keys()))
+
+        def selected_indices() -> list[int]:
+            indices: set[int] = set()
+            for item in tree.selection():
+                if item in team_children:
+                    for child in team_children[item]:
+                        indices.add(leaf_entry_index[child])
+                elif item in leaf_entry_index:
+                    indices.add(leaf_entry_index[item])
+            return sorted(indices)
 
         def do_restore() -> None:
-            selection = listbox.curselection()
-            if not entries or not selection:
+            indices = selected_indices()
+            if not entries or not indices:
                 return
             restored_labels: list[str] = []
             failed_labels: list[str] = []
             restored_team_ids: set[str] = set()
-            for i in selection:
+            for i in indices:
                 entry = entries[i]
                 team_id = entry["team_id"]
                 kittype = entry["kittype"]
-                label = listbox.get(i)
+                label = entry_labels[i]
                 try:
                     if kittype is None:
                         self.kit_mixer.restore_name_color_original(team_id)

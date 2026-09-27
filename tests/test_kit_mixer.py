@@ -550,5 +550,193 @@ class PackNameColorAutoApplyTests(unittest.TestCase):
         self.assertTrue(any("name color apply failed" in line for line in self.logs))
 
 
+class AppliedPackSourceTests(unittest.TestCase):
+    """apply_kit_set records which named pack last filled a team+kit-type
+    slot (settings.ini [kitsetpack]) so list_modified_kits / the Restore
+    Manager can show it; restore_kit_type clears that record again, and a
+    plain "0" (the flat root files, not a named pack -- see list_kit_sets)
+    never counts as one."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        self.ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
+        self.app = SimpleNamespace(exedir=self.exedir, settings_ini=self.ini, log=lambda msg: None)
+        self.kit_mixer = KitMixRuntime(self.app)
+
+    def test_apply_kit_set_records_the_pack_name(self) -> None:
+        _make_pack_kit_file(self.exedir, "1", "Spain 24-25", "0", pack_id="1362")
+
+        self.kit_mixer.apply_kit_set("1", "0", "Spain 24-25")
+
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "0"), "Spain 24-25")
+
+    def test_list_modified_kits_surfaces_the_pack_name(self) -> None:
+        _make_pack_kit_file(self.exedir, "1", "Spain 24-25", "0", pack_id="1362")
+
+        self.kit_mixer.apply_kit_set("1", "0", "Spain 24-25")
+        entries = self.kit_mixer.list_modified_kits()
+
+        entry = next(e for e in entries if e["team_id"] == "1" and e["kittype"] == "0")
+        self.assertEqual(entry["pack"], "Spain 24-25")
+
+    def test_flat_root_tourn_id_zero_is_not_recorded_as_a_pack(self) -> None:
+        _make_flat_kit_file(self.exedir, "1", "0", pack_id="1345")
+
+        self.kit_mixer.apply_kit_set("1", "0", "0")
+
+        self.assertIsNone(self.kit_mixer.get_applied_pack_source("1", "0"))
+
+    def test_restore_kit_type_clears_the_recorded_pack(self) -> None:
+        _make_pack_kit_file(self.exedir, "1", "Spain 24-25", "0", pack_id="1362")
+        self.kit_mixer.apply_kit_set("1", "0", "Spain 24-25")
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "0"), "Spain 24-25")
+
+        self.kit_mixer.restore_kit_type("1", "0")
+
+        self.assertIsNone(self.kit_mixer.get_applied_pack_source("1", "0"))
+
+    def test_applying_a_second_pack_overwrites_the_recorded_first_one(self) -> None:
+        _make_pack_kit_file(self.exedir, "1", "Spain 24-25", "0", pack_id="1362")
+        _make_pack_kit_file(self.exedir, "1", "Retro 90", "0", pack_id="1400")
+        self.kit_mixer.apply_kit_set("1", "0", "Spain 24-25")
+
+        self.kit_mixer.apply_kit_set("1", "0", "Retro 90")
+
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "0"), "Retro 90")
+
+
+class RestoreNameColorForKittypeTests(unittest.TestCase):
+    """Regression coverage for a live-reported bug: cycling a kit type back
+    to "default" via the F7-F11 hotkey carousel (or the F12 Kits tab) left
+    the jersey name colour stuck on whatever the last custom kit set it to,
+    because restore_kit_type deliberately never touches the shared team lua
+    (see its own docstring). restore_name_color_for_kittype is the scoped,
+    single-kit-type fix that makes reverting-to-default safe to pair with a
+    name colour revert even while another kit type still has its own active
+    custom colour in the same file."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        self.ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
+        self.logs: list[str] = []
+        self.app = SimpleNamespace(exedir=self.exedir, settings_ini=self.ini, log=self.logs.append)
+        self.kit_mixer = KitMixRuntime(self.app)
+        self.live_lua = self.exedir / "data" / "fifarna" / "lua" / "assignments" / "teams" / "team_1.lua"
+
+    def test_noop_when_name_color_was_never_patched(self) -> None:
+        result = self.kit_mixer.restore_name_color_for_kittype("1", "0")
+
+        self.assertFalse(result["applied"])
+        self.assertFalse(self.live_lua.exists())
+
+    def test_reverts_only_this_kittype_leaving_a_still_custom_kittype_untouched(self) -> None:
+        self.kit_mixer.apply_name_color("1", "0", "aaaaaa")
+        self.kit_mixer.apply_name_color("1", "1", "bbbbbb")
+
+        self.kit_mixer.restore_name_color_for_kittype("1", "0")
+
+        text = self.live_lua.read_text(encoding="utf-8")
+        self.assertNotIn("aaaaaa", text)
+        self.assertIn('assignKitDetails(1,1,-1,"bbbbbb"', text)
+        # Away's own colour is still active, so the shared file legitimately
+        # still differs from its pre-patch backup.
+        self.assertTrue(self.kit_mixer.has_backup_name_color("1"))
+
+    def test_restores_the_pre_patch_value_when_one_existed(self) -> None:
+        self.live_lua.parent.mkdir(parents=True, exist_ok=True)
+        self.live_lua.write_text('assignKitDetails(1,0,-1,"111111",-1,-1,-1,-1,-1,0)\n', encoding="utf-8")
+        self.kit_mixer.apply_name_color("1", "0", "aaaaaa")
+
+        self.kit_mixer.restore_name_color_for_kittype("1", "0")
+
+        text = self.live_lua.read_text(encoding="utf-8")
+        self.assertIn('assignKitDetails(1,0,-1,"111111"', text)
+        self.assertNotIn("aaaaaa", text)
+
+    def test_reverting_the_only_customized_kittype_clears_the_backup(self) -> None:
+        self.kit_mixer.apply_name_color("1", "0", "aaaaaa")
+        self.assertTrue(self.kit_mixer.has_backup_name_color("1"))
+
+        self.kit_mixer.restore_name_color_for_kittype("1", "0")
+
+        self.assertFalse(self.kit_mixer.has_backup_name_color("1"))
+
+
+class RestoreKitTypeLinkedTests(unittest.TestCase):
+    """restore_kit_type_linked is the symmetric inverse of
+    apply_kit_set_linked, used by both the F7-F11 hotkey carousel and the
+    F12 Kits tab's "back to default" step -- it must undo everything the
+    linked apply did: the outfield kit, its scoped name colour, and (only
+    when it was actually the auto/manual-linked one) the goalkeeper kit and
+    its own scoped name colour."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        self.ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
+        self.logs: list[str] = []
+        self.app = SimpleNamespace(exedir=self.exedir, settings_ini=self.ini, log=self.logs.append)
+        self.kit_mixer = KitMixRuntime(self.app)
+        _make_pack_kit_file(self.exedir, "1", "SeasonA", "0", pack_id="1362")
+        _make_pack_lua_file(
+            self.exedir, "1", "SeasonA", "team_1362.lua",
+            "assignKitDetails(1362,0,-1,\"aaaaaa\",-1,-1,-1,-1,-1,0)\n",
+        )
+        _make_pack_kit_file(self.exedir, "1", "SeasonA", "2", pack_id="1362")
+        _make_pack_lua_file(
+            self.exedir, "1", "SeasonA", "team_1362_gk.lua",
+            "assignKitDetails(1362,2,-1,\"bbbbbb\",-1,-1,-1,-1,-1,0)\n",
+        )
+        self.live_lua = self.exedir / "data" / "fifarna" / "lua" / "assignments" / "teams" / "team_1.lua"
+
+    def test_reverting_the_outfield_kit_also_reverts_the_auto_linked_gk_kit(self) -> None:
+        self.kit_mixer.apply_kit_set_linked("1", "0", "SeasonA")
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "0"), "SeasonA")
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "2"), "SeasonA")
+
+        result = self.kit_mixer.restore_kit_type_linked("1", "0")
+
+        self.assertIsNotNone(result["gk"])
+        self.assertEqual(result["gk"]["tourn_id"], "SeasonA")
+        self.assertIsNone(self.kit_mixer.get_applied_pack_source("1", "0"))
+        self.assertIsNone(self.kit_mixer.get_applied_pack_source("1", "2"))
+        self.assertFalse(self.kit_mixer.has_backup("1", "0"))
+        self.assertFalse(self.kit_mixer.has_backup("1", "2"))
+
+    def test_reverting_the_outfield_kit_also_reverts_both_scoped_name_colors(self) -> None:
+        self.kit_mixer.apply_kit_set_linked("1", "0", "SeasonA")
+        text_before = self.live_lua.read_text(encoding="utf-8")
+        self.assertIn("aaaaaa", text_before)
+        self.assertIn("bbbbbb", text_before)
+
+        self.kit_mixer.restore_kit_type_linked("1", "0")
+
+        # Neither custom colour was live before either kit was ever touched
+        # (see setUp), so once both are reverted the file is deleted
+        # entirely, same as restore_name_color_original's own empty-marker
+        # case -- either way, no trace of either custom colour remains and
+        # the team is no longer considered "modified".
+        self.assertFalse(self.live_lua.exists())
+        self.assertFalse(self.kit_mixer.has_backup_name_color("1"))
+
+    def test_does_not_touch_a_gk_kit_the_user_picked_independently_of_the_link(self) -> None:
+        _make_pack_kit_file(self.exedir, "1", "OtherKeeper", "2", pack_id="9999")
+        self.kit_mixer.apply_kit_set_linked("1", "0", "SeasonA")
+        # User overrides the auto-linked GK with an unrelated pack afterwards.
+        self.kit_mixer.apply_kit_set("1", "2", "OtherKeeper")
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "2"), "OtherKeeper")
+
+        result = self.kit_mixer.restore_kit_type_linked("1", "0")
+
+        self.assertIsNone(result["gk"])
+        self.assertEqual(self.kit_mixer.get_applied_pack_source("1", "2"), "OtherKeeper")
+        self.assertTrue(self.kit_mixer.has_backup("1", "2"))
+
+
 if __name__ == "__main__":
     unittest.main()

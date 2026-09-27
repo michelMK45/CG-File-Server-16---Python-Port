@@ -248,6 +248,7 @@ class GameMixin:
                 self._entrance_sequence += 1
                 self._entrance_armed = True
                 self._entrance_pre_match_guard = True
+                self._entrance_pre_match_guard_set_at = time.time()
             # The blank page right after KickOffHub is when FIFA starts
             # LOADING the match -- and, in every captured log, exactly when
             # the stadium-name buffer first gets allocated (the priority
@@ -267,6 +268,7 @@ class GameMixin:
                 # intro.  Hold Support chants until actual clock movement
                 # confirms kick-off.
                 self._entrance_pre_match_guard = True
+                self._entrance_pre_match_guard_set_at = time.time()
                 self._start_chants_runtime()
             if not self.bumperpagechange and not self.skillgamechange:
                 self.pagechange = False

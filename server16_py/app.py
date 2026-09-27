@@ -506,6 +506,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._entrance_active = False
         self._entrance_armed = False
         self._entrance_pre_match_guard = False
+        self._entrance_pre_match_guard_set_at = 0.0
         self._last_live_score = (0, 0)
         self._last_live_update = ""
         self.assets_runtime = AssetRuntime(self)

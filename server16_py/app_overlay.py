@@ -1575,7 +1575,7 @@ class OverlayMixin:
             return
         try:
             if entry is None:
-                self.kit_mixer.restore_kit_type(team_id, kittype_code)
+                self.kit_mixer.restore_kit_type_linked(team_id, kittype_code)
                 self.log(f"Overlay kit restored to default ({source}): team={team_id} kittype={kittype_code}")
             else:
                 self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, entry["tourn_id"])
@@ -2968,9 +2968,9 @@ class OverlayMixin:
         def worker() -> None:
             try:
                 if entry is None:
-                    self.kit_mixer.restore_kit_type(team_id, live_kittype)
+                    restore_result = self.kit_mixer.restore_kit_type_linked(team_id, live_kittype)
                     tourn_id = None
-                    result = {"team_id": team_id, "kittype": kittype_code, "target_kittype": live_kittype, "tourn_id": None, "applied": {}, "gk": None}
+                    result = {"team_id": team_id, "kittype": kittype_code, "target_kittype": live_kittype, "tourn_id": None, "applied": {}, "gk": restore_result.get("gk")}
                 else:
                     tourn_id = entry["tourn_id"]
                     result = self.kit_mixer.apply_kit_set_linked(team_id, kittype_code, tourn_id)
