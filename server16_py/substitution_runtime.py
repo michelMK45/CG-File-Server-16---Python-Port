@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+import sys
 from ctypes import wintypes
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -147,7 +148,7 @@ class SubstitutionRuntime:
         try:
             app.memory.write_process_memory(self._hook.slot_address, b"\x00" * 8)
         except Exception as exc:
-            app.log("Substitution hook: failed to clear recorded-pointer slot", exc, exc_info=True)
+            app.log("Substitution hook: failed to clear recorded-pointer slot", exc, exc_info=sys.exc_info())
             self._report("patch_failed")
             return
 
@@ -190,7 +191,7 @@ class SubstitutionRuntime:
         try:
             live_bytes = app.memory.read_process_memory(hook_addr, _HOOK_PATCH_SIZE)
         except Exception as exc:
-            app.log("Substitution hook: failed to read hook site", exc, exc_info=True)
+            app.log("Substitution hook: failed to read hook site", exc, exc_info=sys.exc_info())
             return False, "patch_failed"
 
         expected = bytes(app.offsets.SUBHOOKORIGBYTES)
@@ -220,7 +221,7 @@ class SubstitutionRuntime:
             app.memory.write_process_memory(data_addr, b"\x00" * 16)
             app.memory.write_process_memory(code_addr, shellcode)
         except Exception as exc:
-            app.log("Substitution hook: failed to write code cave", exc, exc_info=True)
+            app.log("Substitution hook: failed to write code cave", exc, exc_info=sys.exc_info())
             return False, "alloc_failed"
 
         if not self._set_protection(code_addr, _PAGE_SIZE, _PAGE_EXECUTE_READ):
@@ -235,7 +236,7 @@ class SubstitutionRuntime:
         try:
             readback = app.memory.read_process_memory(hook_addr, _HOOK_PATCH_SIZE)
         except Exception as exc:
-            app.log("Substitution hook: readback failed after patching", exc, exc_info=True)
+            app.log("Substitution hook: readback failed after patching", exc, exc_info=sys.exc_info())
             return False, "patch_failed"
         if readback != patch:
             app.log(
@@ -293,7 +294,7 @@ class SubstitutionRuntime:
         try:
             raw = app.memory.read_int64(hook.slot_address)
         except Exception as exc:
-            app.log("Substitution hook: failed to read recorded pointer", exc, exc_info=True)
+            app.log("Substitution hook: failed to read recorded pointer", exc, exc_info=sys.exc_info())
             raw = 0
 
         if raw == 0:
@@ -321,7 +322,7 @@ class SubstitutionRuntime:
             try:
                 app.memory.write_process_memory(raw, struct.pack("<i", self._pending_count))
             except Exception as exc:
-                app.log("Substitution hook: final write failed", exc, exc_info=True)
+                app.log("Substitution hook: final write failed", exc, exc_info=sys.exc_info())
                 self._report("write_failed", error=str(exc))
                 return
             self._armed_addresses.add(raw)
@@ -340,7 +341,7 @@ class SubstitutionRuntime:
         try:
             app.memory.write_process_memory(hook.slot_address, b"\x00" * 8)
         except Exception as exc:
-            app.log("Substitution hook: failed to re-clear recorded-pointer slot", exc, exc_info=True)
+            app.log("Substitution hook: failed to re-clear recorded-pointer slot", exc, exc_info=sys.exc_info())
             self._report("write_failed", error=str(exc))
             return
 

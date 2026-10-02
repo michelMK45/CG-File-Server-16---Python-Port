@@ -95,22 +95,6 @@ class MciAudioPlayer:
 
 
 class ChantsRuntime:
-    # Safety net for `_entrance_pre_match_guard`: reported live 2026-09-27
-    # (a user on a 10-minute "Half Length" setting) as Support chants stuck
-    # on "Waiting for kick-off" for an entire match. Diagnosed from code
-    # reading, not yet confirmed via a live log/CE session: GAMERANTIME
-    # appears to tick in match-compressed time (the ~8-10 units/sec this
-    # codebase's kick-off heuristic assumes was only ever measured against
-    # whatever Half Length the maintainer tested with), so a long enough
-    # Half Length could keep the real per-second rate under the required
-    # `speed >= 6.0` threshold for the whole match, and nothing else ever
-    # clears the guard. 90s is generous versus the walkout's own worst-case
-    # bounds elsewhere in this codebase (entrance_runtime.py's
-    # PRESENTATION_WAIT_SECONDS=30 + MAX_DELAY_SECONDS=45) but bounded, so
-    # this ceiling cannot make a working case worse either way. See
-    # docs/bugs-entrance.md Part 14.
-    MAX_PRE_MATCH_GUARD_SECONDS = 90.0
-
     def __init__(self, app: "Server16App") -> None:
         self.app = app
         self._special_audio_cooldown_until = 0.0
@@ -467,61 +451,6 @@ class ChantsRuntime:
                     app._chants_player = None
                     app._chants_target_volume = 0.0
 
-    def _pre_match_guard_tick(
-        self,
-        chants_memory: Memory,
-        pre_match_last_time: int | None,
-        pre_match_last_real: float | None,
-        pre_match_speed_hits: int,
-    ) -> tuple[bool, int | None, float | None, int]:
-        """One ~0.2s-tick check of `app._entrance_pre_match_guard`.
-
-        Mirrors the kick-off detector used elsewhere in this file
-        (`_play_goal_track`) and in `entrance_runtime.py`: sustained
-        match-clock movement (`timer_delta >= 1 and speed >= 6.0`, 3
-        consecutive hits) proves real gameplay has started. On top of that,
-        force-releases the guard once it has been held for
-        `MAX_PRE_MATCH_GUARD_SECONDS` regardless of clock speed -- see the
-        class-level comment on `MAX_PRE_MATCH_GUARD_SECONDS` and
-        docs/bugs-entrance.md Part 14 for why this ceiling exists (a 2026-
-        09-27 report of Support chants stuck on "Waiting for kick-off" for
-        an entire match, theorized but not yet confirmed live to be a long
-        FIFA "Half Length" setting keeping real gameplay under the speed
-        threshold). Returns (guard_was_released_this_tick, new_last_time,
-        new_last_real, new_speed_hits) so the caller can drive
-        `next_chant_after`.
-        """
-        app = self.app
-        now = time.time()
-        guard_set_at = getattr(app, "_entrance_pre_match_guard_set_at", now)
-        if now - guard_set_at >= self.MAX_PRE_MATCH_GUARD_SECONDS:
-            app._entrance_pre_match_guard = False
-            app.log(
-                "Pre-match Support guard force-released after "
-                f"{now - guard_set_at:.1f}s without confirmed kick-off speed"
-            )
-            return True, pre_match_last_time, pre_match_last_real, pre_match_speed_hits
-
-        try:
-            game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
-        except Exception:
-            game_time = None
-
-        released = False
-        if game_time is not None and pre_match_last_time is not None and pre_match_last_real is not None:
-            real_delta = max(0.001, now - pre_match_last_real)
-            timer_delta = abs(game_time - pre_match_last_time)
-            speed = timer_delta / real_delta
-            if timer_delta >= 1 and speed >= 6.0:
-                pre_match_speed_hits += 1
-            else:
-                pre_match_speed_hits = 0
-            if pre_match_speed_hits >= 3:
-                app._entrance_pre_match_guard = False
-                app.log(f"Pre-match Support guard released at clock speed={speed:.1f}")
-                released = True
-        return released, game_time, now, pre_match_speed_hits
-
     def chants_runtime_loop(self) -> None:
         app = self.app
         cooldown_until = 0.0
@@ -592,11 +521,25 @@ class ChantsRuntime:
                 # cover the entrance anthem or the league presentation.  Real
                 # play is confirmed by sustained match-clock movement.
                 if getattr(app, "_entrance_pre_match_guard", False):
-                    released, pre_match_last_time, pre_match_last_real, pre_match_speed_hits = self._pre_match_guard_tick(
-                        chants_memory, pre_match_last_time, pre_match_last_real, pre_match_speed_hits
-                    )
-                    if released:
-                        next_chant_after = time.time() + 1.0
+                    now = time.time()
+                    try:
+                        game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+                    except Exception:
+                        game_time = None
+                    if game_time is not None and pre_match_last_time is not None and pre_match_last_real is not None:
+                        real_delta = max(0.001, now - pre_match_last_real)
+                        timer_delta = abs(game_time - pre_match_last_time)
+                        speed = timer_delta / real_delta
+                        if timer_delta >= 1 and speed >= 6.0:
+                            pre_match_speed_hits += 1
+                        else:
+                            pre_match_speed_hits = 0
+                        if pre_match_speed_hits >= 3:
+                            app._entrance_pre_match_guard = False
+                            next_chant_after = time.time() + 1.0
+                            app.log(f"Pre-match Support guard released at clock speed={speed:.1f}")
+                    pre_match_last_time = game_time
+                    pre_match_last_real = now
                     if getattr(app, "_entrance_pre_match_guard", False):
                         app._set_display_async("audio_crowd_mode", "Waiting for kick-off")
                         app._set_display_async("audio_next", "Support chants after actual kick-off")

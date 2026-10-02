@@ -242,7 +242,9 @@ class FastWatchGame(FakeGame):
         self.injID = "176"
         self.fast_watch_starts = 0
         self.progress_starts = 0
+        self.stadium_name_module_on = True
         self.stadium_runtime = types.SimpleNamespace(
+            stadium_name_enabled=lambda: self.stadium_name_module_on,
             resolve_scoreboard_display_name=lambda name: name,
             write_active_stad_name=lambda name: True,
             request_db_name_patch=lambda injid, name: None,
@@ -274,6 +276,13 @@ class StadiumNameFastWatchTriggerTests(unittest.TestCase):
         game._handle_page_transition("game/screens/TV/bumper")
         self.assertEqual(game.fast_watch_starts, 1)
         self.assertEqual(game.progress_starts, 1)
+
+    def test_bumper_skips_the_name_patch_watch_and_loading_bar_while_the_module_is_off(self) -> None:
+        game = FastWatchGame()
+        game.stadium_name_module_on = False
+        game._handle_page_transition("game/screens/TV/bumper")
+        self.assertEqual(game.fast_watch_starts, 0)
+        self.assertEqual(game.progress_starts, 0)
 
     def test_blank_page_then_bumper_starts_it_in_both_places(self) -> None:
         game = FastWatchGame()

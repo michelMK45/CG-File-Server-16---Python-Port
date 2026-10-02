@@ -47,6 +47,8 @@ New here? Start with [Getting Started](#getting-started) to install the app, the
 | Stadium | Swapping a stadium's goalposts/net color | Model + texture pack folder layout | [Goalpost Model & Texture Packs](#goalpost-model--texture-packs) |
 | Stadium | Custom stadium name on the pre-match screen | Setting up the `scoreboardstdname` override | [Custom Stadium Display Name](#custom-stadium-display-name) |
 | Stadium | Per-stadium Broadcast camera tuning | `bcgameplay_176/261.dat` setup | [Gameplay Camera Files](#gameplay-camera-files) |
+| Stadium | Reusing one entrance/exterior camera across stadiums | Shared `FSW/Camera/EntranceScene` packs and their priority over the stadium's own camera | [Entrance Camera Packs](#entrance-camera-packs) |
+| Stadium | Goal net depth, rig, shape and tension | The five net values, where they're edited, and the Tension caveat | [Stadium Net Values](#stadium-net-values) |
 | Scoreboard / TV Logo / Movie | Scoreboard packs | `ScoreBoardGBD` folder layout and round/tournament/home-team assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
 | Scoreboard / TV Logo / Movie | TV Logo packs | `TVLogoGBD` folder layout and assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
 | Scoreboard / TV Logo / Movie | Movie packs (intro movie / competition bumper) | `MoviesGBD` folder layout, assignment, and video preview | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
@@ -57,6 +59,7 @@ New here? Start with [Getting Started](#getting-started) to install the app, the
 | Extra assets | Ball / Referee / Wipe / Adboard packs | Folder layout for each of the four extra asset modules | [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) |
 | Gameplay | Using non-Xbox controllers in FIFA | Bridging up to 4 physical pads into virtual Xbox 360 pads, optionally hiding the raw pad from FIFA | [Gamepads Bridge](#gamepads-bridge) |
 | Gameplay | Raising the 3-substitution match limit | Using the Substitutions control safely | [Custom Substitutions Details](#custom-substitutions-details) |
+| Tools & Settings | Switching features on/off, launching FIFA automatically (Autorun) | The Dashboard's grouped Modules card and what each switch controls | [Dashboard Modules](#dashboard-modules) |
 | Tools & Settings | Unpacking vanilla game content (kits, crests, league logos, DB) | Using the Assets Extractor on a vanilla install | [Assets Extractor Details](#assets-extractor-details) |
 | Tools & Settings | Copying your bindings to another install | Exporting/importing `settings.ini` sections | [Settings Export & Import](#settings-export--import) |
 | Tools & Settings | Showing your match in Discord | Setup, plus why/how to switch to your own (optional) Client ID | [Discord Rich Presence](#discord-rich-presence) · [Using Your Own Client ID](#discord-rich-presence--using-your-own-client-id-recommended) · [DISCORD_SETUP.md](DISCORD_SETUP.md) |
@@ -106,7 +109,10 @@ A fullscreen overlay renders directly on top of FIFA 16 — even in exclusive fu
 - Optional preview images shown on the dashboard, the Assign Stadium window, and the loading modal.
 - Per-stadium gameplay camera overrides so the Broadcast camera's height/position can be tuned to each stadium's own geometry.
 - Per-stadium goalpost **model** and **texture/color** packs — two independent, freely mixable packs instead of one bundled folder — plus crowd-chair replacement (`NoSeats.rx3`) and stadium-specific movies/bumpers. See [Goalpost Model & Texture Packs](#goalpost-model--texture-packs).
+- Shared **Entrance Camera** packs: assign one exterior camera to as many stadiums as you like, instead of copying it into each stadium's `EntranceScene/` — see [Entrance Camera Packs](#entrance-camera-packs).
+- Per-stadium **net values** (depth, rig, shape and tension) — see [Stadium Net Values](#stadium-net-values).
 - Custom pre-match stadium display names (`scoreboardstdname`) now actually render on FIFA's presentation screen — see [Custom Stadium Display Name](#custom-stadium-display-name).
+- Each of these can be switched on or off individually from the Dashboard's grouped Modules card — see [Dashboard Modules](#dashboard-modules).
 
 ### Camera Packages
 
@@ -147,7 +153,7 @@ Optionally shows your current match, teams, and stadium in your Discord status v
 
 ### Assignment & Settings Editors
 
-Built-in editors read and write `FSW/settings.ini` directly from the UI: stadium/scoreboard/TV logo/movie/ball/referee/wipe/adboard assignments, excluded competitions or rounds, stadium net values, scoreboard display names, and chants entries — changes apply back into the running app immediately where possible.
+Built-in editors read and write `FSW/settings.ini` directly from the UI: stadium/scoreboard/TV logo/movie/ball/referee/wipe/adboard assignments, excluded competitions or rounds, stadium net values (including Tension), per-stadium goalpost and entrance-camera packs, scoreboard display names, and chants entries — changes apply back into the running app immediately where possible.
 
 Movie assignment (the quick "Assign Movie" dialog and the larger version in the Settings Editor's Movies/TeamMovies/DerbyMatch tabs) shows a small embedded video preview, audio included — pick a movie and it autoplays right there before you assign it (an Autoplay toggle can turn that off), with a volume slider and a fullscreen button. This decodes through `ffpyplayer` (bundled FFmpeg + SDL2, see [Requirements](#requirements)) — no separate player install needed; if that package is missing from the build, the preview controls are simply disabled with an explanatory note, everything else keeps working normally.
 
@@ -229,6 +235,22 @@ FSW/Images/Police/
 Runtime bootstrap copying prefers the root `FSW/PitchMowPattern`, `FSW/Nets`, and `FSW/Police` folders when they exist. The stadium assignment dialog uses the `FSW/Images/...` folders first for selector values and preview PNGs, then falls back to the root folders.
 
 In both the `Assign Stadium` window and the Settings Editor's Stadium Settings tab, the Police / Pitch Mow Pattern / Net / Goalpost Model / Goalpost Texture dropdowns each have a small **▦** button beside them. It opens a grid with every available option shown as its preview image plus its name, so you can compare them at a glance and pick one (click to select, then double-click or **Select** to confirm) instead of stepping through the dropdown one value at a time. In the Settings Editor, select a single assigned stadium first, same as for the dropdowns. Goalpost Texture previews are rendered on demand from each pack's `.rx3`, so they fill in one by one the first time the grid opens; already-rendered ones are reused afterwards.
+
+### Dashboard Modules
+
+The **Modules** card on the Dashboard switches each feature on or off (stored under `[Modules]` in `FSW/settings.ini`). The switches are grouped by what they affect, and hovering over one shows what it does:
+
+| Group | Modules |
+|---|---|
+| **Stadium** | Stadium, Entrance Camera, Goalposts, Stadium Net |
+| **UI** | TVLogo, Scoreboard, Stadium Name, Movies |
+| **Sound** | Chants, Away Chants, Away Club Song, Team Entrance Anthem |
+| **Game** | Ball, Adboard, Referee, Wipe |
+| **Other** | Autorun, Discord RPC |
+
+**Entrance Camera** and **Goalposts** only control the shared packs assigned to stadiums (`FSW/Camera/EntranceScene/` and `FSW/Goalpost/`): with them off, a stadium still uses its own `EntranceScene/` and `GoalpostGBD/` folders. Both are on by default, including on installs that predate them, so existing assignments keep working after an upgrade.
+
+**Autorun** launches FIFA automatically when CGFS16 starts (the same as the **Launch FIFA** button), if a FIFA executable is linked and FIFA is not already running. It is off by default and does nothing until a FIFA executable is linked.
 
 ### Scoreboard, TV Logo & Movie Packs
 
@@ -419,15 +441,35 @@ FSW/Goalpost/
 
 Pick a **Goalpost Model** and/or **Goalpost Texture** per stadium name from the "Assign Stadium" dialog's Visual Details card, from the Settings Editor's Stadium Settings tab, or from the F12 overlay's Stadiums wizard (its last two steps) — both write to the same shared, stadium-name-keyed settings, alongside Police/Pitch/Net. Leaving both unset keeps the legacy behavior (the stadium's own `GoalpostGBD` folder, if any). The model preview is a static image (`preview.png`/`.jpg`/`.jpeg` inside the model folder); the texture/color has no preview-image convention, so a small preview is instead rendered directly from its `.rx3`.
 
+The assigned packs are only used while the **Goalposts** module is on (Dashboard → Modules → Stadium). With it off, only the stadium's own `GoalpostGBD` folder is used; the picks stay saved, and the F12 wizard still shows and re-saves them.
+
 ### Manual Stadium Picker & Multi-Stadium Assignments
 
 By default, when a team/round/tournament has more than one stadium assigned, CGFS picks one at random each match ("Randomize multiple stadium selection", on by default in the Settings tab). Turn that toggle off and an in-game picker panel opens instead — a scrollable, thumbnail-backed list (capped at 64 entries) you choose from manually before the match loads.
 
 Each stadium in a multi-stadium assignment can carry its own Police/Pitch/Net/Goalpost values, edited from a two-list **Assigned / Available** UI in the Settings Editor, rather than one shared triple for the whole assignment.
 
+### Stadium Net Values
+
+The goal net's physics are tuned per stadium with a list of five values, written into FIFA's memory when the match's TV bumper loads. They need the **Stadium Net** module on (Dashboard → Modules → Stadium). Edit them in the Settings Editor: **Net By Stadium Name** for custom stadiums (`[stadiumnetname]`) or **Net By Stadium ID** for vanilla ones (`[stadiumnetid]`). Each entry is saved as one comma-separated line, `down,high,rig,shape,tension`.
+
+| Value | Editor control | Default |
+|---|---|---|
+| Down Deep | free number | `1089199011` |
+| High Deep | free number | `1087199011` |
+| Rig | 0–10 | `2` |
+| Shape | `square(0)` / `triangle(1)` | `square(0)` |
+| Tension | 0 / 1 / 2 | `0` |
+
+- **Shape** is a net-physics flag, not a goalpost-frame selector: it does not swap the goal's mesh. Rectangular vs. triangular frames come from the goalpost assets — the stadium's `GoalpostGBD/` folder or a [Goalpost Model pack](#goalpost-model--texture-packs).
+- **Tension** (new) only has a visible effect when **Down Deep** is `1089438971` or `1093138971`; other depths silently ignore it. It also needs a game build whose `attribdb.bin` provides loose/normal/tense `soccernet` presets (not shipped with CGFS16), and the stadium's `soccernet` lines disabled in its `rna.ini`/`cl.ini` — which in turn breaks supports beyond 4. Leave it at `0` if you don't have that setup.
+- Entries saved by older versions have four values; they keep working, and Tension is simply left untouched until you save the entry again. When editing, keep all five fields filled in — a blank one shifts the saved list.
+
 ### Custom Stadium Display Name
 
 The **Scoreboard Stadium Name** tab in the Settings Editor lets you override the vanilla stadium name FIFA shows on its pre-match presentation screen for a given stadium — e.g. showing your custom stadium's real name instead of whichever vanilla stadium (`Waldstadion`/`Sanderson Park`) its container slot borrows a name from. This previously wrote to memory with no visible effect; as of v1.6.0 it actually renders in-game, found via a live memory scan-and-patch rather than a fixed offset, with a bounded retry window right as the match's presentation screen loads. Very long names may still be shortened if the specific stadium slot's underlying text buffer has no extra room.
+
+The **Stadium Name** module (Dashboard → Modules → UI) turns this on and off: every assigned custom stadium gets its name patched in (its Scoreboard Stadium Name entry, or its folder name when it has none), and with the module off FIFA keeps its own vanilla name. It is on by default. The stadium name the app itself shows (dashboard, Discord) is not affected.
 
 ### Camera Packages
 
@@ -480,6 +522,34 @@ data/bcdata/camera/bcgameplay_261.dat
 ```
 
 No manual action is needed. If the stadium folder does not contain `GameplayCamGBD/`, the files in `data/bcdata/camera/` are left unchanged.
+
+### Entrance Camera Packs
+
+The entrance/exterior camera (`bcstadiumcams_176.dat` / `bcstadiumcams_261.dat`) can come from the stadium's own `EntranceScene/` folder, or from a shared, named pack that you assign to as many stadiums as you like — so one exterior camera can be reused without copying it into every stadium folder:
+
+```text
+FSW/Camera/EntranceScene/
+  <pack name>/
+    bcstadiumcams_176.dat
+    bcstadiumcams_261.dat
+    preview.png                  (optional, static preview image)
+```
+
+As with the gameplay camera, ship both files with the same content — the game reads whichever matches the injection slot (176 or 261) the stadium lands in.
+
+To try the feature without making your own pack first, tick **Entrance Camera Packs (sample cameras, FSW/Camera)** in the Setup tab's **Run Setup** checklist. It is unchecked by default and only adds the bundled sample packs next to yours — it never replaces packs you already have.
+
+Pick an **Entrance Camera** per stadium name from the "Assign Stadium" dialog's Visual Details card, from the Settings Editor's Stadium Settings tab, or from its "Entrance Cameras By Stadium Name" tab. The choice is stored in `FSW/settings.ini` under `[stadiumentrancecam]` (key = stadium name, value = pack folder name), the same way the goalpost packs are.
+
+The assigned pack is only used while the **Entrance Camera** module is on (Dashboard → Modules → Stadium); with it off, only the stadium's own `EntranceScene/` camera is used.
+
+When a custom stadium loads, the camera for the active slot is chosen in this order:
+
+1. The assigned pack's `bcstadiumcams_<slot>.dat`, if a pack is assigned and contains that file.
+2. The stadium's own `EntranceScene/bcstadiumcams_<slot>.dat`.
+3. Neither: the slot's file in `data/bcdata/camera/` is deleted so the previous stadium's camera never carries over.
+
+On a match with no stadium assignment (vanilla stadium) or an excluded competition, both `bcstadiumcams_*` files are removed. The gameplay camera (`bcgameplay_*`) is not affected by these packs — it stays per-stadium via `GameplayCamGBD/`. The F12 overlay's stadium wizard does not offer this pick yet; assigning a stadium from F12 keeps whatever entrance camera was already set for it.
 
 ### Kit Mixer — `FSW/Kits` Package Structure
 
@@ -549,6 +619,8 @@ FSW/referee/<folder>/*.rx3        -> data/sceneassets/kit
 FSW/wipe/<folder>/*.rx3           -> data/sceneassets/wipe3d
 FSW/adboards/<folder>/            -> data/sceneassets/adboard (+ corner-flag routing)
 ```
+
+Wipe pack files are installed under their own names, so a file named like one the game already ships (e.g. `specificwipe_0_996_0.rx3`) **replaces** it. The replaced original is backed up to `FSW/.wipe_backup/` the first time and put back automatically on the next apply that no longer wants it — a round with no wipe assigned, a different pack, a missing pack folder, or the Wipe module switched off. Files copied by earlier versions have no backup.
 
 Adboard additionally supports a per-stadium override — `FSW/adboards/<stadium name>/` takes priority over the round/tournament assignment whenever it exists. Each module warns in the Setup tab if assets are assigned while its module toggle is switched off.
 
@@ -638,7 +710,8 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/app_ui.py`: main window construction, dashboard layout, and UI helpers.
 - `server16_py/app_overlay.py`: in-game overlay loop, gamepad/keyboard/mouse input handling, and syncing menu content/state to the native overlay (menu rendering itself is done by the RmlUi-based native side, see below).
 - `server16_py/app_game.py`: game process polling, live match context reading, and stats loop.
-- `server16_py/app_settings.py`: settings loading, module state management, and worker queue.
+- `server16_py/app_settings.py`: settings loading, module state management, the Autorun launch, and worker queue.
+- `server16_py/module_catalog.py`: single source for the Dashboard Modules card — the module groups and order, their locale label/tooltip keys, and the names loaded from `settings.ini`. A new module only has to be added here (plus its `locales/*.json` strings).
 - `server16_py/app_logging.py`: runtime log panel and auto-follow toggle.
 - `server16_py/app_localization.py`: language switching and UI string application.
 - `server16_py/win32_types.py`: shared Win32 ctypes type definitions.

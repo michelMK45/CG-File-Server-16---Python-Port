@@ -23,6 +23,7 @@ from .file_tools import (
     stadium_preview_fallback_path,
 )
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
+from .module_catalog import MODULE_CATEGORIES, module_category_key, module_label_key, module_tooltip_key
 from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
 from .team_picker_dialog import TeamPickerDialog
@@ -325,6 +326,10 @@ class UIMixin:
             foreground=[("selected", self.accent), ("!selected", self.fg)],
             bordercolor=[("selected", self.accent), ("!selected", "#2a3c59")],
         )
+        # Same look as Switch.TCheckbutton (the dotted name inherits its map), with tighter
+        # padding: the Dashboard's Modules card stacks 18 of them in labelled groups inside
+        # the narrow right-hand column.
+        style.configure("Module.Switch.TCheckbutton", padding=(8, 4))
         style.configure(
             "Server16.TNotebook",
             background=self.bg,
@@ -2957,24 +2962,39 @@ class UIMixin:
         card.grid(row=row, column=0, sticky="ew")
         modules = tk.Frame(card, bg=self.card)
         modules.pack(fill="x", padx=12, pady=(6, 12))
-        module_names = [
-            "Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun",
-            "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong",
-            "Ball", "Adboard", "Referee", "Wipe", "DiscordRPC",
-        ]
-        for idx, name in enumerate(module_names):
-            initial = self._discord_rpc_enabled if name == "DiscordRPC" else False
-            var = tk.BooleanVar(value=initial)
-            self.module_vars[name] = var
-            check = ttk.Checkbutton(
-                modules,
-                style="Switch.TCheckbutton",
-                text=name,
-                variable=var,
-                command=lambda n=name, v=var: self._on_module_toggle(n, v),
+        # One labelled block per category (see module_catalog.MODULE_CATEGORIES), two
+        # blocks per row. Each block's switches fill the block's width, so a column is as
+        # wide as its longest label and any spare room is shared between the two columns.
+        modules.grid_columnconfigure(0, weight=1)
+        modules.grid_columnconfigure(1, weight=1)
+        for idx, (category, names) in enumerate(MODULE_CATEGORIES):
+            block = tk.Frame(modules, bg=self.card)
+            block.grid(row=idx // 2, column=idx % 2, padx=4, pady=(0, 8), sticky="new")
+            heading = tk.Label(
+                block,
+                text=self.tr(module_category_key(category)),
+                bg=self.card,
+                fg=self.accent,
+                font=("Bahnschrift", 9, "bold"),
+                anchor="w",
             )
-            check.grid(row=idx // 2, column=idx % 2, padx=6, pady=4, sticky="w")
-            self.module_checks[name] = check
+            heading.pack(fill="x", padx=2)
+            tk.Frame(block, bg="#243654", height=1).pack(fill="x", pady=(2, 4))
+            self.module_category_labels[category] = heading
+            for name in names:
+                initial = self._discord_rpc_enabled if name == "DiscordRPC" else False
+                var = tk.BooleanVar(value=initial)
+                self.module_vars[name] = var
+                check = ttk.Checkbutton(
+                    block,
+                    style="Module.Switch.TCheckbutton",
+                    text=self.tr(module_label_key(name)),
+                    variable=var,
+                    command=lambda n=name, v=var: self._on_module_toggle(n, v),
+                )
+                check.pack(fill="x", pady=2)
+                self._add_tooltip(check, module_tooltip_key(name))
+                self.module_checks[name] = check
 
     def _build_settings_tab(self) -> None:
         """App Options, moved off the Dashboard's Modules card into their own
@@ -4089,6 +4109,16 @@ class UIMixin:
         if _goalpost_var is not None:
             _goalpost_var.set(False)
 
+        # Sample Entrance Camera packs (install_data/FSW/Camera/EntranceScene) —
+        # bundled example content for the [stadiumentrancecam] feature (see
+        # StadiumRuntime.resolve_entrance_cam_sources). Optional and unchecked by
+        # default, same reasoning as the Goalpost packs above: it merges in beside
+        # a user's own FSW/Camera packs rather than replacing them.
+        source_row(right_col, "setup.item.fsw_camera", "fsw_camera")
+        _camera_var = self._setup_install_vars.get("fsw_camera")
+        if _camera_var is not None:
+            _camera_var.set(False)
+
         _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
         self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
         _kit_numbers_row = tk.Frame(right_col, bg=self.card)
@@ -4615,6 +4645,7 @@ class UIMixin:
         do_tvlogo      = install_vars.get("fsw_tvlogo",     tk.BooleanVar(value=True)).get()
         do_revmod_lua  = install_vars.get("revmod_lua",     tk.BooleanVar(value=True)).get()
         do_goalpost    = install_vars.get("fsw_goalpost",   tk.BooleanVar(value=False)).get()
+        do_camera      = install_vars.get("fsw_camera",     tk.BooleanVar(value=False)).get()
         do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
@@ -4650,6 +4681,8 @@ class UIMixin:
                             skipped.add("lua")
                         if not do_goalpost and p.name == "FSW" and "Goalpost" in names:
                             skipped.add("Goalpost")
+                        if not do_camera and p.name == "FSW" and "Camera" in names:
+                            skipped.add("Camera")
                         return skipped
 
                     shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)

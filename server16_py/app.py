@@ -3,6 +3,7 @@ from __future__ import annotations
 import ctypes
 import queue
 import random
+import sys
 import threading
 import tkinter as tk
 from time import perf_counter
@@ -362,6 +363,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.info_labels = {}
         self.module_vars = {}
         self.module_checks = {}
+        self.module_category_labels = {}
         self.module_states = {}
         self.log_widget = None
         self.logs_frame = None
@@ -506,7 +508,6 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._entrance_active = False
         self._entrance_armed = False
         self._entrance_pre_match_guard = False
-        self._entrance_pre_match_guard_set_at = 0.0
         self._last_live_score = (0, 0)
         self._last_live_update = ""
         self.assets_runtime = AssetRuntime(self)
@@ -645,6 +646,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stats_job = self.after(250, self.stats_loop)
         self._overlay_job = self.after(80, self.overlay_loop)
         self.after(3000, lambda: self.check_updates(silent=True))
+        # Evaluated when it fires (not here): needs the main window up before it may
+        # spawn FIFA, and re-reads the Autorun switch -- see _autorun_launch_fifa.
+        self.after(1500, self._autorun_launch_fifa)
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
         if self._discord_rpc_enabled:
@@ -778,15 +782,15 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         try:
             self.apply_ball_runtime()
         except Exception as exc:
-            self.log("Ball runtime error", exc, exc_info=True)
+            self.log("Ball runtime error", exc, exc_info=sys.exc_info())
         try:
             self.apply_referee_runtime()
         except Exception as exc:
-            self.log("Referee runtime error", exc, exc_info=True)
+            self.log("Referee runtime error", exc, exc_info=sys.exc_info())
         try:
             self.apply_wipe_runtime()
         except Exception as exc:
-            self.log("Wipe runtime error", exc, exc_info=True)
+            self.log("Wipe runtime error", exc, exc_info=sys.exc_info())
         if self.module_enabled("Stadium"):
             self.apply_stadium_runtime()
         else:
@@ -798,18 +802,18 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         try:
             self.apply_scoreboard_runtime()
         except Exception as exc:
-            self.log("Scoreboard runtime error", exc, exc_info=True)
+            self.log("Scoreboard runtime error", exc, exc_info=sys.exc_info())
         try:
             self.apply_movie_runtime()
         except Exception as exc:
-            self.log("Movie runtime error", exc, exc_info=True)
+            self.log("Movie runtime error", exc, exc_info=sys.exc_info())
         # Adboard depends on curstad (stadium priority), so it must run after
         # Stadium is applied -- it waits out the stadium copy job itself if
         # that job is still running in the background (see AssetRuntime.apply_adboard_runtime).
         try:
             self.apply_adboard_runtime()
         except Exception as exc:
-            self.log("Adboard runtime error", exc, exc_info=True)
+            self.log("Adboard runtime error", exc, exc_info=sys.exc_info())
         if not self._stadium_task_running:
             self._set_progress(100, "Runtime ready")
 

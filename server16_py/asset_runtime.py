@@ -5,7 +5,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .file_tools import copy, copy_if_exists, copy_tvlogo
+from .file_tools import copy, copy_if_exists, copy_tvlogo, install_tracked_files, restore_tracked_files
 
 if TYPE_CHECKING:
     from .app import Server16App
@@ -373,25 +373,49 @@ class AssetRuntime:
         app.log(f"Referee runtime: [{key}] {referee_folder} applied")
         self._show_asset_toast(app.tr("notify.referee_loaded"), referee_folder)
 
+    def _restore_wipe_originals(self, reason: str) -> None:
+        """Puts back the game's own wipe3d files that an earlier wipe pack
+        overwrote (and deletes the ones the pack added), from the backup
+        install_tracked_files took. No-op when nothing is tracked."""
+        app = self.app
+        target_dir = app.exedir / "data" / "sceneassets" / "wipe3d"
+        restored, failed = restore_tracked_files(target_dir, app.exedir / "FSW" / ".wipe_backup")
+        if restored:
+            app.log(f"Wipe runtime: {restored} original file(s) restored ({reason})")
+        if failed:
+            app.log(f"Wipe runtime: could not restore {', '.join(failed)} ({reason})")
+
     def apply_wipe_runtime(self) -> None:
-        """Copies FSW/wipe/<folder>/*.rx3 for the current round to
+        """Copies FSW/wipe/<folder>/ for the current round to
         data/sceneassets/wipe3d/ (the 3D scene-transition wipe), ported from
-        Nono's fork. Ini-only: settings.ini [wipe], key=TOURROUNDID."""
+        Nono's fork. Ini-only: settings.ini [wipe], key=TOURROUNDID.
+
+        Unlike Nono's fork, the game's own wipe files a pack overwrites are
+        backed up (FSW/.wipe_backup) and put back as soon as a later apply no
+        longer wants them -- module off, a round with no wipe assigned, a
+        missing pack folder, or a different pack. Without it the last custom
+        wipe stayed in its slot for good. Copies are temp-file + os.replace,
+        as in Nono's fork, so FIFA never reads a half-written .rx3."""
         app = self.app
         key = app.TOURROUNDID
         wipe_folder = app.settings_ini.read(key, "wipe") if key else ""
         if not app.module_enabled("Wipe"):
+            self._restore_wipe_originals("module off")
             if wipe_folder and (app.exedir / "FSW" / "wipe" / wipe_folder).exists():
                 self._show_warning_toast(app.tr("notify.warn.wipe_off"), app.tr("notify.warn.assets_skipped"))
             return
-        if not key or not wipe_folder:
+        if not key:
+            return
+        if not wipe_folder:
+            self._restore_wipe_originals("no wipe assigned to this round")
             return
         src_dir = app.exedir / "FSW" / "wipe" / wipe_folder
         if not src_dir.exists():
             app.log(f"Wipe folder not found: {src_dir}")
+            self._restore_wipe_originals("assigned wipe folder not found")
             return
         target_dir = app.exedir / "data" / "sceneassets" / "wipe3d"
-        copy(src_dir, target_dir)
+        install_tracked_files(src_dir, target_dir, app.exedir / "FSW" / ".wipe_backup")
         app.log(f"Wipe runtime: [{key}] {wipe_folder} applied")
         self._show_asset_toast(app.tr("notify.wipe_loaded"), wipe_folder)
 
@@ -559,14 +583,17 @@ class AssetRuntime:
     def tv_bumper_page(self) -> None:
         app = self.app
         self.reapply_active_ball_runtime(reason="TV bumper")
-        if not app.module_enabled("StadiumNet"):
-            return
         source_key = "stadiumnetid" if not app.curstad else "stadiumnetname"
         source_section = app.STADID if not app.curstad else app.StadName
-        if app.settings_ini.key_exists(app.TOURROUNDID, "exclude") or not app.settings_ini.key_exists(source_section, source_key):
+        has_net_values = not app.settings_ini.key_exists(app.TOURROUNDID, "exclude") and app.settings_ini.key_exists(source_section, source_key)
+        if not app.module_enabled("StadiumNet"):
+            if has_net_values:
+                self._show_warning_toast(app.tr("notify.warn.stadiumnet_off"), app.tr("notify.warn.assets_skipped"))
+            return
+        if not has_net_values:
             return
         values = app.settings_ini.read(source_section, source_key).split(",")
-        for offset_group, value in zip([app.offsets.NTDP, app.offsets.NTCP, app.offsets.NTRI, app.offsets.NTTR], values):
+        for offset_group, value in zip([app.offsets.NTDP, app.offsets.NTCP, app.offsets.NTRI, app.offsets.NTTR, app.offsets.NTTT], values):
             app.memory.write_int(app.offsets.ORINETDEPTHBASE, offset_group, value)
         app._set_display("audio_last_action", app.display_value("net_profile_prefix", fallback="Net profile {name}", name=source_section))
         app.log(f"Applied stadium net values from [{source_key}] {source_section}: {values}")

@@ -29,6 +29,7 @@ from .win32_types import (
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
 )
 from .file_tools import (
+    asset_placeholder_path,
     discover_stadium_names,
     kit_ui_placeholder_path,
     resolve_asset_thumbnail_path,
@@ -1871,7 +1872,7 @@ class OverlayMixin:
         pipeline) and returns "" so #preview-img stays hidden while it plays
         — cgfs16_rmlui_menu.cpp draws the actual frame as a manual D3D11
         quad instead, see TAB_MOVIES/RmlOverlay_SetVideoHeroRect. Stops
-        playback and returns the bundled movie.png placeholder path when
+        playback and returns the bundled movie-placeholder.png path when
         there's nothing playable: no ffpyplayer install, performance mode
         (video decode is far heavier than a static thumbnail — unlike the
         Stadiums/ScoreBoard/TVLogo branches above, this still shows a
@@ -1891,7 +1892,7 @@ class OverlayMixin:
             return ""
         self.movie_preview_runtime.stop()
         self._push_movie_mute_icon()
-        fallback = rmlui_icon_path("movie")
+        fallback = asset_placeholder_path("movie")
         return str(fallback) if fallback else ""
 
     def _push_movie_mute_icon(self) -> None:
@@ -1915,15 +1916,15 @@ class OverlayMixin:
         self.movie_preview_runtime.toggle_mute()
         self._push_movie_mute_icon()
 
-    def _resolve_scoreboard_or_tvlogo_preview(self, thumb_key: str, icon_name: str, root, selected_item: str) -> str:
+    def _resolve_scoreboard_or_tvlogo_preview(self, thumb_key: str, placeholder_kind: str, root, selected_item: str) -> str:
         """Preview path for the currently-highlighted ScoreBoard/TVLogo menu
         entry: the pack's own `render/thumbnail/<thumb_key>.*` image (same
         convention/helper the Setup tab's assignment dialog already uses,
         see dialogs.py's _update_preview_for), or the bundled generic
-        rmlui/icons/<icon_name>.png icon when the pack has none of its own,
+        <placeholder_kind>-placeholder.png when the pack has none of its own,
         performance mode is on (skips the per-pack thumbnail lookup, mirroring
         why _resolve_movies_menu_preview skips video decode in performance
-        mode — the bundled icon is a fixed, cheap resource either way), or
+        mode — the bundled placeholder is a fixed, cheap resource either way), or
         `root`/`selected_item` is unset — never blank, matching the Movies
         tab's own "always show something" behavior."""
         path = None
@@ -1934,7 +1935,7 @@ class OverlayMixin:
                 path = None
         if path is not None:
             return str(path)
-        fallback = rmlui_icon_path(icon_name)
+        fallback = asset_placeholder_path(placeholder_kind)
         return str(fallback) if fallback else ""
 
     def _kits_menu_preview_source(self, sel_index: int | None = None) -> tuple[Path | None, str | None]:

@@ -11,6 +11,7 @@ import psutil
 from .dialogs import FifaLocationWarningDialog, ImportModeDialog, SectionPickerDialog
 from .fifa_db import FifaDatabase
 from .ini_file import SessionIniFile, export_sections, import_sections
+from .module_catalog import INI_MODULE_NAMES
 from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
 
 
@@ -56,8 +57,9 @@ class SettingsMixin:
                 _, payload = event
                 self._finish_stadium_apply(payload)
             elif kind == "toast":
-                _, title, body, duration_ms, icon = event
-                slot = self._show_toast_notification(title, body, icon=icon)
+                # Optional 6th element: toast style (1 = warning), default 0.
+                _, title, body, duration_ms, icon, *rest = event
+                slot = self._show_toast_notification(title, body, style=rest[0] if rest else 0, icon=icon)
                 if slot != -1:
                     self.after(duration_ms, lambda s=slot: self._hide_toast_notification(s))
             elif kind == "error":
@@ -161,14 +163,18 @@ class SettingsMixin:
         return False
 
     def _load_module_states(self) -> None:
-        if self.settings_ini.read("TeamEntrance", "Modules") not in {"0", "1"}:
-            # Existing installations predate this module. Enable it by default
-            # without creating settings.ini before FIFA has been linked.
-            if self.fifaEXE != "default" or self.settings_ini.path.exists():
-                self.settings_ini.write("TeamEntrance", "1", "Modules")
-                self.settings_ini.save()
-        module_names = ["Stadium", "TvLogo", "ScoreBoard", "Movies", "Autorun", "StadiumNet", "Chants", "TeamEntrance", "StadiumName", "AwayChants", "AwayClubSong", "Ball", "Adboard", "Referee", "Wipe"]
-        self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in module_names}
+        for late_module in ("TeamEntrance", "EntranceCam", "Goalposts", "StadiumName"):
+            if self.settings_ini.read(late_module, "Modules") not in {"0", "1"}:
+                # Existing installations predate these modules (StadiumName: the switch only
+                # started controlling anything after the stadium-name patch was built, so an
+                # old settings.ini may lack it). Enable them by default (an existing
+                # [stadiumentrancecam] / [stadiumgoalpost] assignment, or the custom stadium
+                # name, must keep working after an upgrade) without creating settings.ini
+                # before FIFA has been linked. An explicit 0/1 is never touched.
+                if self.fifaEXE != "default" or self.settings_ini.path.exists():
+                    self.settings_ini.write(late_module, "1", "Modules")
+                    self.settings_ini.save()
+        self.module_states = {name: self.settings_ini.read(name, "Modules") == "1" for name in INI_MODULE_NAMES}
         previous_rpc_state = self._discord_rpc_enabled
         discord_ini_value = self.settings_ini.read("DiscordRPC", "Modules")
         if discord_ini_value in {"0", "1"}:
@@ -498,3 +504,21 @@ class SettingsMixin:
             return
         subprocess.Popen([self.fifaEXE], shell=False)
         self.log(f"Launched FIFA executable: {self.fifaEXE}")
+
+    def _autorun_launch_fifa(self) -> None:
+        """[Modules] Autorun: launch FIFA once, shortly after CGFS16 starts -- the same as pressing
+        Launch FIFA. Stays silent where the button would complain: launch_fifa() pops a warning
+        dialog when no FIFA exe is linked, which would greet a first-time user on every start."""
+        if self._closing or not self.module_enabled("Autorun"):
+            return
+        if self.fifaEXE == "default" or not Path(self.fifaEXE).is_file():
+            self.log("Autorun: not launching FIFA, no valid FIFA executable is linked")
+            return
+        if self._is_target_process_running():
+            self.log("Autorun: FIFA is already running")
+            return
+        self.log("Autorun: launching FIFA")
+        try:
+            self.launch_fifa()
+        except Exception as exc:
+            self.log("Autorun: failed to launch FIFA", exc, exc_info=sys.exc_info())

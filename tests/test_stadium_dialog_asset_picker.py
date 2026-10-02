@@ -51,6 +51,7 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             "Images/PitchMowPattern/2.png", "Images/PitchMowPattern/5.png",
             "Images/Nets/1.png",
             "Goalpost/GoalpostModel/1/preview.png",
+            "Camera/EntranceScene/Aerial/preview.png",
         ):
             path = fsw / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -97,10 +98,10 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
 
     # --------------------------------------------------------------- buttons
 
-    def test_each_of_the_five_visual_combos_has_a_picker_button(self) -> None:
+    def test_each_of_the_six_visual_combos_has_a_picker_button(self) -> None:
         buttons = [w for w in _walk(self.dialog) if isinstance(w, ttk.Button) and w.cget("text") == PICKER_ICON]
-        self.assertEqual(len(buttons), 5)
-        self.assertEqual([key for _, key in self.tooltips], ["tooltip.asset_grid_picker"] * 5)
+        self.assertEqual(len(buttons), 6)
+        self.assertEqual([key for _, key in self.tooltips], ["tooltip.asset_grid_picker"] * 6)
 
     def test_buttons_sit_beside_their_combo_not_below_it(self) -> None:
         for button in (w for w in _walk(self.dialog) if isinstance(w, ttk.Button) and w.cget("text") == PICKER_ICON):
@@ -129,6 +130,10 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
         self.assertEqual([i.value for i in textures], ["None", "Azul"])
         self.assertIsNone(textures[0].render)
         self.assertIsNotNone(textures[1].render)
+        _, label_key, cams, _ = self.dialog._asset_picker_setup("entrancecam")
+        self.assertEqual(label_key, "dialog.stadium.entrance_cam")
+        self.assertEqual([i.value for i in cams], ["None", "Aerial"])
+        self.assertEqual(cams[1].image_path, self.exedir / "FSW" / "Camera" / "EntranceScene" / "Aerial" / "preview.png")
 
     def test_each_field_is_bound_to_its_own_variable_and_refresh_callback(self) -> None:
         d = self.dialog
@@ -138,6 +143,7 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             "net": (d.selectednet, d._on_net_changed),
             "goalpost": (d.selectedgoalpost, d._on_goalpost_model_changed),
             "goalposttexture": (d.selectedgoalposttexture, d._on_goalpost_texture_changed),
+            "entrancecam": (d.selectedentrancecam, None),  # no preview box to refresh
         }
         for field, (variable, refresh) in expected.items():
             got_variable, _label, _items, got_refresh = d._asset_picker_setup(field)
@@ -170,10 +176,21 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             ("net", "1", self.dialog.selectednet),
             ("goalpost", "1", self.dialog.selectedgoalpost),
             ("goalposttexture", "Azul", self.dialog.selectedgoalposttexture),
+            ("entrancecam", "Aerial", self.dialog.selectedentrancecam),
         ):
             with mock.patch.object(self.dialog, "_on_goalpost_texture_changed"):  # would spawn the render thread
                 self.run_pick(field, value)
             self.assertEqual(variable.get(), value, field)
+
+    def test_the_entrance_camera_pick_is_part_of_the_dialog_result(self) -> None:
+        self.run_pick("entrancecam", "Aerial")
+        self.dialog._submit()
+        self.assertEqual(self.dialog.result["selectedentrancecam"], "Aerial")
+
+    def test_the_entrance_camera_has_no_preview_box(self) -> None:
+        # Camera packs ship no image, so the dialog shows only the combo + hint for it.
+        self.assertNotIn("entrance_cam", self.dialog._preview_labels)
+        self.assertNotIn("entrance_cam", self.dialog._preview_frames)
 
     def test_cancelling_leaves_the_field_alone(self) -> None:
         before = self.dialog.selectedpolice.get()

@@ -140,7 +140,10 @@ def find_icon_path() -> Path | None:
 def _ico_png_entries(path: Path) -> list[tuple[int, bytes]]:
     """(size, PNG bytes) for every PNG-compressed image in an .ico. Reading
     the directory by hand keeps PIL out of the path to the first frame: Tk
-    decodes PNG natively, and server16.ico stores every size as PNG."""
+    decodes PNG natively, and this is the common case since most .ico
+    exports store every size as PNG. Returns [] (not an error) for a
+    well-formed .ico whose frames are classic uncompressed BMP/DIB instead
+    -- icon_png() falls back to PIL for those."""
     data = path.read_bytes()
     _reserved, kind, count = struct.unpack_from("<HHH", data, 0)
     if kind != 1:
@@ -154,11 +157,29 @@ def _ico_png_entries(path: Path) -> list[tuple[int, bytes]]:
     return entries
 
 
+def _icon_png_via_pil(path: Path, target_px: int) -> bytes | None:
+    """Decodes the .ico's largest frame with PIL and resamples it to
+    target_px. Used when the .ico has no PNG-compressed entry at all (every
+    frame stored as classic uncompressed BMP/DIB, which _ico_png_entries()
+    can't read) -- server16.ico has shipped as both over time."""
+    try:
+        from PIL import Image
+
+        with Image.open(path) as im:
+            frame = im.convert("RGBA")
+        buffer = io.BytesIO()
+        frame.resize((target_px, target_px), Image.LANCZOS).save(buffer, "PNG")
+        return buffer.getvalue()
+    except Exception:
+        return None
+
+
 def icon_png(path: Path | None, target_px: int) -> bytes | None:
     """PNG bytes of the icon at exactly target_px when possible. An exact
     entry in the .ico is used as-is; otherwise the nearest larger one is
     resampled with PIL (imported only in that case), falling back to the
-    largest entry that fits if PIL is unavailable."""
+    largest entry that fits if PIL is unavailable. Falls back to
+    _icon_png_via_pil when the .ico has no PNG-compressed entry at all."""
     if path is None:
         return None
     try:
@@ -166,7 +187,7 @@ def icon_png(path: Path | None, target_px: int) -> bytes | None:
     except Exception:
         return None
     if not entries:
-        return None
+        return _icon_png_via_pil(path, target_px)
     for size, chunk in entries:
         if size == target_px:
             return chunk

@@ -248,7 +248,6 @@ class GameMixin:
                 self._entrance_sequence += 1
                 self._entrance_armed = True
                 self._entrance_pre_match_guard = True
-                self._entrance_pre_match_guard_set_at = time.time()
             # The blank page right after KickOffHub is when FIFA starts
             # LOADING the match -- and, in every captured log, exactly when
             # the stadium-name buffer first gets allocated (the priority
@@ -268,7 +267,6 @@ class GameMixin:
                 # intro.  Hold Support chants until actual clock movement
                 # confirms kick-off.
                 self._entrance_pre_match_guard = True
-                self._entrance_pre_match_guard_set_at = time.time()
                 self._start_chants_runtime()
             if not self.bumperpagechange and not self.skillgamechange:
                 self.pagechange = False
@@ -282,8 +280,9 @@ class GameMixin:
                 # before refresh_live_context has captured them for a brand
                 # new match). This re-arms the same background coordinator;
                 # it no-ops instantly if the earlier request already patched
-                # this exact match's string.
-                if self.curstad:
+                # this exact match's string. Skipped entirely (patch, fast watch
+                # and loading bar) while the StadiumName module is off.
+                if self.curstad and self.stadium_runtime.stadium_name_enabled():
                     std_name = self.stadium_runtime.resolve_scoreboard_display_name(self.curstad)
                     self.stadium_runtime.write_active_stad_name(std_name)
                     self.match_string_patcher.request(std_name)

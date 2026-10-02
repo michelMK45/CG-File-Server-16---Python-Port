@@ -1,16 +1,205 @@
 from __future__ import annotations
 
+import os
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from server16_py.file_tools import (
+    clear_entrance_cams,
     clear_generated_cache,
+    copy_file_atomic,
+    copy_first_or_clear,
     copy_goalpost_sources,
+    install_tracked_files,
     resolve_goalpost_model_preview_path,
     resolve_goalpost_texture_rx3_path,
+    restore_tracked_files,
     slot_specific_goalpost_name,
 )
+
+
+class CopyFileAtomicTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.src = root / "src" / "wipe.rx3"
+        self.dst = root / "dst" / "wipe.rx3"
+        self.src.parent.mkdir()
+        self.src.write_bytes(b"custom")
+
+    def test_creates_the_destination_and_leaves_no_temp_file(self) -> None:
+        self.assertTrue(copy_file_atomic(self.src, self.dst))
+        self.assertEqual(self.dst.read_bytes(), b"custom")
+        self.assertEqual([p.name for p in self.dst.parent.iterdir()], ["wipe.rx3"])
+
+    def test_skips_a_destination_that_already_matches(self) -> None:
+        copy_file_atomic(self.src, self.dst)
+        self.assertFalse(copy_file_atomic(self.src, self.dst))
+
+    def test_retries_a_destination_that_is_briefly_locked(self) -> None:
+        real_replace = os.replace
+        attempts = {"n": 0}
+
+        def flaky(src, dst):
+            attempts["n"] += 1
+            if attempts["n"] < 3:
+                raise PermissionError("locked")
+            return real_replace(src, dst)
+
+        with unittest.mock.patch("server16_py.file_tools.os.replace", flaky):
+            self.assertTrue(copy_file_atomic(self.src, self.dst))
+        self.assertEqual(attempts["n"], 3)
+        self.assertEqual(self.dst.read_bytes(), b"custom")
+
+    def test_a_permanently_locked_destination_keeps_its_old_content(self) -> None:
+        self.dst.parent.mkdir()
+        self.dst.write_bytes(b"vanilla")
+        with unittest.mock.patch("server16_py.file_tools.os.replace", side_effect=PermissionError("locked")):
+            with self.assertRaises(OSError):
+                copy_file_atomic(self.src, self.dst, retries=2)
+        self.assertEqual(self.dst.read_bytes(), b"vanilla")
+        self.assertEqual([p.name for p in self.dst.parent.iterdir()], ["wipe.rx3"])
+
+
+class TrackedInstallTests(unittest.TestCase):
+    """Wipe packs overwrite game files in data/sceneassets/wipe3d: the originals
+    must survive and come back once a later apply no longer wants the pack."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.dst = root / "wipe3d"
+        self.backup = root / "FSW" / ".wipe_backup"
+        self.dst.mkdir()
+        self.pack_a = root / "pack_a"
+        self.pack_b = root / "pack_b"
+
+    def write(self, path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def test_overwrites_the_original_and_restores_it_later(self) -> None:
+        self.write(self.dst / "specificwipe_0_996_0.rx3", b"vanilla")
+        self.write(self.pack_a / "specificwipe_0_996_0.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        self.assertEqual((self.dst / "specificwipe_0_996_0.rx3").read_bytes(), b"custom")
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (1, []))
+        self.assertEqual((self.dst / "specificwipe_0_996_0.rx3").read_bytes(), b"vanilla")
+        self.assertFalse(self.backup.exists())
+
+    def test_a_file_the_game_never_had_is_deleted_on_restore(self) -> None:
+        self.write(self.dst / "specificwipe_0_1_0.rx3", b"vanilla")
+        self.write(self.pack_a / "specificwipe_1_6.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        restore_tracked_files(self.dst, self.backup)
+        self.assertEqual(sorted(p.name for p in self.dst.iterdir()), ["specificwipe_0_1_0.rx3"])
+
+    def test_reinstalling_never_backs_up_the_custom_file_as_the_original(self) -> None:
+        self.write(self.dst / "w.rx3", b"vanilla")
+        self.write(self.pack_a / "w.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        restore_tracked_files(self.dst, self.backup)
+        self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
+
+    def test_switching_packs_restores_only_what_the_new_pack_does_not_cover(self) -> None:
+        self.write(self.dst / "a.rx3", b"vanilla a")
+        self.write(self.dst / "b.rx3", b"vanilla b")
+        self.write(self.pack_a / "a.rx3", b"custom a")
+        self.write(self.pack_a / "b.rx3", b"custom a-b")
+        self.write(self.pack_b / "b.rx3", b"custom b")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        install_tracked_files(self.pack_b, self.dst, self.backup)
+        self.assertEqual((self.dst / "a.rx3").read_bytes(), b"vanilla a")
+        self.assertEqual((self.dst / "b.rx3").read_bytes(), b"custom b")
+        restore_tracked_files(self.dst, self.backup)
+        self.assertEqual((self.dst / "b.rx3").read_bytes(), b"vanilla b")
+
+    def test_a_pack_spelling_the_name_in_another_case_still_finds_its_entry(self) -> None:
+        self.write(self.dst / "specificwipe_0_996_0.rx3", b"vanilla")
+        self.write(self.pack_a / "SpecificWipe_0_996_0.rx3", b"custom")
+        self.write(self.pack_b / "specificwipe_0_996_0.rx3", b"custom 2")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        install_tracked_files(self.pack_b, self.dst, self.backup)
+        restore_tracked_files(self.dst, self.backup)
+        self.assertEqual((self.dst / "specificwipe_0_996_0.rx3").read_bytes(), b"vanilla")
+
+    def test_png_thumbnails_are_not_installed(self) -> None:
+        self.write(self.pack_a / "w.rx3", b"custom")
+        self.write(self.pack_a / "wipe3d3.png", b"png")
+        self.assertEqual(install_tracked_files(self.pack_a, self.dst, self.backup), ["w.rx3"])
+        self.assertFalse((self.dst / "wipe3d3.png").exists())
+
+    def test_a_locked_file_stays_tracked_and_is_restored_on_the_next_call(self) -> None:
+        self.write(self.dst / "w.rx3", b"vanilla")
+        self.write(self.pack_a / "w.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        with unittest.mock.patch("server16_py.file_tools.os.replace", side_effect=PermissionError("locked")):
+            self.assertEqual(restore_tracked_files(self.dst, self.backup), (0, ["w.rx3"]))
+        self.assertEqual((self.dst / "w.rx3").read_bytes(), b"custom")
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (1, []))
+        self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
+
+    def test_a_lost_backup_is_reported_and_dropped(self) -> None:
+        self.write(self.dst / "w.rx3", b"vanilla")
+        self.write(self.pack_a / "w.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup)
+        (self.backup / "files" / "w.rx3").unlink()
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (0, ["w.rx3"]))
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (0, []))
+
+    def test_restore_with_nothing_tracked_is_a_no_op(self) -> None:
+        self.write(self.dst / "w.rx3", b"vanilla")
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (0, []))
+        self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
+
+
+class CopyFirstOrClearTests(unittest.TestCase):
+    """Entrance camera install: [stadiumentrancecam] pack, else the stadium's own
+    EntranceScene, else the slot is cleared so no previous stadium's camera sticks."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        root = Path(self._tmp.name)
+        self.pack = root / "pack" / "bcstadiumcams_176.dat"
+        self.own = root / "own" / "bcstadiumcams_176.dat"
+        self.dst = root / "camera" / "bcstadiumcams_176.dat"
+
+    def write(self, path: Path, data: bytes) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+
+    def test_first_existing_source_wins(self) -> None:
+        self.write(self.pack, b"pack")
+        self.write(self.own, b"own")
+        self.assertEqual(copy_first_or_clear([self.pack, self.own], self.dst), self.pack)
+        self.assertEqual(self.dst.read_bytes(), b"pack")
+
+    def test_falls_back_to_the_next_source_when_the_first_is_missing(self) -> None:
+        self.write(self.own, b"own")
+        self.assertEqual(copy_first_or_clear([self.pack, self.own], self.dst), self.own)
+        self.assertEqual(self.dst.read_bytes(), b"own")
+
+    def test_no_source_deletes_a_stale_destination(self) -> None:
+        self.write(self.dst, b"previous stadium")
+        self.assertIsNone(copy_first_or_clear([self.pack, self.own], self.dst))
+        self.assertFalse(self.dst.exists())
+
+    def test_no_source_and_no_destination_is_a_no_op(self) -> None:
+        self.assertIsNone(copy_first_or_clear([self.pack], self.dst))
+        self.assertFalse(self.dst.exists())
+
+    def test_clear_entrance_cams_removes_both_slots_and_nothing_else(self) -> None:
+        camera = self.dst.parent
+        for name in ("bcstadiumcams_176.dat", "bcstadiumcams_261.dat", "bcgameplay_176.dat"):
+            self.write(camera / name, b"x")
+        clear_entrance_cams(camera)
+        self.assertEqual(sorted(p.name for p in camera.iterdir()), ["bcgameplay_176.dat"])
 
 
 class CopyGoalpostSourcesTests(unittest.TestCase):

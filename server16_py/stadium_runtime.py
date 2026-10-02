@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import file_tools as _ft_mod
-from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_goalpost, copy, copy_bcgameplay, copy_glares, copy_goalpost_sources, copy_if_exists, copy_or_clear, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
+from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_entrance_cams, clear_goalpost, copy, copy_bcgameplay, copy_first_or_clear, copy_glares, copy_goalpost_sources, copy_if_exists, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
 from .kit_mixer import run_fifalibrary_worker
 
 if TYPE_CHECKING:
@@ -56,10 +56,18 @@ class StadiumRuntime:
             return display_name if display_name else stad_name
         return stad_name
 
+    def stadium_name_enabled(self) -> bool:
+        """[Modules] StadiumName: whether the custom stadium name is written into FIFA's
+        memory at all (pointer chains, loaded-DB text, match string) and watched while the
+        match loads. Off: FIFA keeps its own name for the slot. The name the app itself shows
+        (dashboard, Discord) is resolved separately and is not affected."""
+        return self.app.module_enabled("StadiumName")
+
     def write_active_stad_name(self, std_name: str) -> bool:
         """Write the given display name into every known scoreboard
         stadium-name pointer chain (176/261, plus their "B" and "C"
-        alternates — see offsets.py).
+        alternates — see offsets.py). A no-op (False) while the StadiumName
+        module is off.
 
         The struct layout this leaf offset points into apparently shifts
         with FIFA build/mod, so more than one of these six chains can
@@ -69,6 +77,8 @@ class StadiumRuntime:
         at least one slot was written and verified.
         """
         app = self.app
+        if not self.stadium_name_enabled():
+            return False
         if not app.memory.is_open():
             return False
         written = False
@@ -132,9 +142,11 @@ class StadiumRuntime:
         the same correct original name for every retry. A missing/unavailable
         team_db (32-bit bridge not connected) just means this soft-fails --
         the pointer-chain write in write_active_stad_name still runs
-        regardless.
+        regardless. Does nothing while the StadiumName module is off.
         """
         app = self.app
+        if not self.stadium_name_enabled():
+            return
         old_name = self._resolve_db_old_name(injid)
         if old_name:
             app.stadium_db_name_patcher.request(injid, old_name, new_name)
@@ -154,8 +166,11 @@ class StadiumRuntime:
         """Start StadiumDbNamePatchCoordinator's fast priority-window watch for
         this slot (see its fast_watch docstring for why). Resolves the "old"
         name exactly like request_db_name_patch does; a no-op when it can't
-        be resolved, or when the slot already shows `new_name`."""
+        be resolved, or when the slot already shows `new_name`, or while the StadiumName
+        module is off."""
         app = self.app
+        if not self.stadium_name_enabled():
+            return
         old_name = self._resolve_db_old_name(injid)
         if old_name:
             app.stadium_db_name_patcher.fast_watch(injid, old_name, new_name)
@@ -241,6 +256,16 @@ class StadiumRuntime:
         return model, texture
 
     @staticmethod
+    def _read_active_goalpost_override_names(app, stad_name: str) -> tuple[str, str]:
+        """_read_goalpost_override_names, but empty when the Goalposts module is off (the
+        stadium's own GoalpostGBD folder is then the only source). Kept separate from the raw
+        read on purpose: the overlay wizard pre-selects from the raw values, and must keep
+        showing (and re-saving) the picks while the module is switched off."""
+        if not app.module_enabled("Goalposts"):
+            return "", ""
+        return StadiumRuntime._read_goalpost_override_names(app, stad_name)
+
+    @staticmethod
     def resolve_goalpost_sources(app, stad: Path, stad_name: str) -> list[Path]:
         """Resolve where this stadium's goalpost assets come from. Deliberately keyed by
         stad_name (the already-resolved, single stadium folder -- see finish_stadium_apply's
@@ -256,6 +281,9 @@ class StadiumRuntime:
         [stadiumgoalpost] holds the model override, [stadiumgoalposttexture] the texture/color
         override -- both keyed by stad_name, independently optional.
 
+        With the Goalposts module off, both overrides are ignored (see
+        _read_active_goalpost_override_names) and only the stadium's own GoalpostGBD is used.
+
         No override of EITHER kind for stad_name keeps the legacy behavior: the stadium pack's
         own bundled GoalpostGBD folder (mixed model+texture+whatever, arbitrary filenames), as
         a single source. The moment either override is set, GoalpostGBD is NOT also mixed in --
@@ -263,14 +291,81 @@ class StadiumRuntime:
         both a legacy file and an override file claim the same destination filename. A category
         left unset while the other IS overridden simply keeps whatever restore_goalnet_defaults
         already restored to vanilla for it (copy_goalpost_sources always clears+restores first)."""
-        model, texture = StadiumRuntime._read_goalpost_override_names(app, stad_name)
+        model, texture = StadiumRuntime._read_active_goalpost_override_names(app, stad_name)
         if not model and not texture:
             return [stad / "GoalpostGBD"]
+        return StadiumRuntime._goalpost_override_sources(app, model, texture)
+
+    @staticmethod
+    def _goalpost_override_sources(app, model: str, texture: str) -> list[Path]:
+        """The FSW/Goalpost pack folders for the given override names, model first and then
+        texture, only including whichever of the two is set -- the order run_stadium_copy_job's
+        toasts consume them in."""
         sources: list[Path] = []
         if model:
             sources.append(app.exedir / "FSW" / "Goalpost" / "GoalpostModel" / model)
         if texture:
             sources.append(app.exedir / "FSW" / "Goalpost" / "GoalpostColor" / texture)
+        return sources
+
+    @staticmethod
+    def _pack_src_has_files(src: Path) -> bool:
+        """True for a goalpost pack folder holding at least one installable (non-.png) file."""
+        return src.is_dir() and next((f for f in src.rglob("*") if f.is_file() and f.suffix.lower() != ".png"), None) is not None
+
+    @staticmethod
+    def goalpost_packs_skipped(app, stad_name: str) -> bool:
+        """True when the Goalposts module is off but this stadium has a model/texture pack
+        assigned that would have been installed -- the "(OFF)" warning toast's condition."""
+        if app.module_enabled("Goalposts"):
+            return False
+        model, texture = StadiumRuntime._read_goalpost_override_names(app, stad_name)
+        return any(StadiumRuntime._pack_src_has_files(src) for src in StadiumRuntime._goalpost_override_sources(app, model, texture))
+
+    @staticmethod
+    def _read_raw_entrance_cam_pack_name(app, stad_name: str) -> str:
+        """The [stadiumentrancecam] pack name for stad_name as written in settings.ini, empty
+        when unset, regardless of whether the EntranceCam module is on."""
+        if app.settings_ini.key_exists(stad_name, "stadiumentrancecam"):
+            return app.settings_ini.read(stad_name, "stadiumentrancecam").strip()
+        return ""
+
+    @staticmethod
+    def _entrance_cam_pack_file(app, pack: str, injid: str) -> Path:
+        return app.exedir / "FSW" / "Camera" / "EntranceScene" / pack / f"bcstadiumcams_{injid}.dat"
+
+    @staticmethod
+    def _read_entrance_cam_override_name(app, stad_name: str) -> str:
+        """The raw [stadiumentrancecam] pack name for stad_name, empty when unset or when the
+        EntranceCam module is off (the stadium's own EntranceScene folder is then the only
+        source). Kept separate from _read_goalpost_override_names on purpose: that one's
+        2-tuple is unpacked by the overlay wizard and tests."""
+        if not app.module_enabled("EntranceCam"):
+            return ""
+        return StadiumRuntime._read_raw_entrance_cam_pack_name(app, stad_name)
+
+    @staticmethod
+    def entrance_cam_pack_skipped(app, stad_name: str, injid: str) -> bool:
+        """True when the EntranceCam module is off but this stadium has a pack assigned that
+        ships this slot's camera file -- the "(OFF)" warning toast's condition."""
+        if app.module_enabled("EntranceCam"):
+            return False
+        pack = StadiumRuntime._read_raw_entrance_cam_pack_name(app, stad_name)
+        return bool(pack) and StadiumRuntime._entrance_cam_pack_file(app, pack, injid).is_file()
+
+    @staticmethod
+    def resolve_entrance_cam_sources(app, stad: Path, stad_name: str, injid: str) -> list[Path]:
+        """Candidate bcstadiumcams_{injid}.dat files for this stadium, in priority order: the
+        shared FSW/Camera/EntranceScene/<name>/ pack assigned via [stadiumentrancecam] (keyed by
+        stad_name, like the goalpost overrides), then the stadium's own EntranceScene folder.
+        The pack only wins when it actually ships this slot's file, so a half-filled pack falls
+        back to the stadium's own camera instead of leaving the slot empty. Existence is left to
+        copy_first_or_clear; this only builds the list."""
+        sources: list[Path] = []
+        pack = StadiumRuntime._read_entrance_cam_override_name(app, stad_name)
+        if pack:
+            sources.append(StadiumRuntime._entrance_cam_pack_file(app, pack, injid))
+        sources.append(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat")
         return sources
 
     def goalpost_texture_preview_dir(self) -> Path:
@@ -394,6 +489,7 @@ class StadiumRuntime:
             app.ScoreboardStadName = ""
             clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
             clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
+            clear_entrance_cams(app.exedir / "data" / "bcdata" / "camera")
             extra_setup(app.Nsource, app.Ndest, "0", "netcolor", "0")
             return
         section_id = None
@@ -537,6 +633,7 @@ class StadiumRuntime:
         copy(app.exedir / "FSW" / "stadium", app.exedir / "data" / "sceneassets")
         clear_goalpost(app.exedir / "data" / "sceneassets" / "goalnet", app.exedir / "FSW" / ".goalpost_manifest", app.exedir / "FSW" / "GoalNet")
         clear_bcgameplay(app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")
+        clear_entrance_cams(app.exedir / "data" / "bcdata" / "camera")
         extra_setup(app.Nsource, app.Ndest, "0", "netcolor", "0")
         app.curstad = ""
         app.ScoreboardStadName = ""
@@ -619,7 +716,7 @@ class StadiumRuntime:
         # independent, best-effort mechanisms that don't depend on each other
         # (see CLAUDE.md §7 Part 3's live findings on which one actually
         # affects the pre-match screen):
-        if chosen_stadium:
+        if chosen_stadium and self.stadium_name_enabled():
             std_name = self.resolve_scoreboard_display_name(chosen_stadium)
             if self.write_active_stad_name(std_name):
                 app.log(f"Stadium name pre-written to memory: {std_name}")
@@ -733,11 +830,27 @@ class StadiumRuntime:
         glare1 = stad / "1"
         glare3 = stad / "3"
         no_seats = stad / "NoSeats.rx3"
+        entrance_cam_pack = self._read_entrance_cam_override_name(app, stad_name)
+        entrance_cam_sources = self.resolve_entrance_cam_sources(app, stad, stad_name, injid)
+
+        # True only when the FSW/Camera/EntranceScene pack itself was installed (not the
+        # stadium's own EntranceScene fallback) -- decides the "Entrance Camera" toast below.
+        entrance_cam_pack_installed = False
+
+        def _apply_entrance_cam() -> None:
+            nonlocal entrance_cam_pack_installed
+            if entrance_cam_pack and not entrance_cam_sources[0].parent.is_dir():
+                app.log(f"Entrance camera pack not found for {stad_name}: {entrance_cam_sources[0].parent}")
+            used = copy_first_or_clear(entrance_cam_sources, app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")
+            if entrance_cam_pack:
+                entrance_cam_pack_installed = used is not None and used == entrance_cam_sources[0]
+                app.log(f"Entrance camera for {stad_name}: pack [{entrance_cam_pack}] -> {used if used is not None else 'none, slot cleared'}")
+
         steps: list[tuple[str, callable]] = [
             ("Copying stadium model", lambda: copy_if_exists(stad / "model.rx3", dest / "stadium" / f"stadium_{injid}.rx3")),
             ("Copying day textures", lambda: copy_if_exists(stad / "texture_day.rx3", dest / "stadium" / f"stadium_{injid}_1_textures.rx3")),
             ("Copying night textures", lambda: copy_if_exists(stad / "texture_night.rx3", dest / "stadium" / f"stadium_{injid}_3_textures.rx3")),
-            ("Copying entrance scene", lambda: copy_or_clear(stad / "EntranceScene" / f"bcstadiumcams_{injid}.dat", app.exedir / "data" / "bcdata" / "camera" / f"bcstadiumcams_{injid}.dat")),
+            ("Copying entrance scene", _apply_entrance_cam),
             ("Copying gameplay camera", lambda: copy_bcgameplay(stad / "GameplayCamGBD", app.exedir / "data" / "bcdata" / "camera", app.exedir / "FSW" / "bcdata" / "camera")),
             ("Copying crowd day", lambda: copy_if_exists(stad / "crowd_day.dat", dest / "crowdplacement" / f"crowd_{injid}_1.dat")),
             ("Copying crowd night", lambda: copy_if_exists(stad / "crowd_night.dat", dest / "crowdplacement" / f"crowd_{injid}_3.dat")),
@@ -772,7 +885,7 @@ class StadiumRuntime:
                 ("Applying pitch setup", lambda: extra_setup(app.PitchMowsource, app.PitchMowdest, pitch, "pitchmowpattern", "0")),
             ]
         )
-        goalpost_model, goalpost_texture = self._read_goalpost_override_names(app, stad_name)
+        goalpost_model, goalpost_texture = self._read_active_goalpost_override_names(app, stad_name)
         goalpost_sources = self.resolve_goalpost_sources(app, stad, stad_name)
         _goalpost_overrides_root = app.exedir / "FSW" / "Goalpost"
         for _gp_src in goalpost_sources:
@@ -816,8 +929,17 @@ class StadiumRuntime:
         if _bcgp_dir.is_dir() and any((_bcgp_dir / n).exists() for n in ("bcgameplay_176.dat", "bcgameplay_261.dat")):
             app._worker_queue.put(("toast", app.tr("notify.bcgameplay_loaded"), stad_name, 3500, ""))
 
-        def _goalpost_src_has_files(src: Path) -> bool:
-            return src.is_dir() and next((f for f in src.rglob("*") if f.is_file() and f.suffix.lower() != ".png"), None) is not None
+        # The "(OFF)" warnings are the same toast as AssetRuntime._show_warning_toast (style 1,
+        # 5 s) -- queued with a 6th element since this runs off the Tk thread.
+        if entrance_cam_pack_installed:
+            # Name the pack (like the goalpost toasts do) -- the stadium name is already known.
+            app._worker_queue.put(("toast", app.tr("notify.entrance_cam_loaded"), entrance_cam_pack, 3500, "camera"))
+        elif self.entrance_cam_pack_skipped(app, stad_name, injid):
+            app._worker_queue.put(("toast", app.tr("notify.warn.entrance_cam_off"), app.tr("notify.warn.assets_skipped"), 5000, "camera", 1))
+
+        _goalpost_src_has_files = self._pack_src_has_files
+        if self.goalpost_packs_skipped(app, stad_name):
+            app._worker_queue.put(("toast", app.tr("notify.warn.goalposts_off"), app.tr("notify.warn.assets_skipped"), 5000, "goalpost", 1))
 
         if goalpost_model or goalpost_texture:
             # Independent model/texture overrides -- name the actual pack applied in each
@@ -901,11 +1023,15 @@ class StadiumRuntime:
             # MatchStringPatchCoordinator and StadiumDbNamePatchCoordinator
             # (CLAUDE.md §7 Part 3 for which one is actually confirmed live
             # to affect this screen).
-            std_name = scoreboard_display_name if scoreboard_display_name else stad_name
-            if self.write_active_stad_name(std_name):
-                app.log(f"Stadium name written to memory: {std_name}")
-            app.match_string_patcher.request(std_name)
-            self.request_db_name_patch(payload["injid"], std_name)
+            # All three are skipped while the StadiumName module is off.
+            if self.stadium_name_enabled():
+                std_name = scoreboard_display_name if scoreboard_display_name else stad_name
+                if self.write_active_stad_name(std_name):
+                    app.log(f"Stadium name written to memory: {std_name}")
+                app.match_string_patcher.request(std_name)
+                self.request_db_name_patch(payload["injid"], std_name)
+            elif scoreboard_display_name:
+                app.assets_runtime._show_warning_toast(app.tr("notify.warn.stadium_name_off"), app.tr("notify.warn.assets_skipped"), icon="stadium")
             app.CCount = inc_count(0, app.CCount)
             app.injID = payload["injid"]
             app.StadName = stad_name

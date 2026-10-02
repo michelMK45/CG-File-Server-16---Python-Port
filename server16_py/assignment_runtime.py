@@ -149,6 +149,7 @@ class AssignmentRuntime:
         selected_net = dialog.result["selectednet"]
         selected_goalpost = dialog.result["selectedgoalpost"]
         selected_goalpost_texture = dialog.result["selectedgoalposttexture"]
+        selected_entrance_cam = dialog.result.get("selectedentrancecam", "None")
         multi = dialog.result["multistadium"]
         if not selected_stadium or selected_stadium == "None":
             payload = "None"
@@ -189,13 +190,18 @@ class AssignmentRuntime:
             names = multi if scope in {"2", "3", "4"} else [selected_stadium]
             self._write_stadium_goalpost_overrides(
                 names,
-                {"stadiumgoalpost": selected_goalpost, "stadiumgoalposttexture": selected_goalpost_texture},
+                {
+                    "stadiumgoalpost": selected_goalpost,
+                    "stadiumgoalposttexture": selected_goalpost_texture,
+                    "stadiumentrancecam": selected_entrance_cam,
+                },
             )
 
     def _write_stadium_goalpost_overrides(self, stadium_names: list[str], overrides: dict[str, str]) -> None:
-        """Persists the Assign Stadium dialog's Goalpost Model/Texture picks
-        into their own sections ([stadiumgoalpost], [stadiumgoalposttexture]
-        -- see `overrides`' keys), keyed by stadium name (see
+        """Persists the Assign Stadium dialog's Goalpost Model/Texture and
+        Entrance Camera picks into their own sections ([stadiumgoalpost],
+        [stadiumgoalposttexture], [stadiumentrancecam] -- see `overrides`'
+        keys), keyed by stadium name (see
         StadiumRuntime.resolve_goalpost_sources) -- separate sections from
         [stadium]/[comp] itself, same as settings_editor.py's
         SettingsSectionFrame._write_stadium_goalpost_overrides. This dialog

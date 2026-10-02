@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .localization import LANGUAGE_LABELS, SUPPORTED_LANGUAGES
+from .module_catalog import MODULE_SLUGS, module_category_key, module_label_key
 
 
 class LocalizationMixin:
@@ -167,23 +168,12 @@ class LocalizationMixin:
             label.configure(text=self.tr(title_map.get(key, key)))
 
     def _apply_module_labels(self) -> None:
-        module_map = {
-            "Stadium": "module.stadium",
-            "TvLogo": "module.tvlogo",
-            "ScoreBoard": "module.scoreboard",
-            "Movies": "module.movies",
-            "Autorun": "module.autorun",
-            "StadiumNet": "module.stadiumnet",
-            "Chants": "module.chants",
-            "TeamEntrance": "module.team_entrance",
-            "Ball": "module.ball",
-            "Adboard": "module.adboard",
-            "Referee": "module.referee",
-            "Wipe": "module.wipe",
-            "DiscordRPC": "module.discord_rpc",
-        }
         for name, check in self.module_checks.items():
-            check.configure(text=self.tr(module_map.get(name, name)))
+            check.configure(text=self.tr(module_label_key(name)) if name in MODULE_SLUGS else name)
+        # The module tooltips resolve their text on every show (see _add_tooltip), so
+        # only the category headings need refreshing here.
+        for category, label in self.module_category_labels.items():
+            label.configure(text=self.tr(module_category_key(category)))
 
     def _apply_camera_localization(self) -> None:
         if self.camera_select_button is not None:

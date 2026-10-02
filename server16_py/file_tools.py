@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import importlib
+import json
+import os
 import random
 import re
 import shutil
 import subprocess
 import sys
+import time
 import unicodedata
 import zipfile
+from collections.abc import Collection
 from pathlib import Path
 
 try:
@@ -129,13 +133,20 @@ def kit_ui_placeholder_path() -> Path | None:
     return _bundled_resource_path("kit-ui-placeholder.png")
 
 
+def asset_placeholder_path(kind: str) -> Path | None:
+    """Bundled resources/<kind>-placeholder.png — the generic preview image the
+    F12 menu shows for a ScoreBoard/TVLogo/Movies entry that has no thumbnail
+    of its own (kind = "scoreboard", "tv" or "movie"), the same fallback role
+    stadium_preview_fallback_path()/kit_ui_placeholder_path() play for
+    stadiums/kits."""
+    return _bundled_resource_path(f"{kind}-placeholder.png")
+
+
 def rmlui_icon_path(name: str) -> Path | None:
-    """Bundled resources/rmlui/icons/<name>.png — the same small icon set
-    already used for toast notifications (see D3DOverlayInjector.show_toast's
-    `icon` param). Also doubles as the generic placeholder for tabs (e.g.
-    ScoreBoard/TVLogo) whose assets have no dedicated preview thumbnail of
-    their own, the same fallback role stadium_preview_fallback_path()/
-    kit_ui_placeholder_path() play for stadiums/kits."""
+    """Bundled resources/rmlui/icons/<name>.png — the small icon set used for
+    toast notifications (see D3DOverlayInjector.show_toast's `icon` param) and
+    the Movies tab's mute/unmute button. Not the menu's preview placeholders:
+    those are asset_placeholder_path()."""
     return _bundled_resource_path(f"rmlui/icons/{name}.png")
 
 
@@ -397,6 +408,157 @@ def copy(src: str | Path, dst: str | Path) -> None:
             if item.name.lower() in {"desktop.ini", "thumbs.db"}:
                 continue
             _copy_file_if_needed(item, target)
+
+
+def copy_file_atomic(src: Path, dst: Path, *, retries: int = 8) -> bool:
+    """Copy src over dst without ever leaving dst truncated.
+
+    Writes a temp file next to dst, checks its size, then os.replace()s it in,
+    so FIFA can't read a half-written file (shutil.copy2 straight onto dst can).
+    A destination Windows/antivirus has locked for a moment is retried with a
+    growing back-off; the last error is raised after `retries` attempts. Skips
+    the copy (returns False) when dst already matches src by size and mtime,
+    like _copy_file_if_needed. Ported from Nono's _copy_runtime_rx3_verified."""
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if _files_match(src, dst):
+        return False
+    tmp = dst.with_name(f".{dst.name}.server16_tmp")
+    last_exc: OSError | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            tmp.unlink(missing_ok=True)
+            shutil.copy2(src, tmp)
+            if tmp.stat().st_size != src.stat().st_size:
+                raise OSError(f"temporary size mismatch {tmp.stat().st_size} != {src.stat().st_size}")
+            os.replace(tmp, dst)
+            return True
+        except OSError as exc:
+            last_exc = exc
+            try:
+                tmp.unlink(missing_ok=True)
+            except OSError:
+                pass
+            if attempt < retries:
+                time.sleep(0.08 * attempt)
+    raise OSError(f"could not copy {src.name} to {dst} after {retries} attempts: {last_exc}")
+
+
+# Tracked install/restore: copies a pack over files the game itself ships (e.g.
+# data/sceneassets/wipe3d/specificwipe_0_996_0.rx3), backing up each original
+# the first time it is overwritten so it can be put back later. backup_dir holds
+# manifest.json ({"files": {<relative name>: <an original existed>}}) and, for
+# every entry whose original existed, its copy under files/. The entry is written
+# BEFORE the overwrite, so a crash mid-copy still restores correctly next time.
+_TRACKED_MANIFEST = "manifest.json"
+_TRACKED_BACKUPS = "files"
+
+
+def _load_tracked_manifest(backup_dir: Path) -> dict[str, bool]:
+    try:
+        data = json.loads((backup_dir / _TRACKED_MANIFEST).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    files = data.get("files") if isinstance(data, dict) else None
+    if not isinstance(files, dict):
+        return {}
+    return {str(name): bool(had_original) for name, had_original in files.items()}
+
+
+def _save_tracked_manifest(backup_dir: Path, files: dict[str, bool]) -> None:
+    if files:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / _TRACKED_MANIFEST).write_text(json.dumps({"files": files}, indent=2), encoding="utf-8")
+        return
+    # Nothing left to restore, so nothing left to remember. Only empty folders are
+    # pruned: a backup file still on disk (e.g. its manifest was lost) is never deleted.
+    (backup_dir / _TRACKED_MANIFEST).unlink(missing_ok=True)
+    if backup_dir.is_dir():
+        for path in sorted(backup_dir.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            if path.is_dir():
+                try:
+                    path.rmdir()
+                except OSError:
+                    pass
+        try:
+            backup_dir.rmdir()
+        except OSError:
+            pass
+
+
+def install_tracked_files(src_dir: Path, dst_dir: Path, backup_dir: Path) -> list[str]:
+    """Copy src_dir's files (same filters as copy(): no .png, desktop.ini or
+    Thumbs.db) into dst_dir, backing up what they overwrite. Anything a PREVIOUS
+    install put in dst_dir that src_dir no longer has is restored first, so only
+    the current pack is ever active. A file that fails to back up or copy is
+    left alone and reported at the end; the rest still go through. Returns the
+    relative names installed."""
+    # Manifest keys are lower-cased: Windows treats SpecificWipe_... and specificwipe_...
+    # as one file, so a pack that spells it differently must still find its own entry
+    # (otherwise its already-installed copy would be backed up as the "original").
+    wanted: dict[str, tuple[str, Path]] = {}
+    for item in sorted(src_dir.rglob("*")):
+        if not item.is_file() or item.suffix.lower() == ".png":
+            continue
+        if item.name.lower() in {"desktop.ini", "thumbs.db"}:
+            continue
+        rel = item.relative_to(src_dir).as_posix()
+        wanted[rel.lower()] = (rel, item)
+    restore_tracked_files(dst_dir, backup_dir, keep=wanted)
+    manifest = _load_tracked_manifest(backup_dir)
+    installed: list[str] = []
+    errors: list[str] = []
+    for key, (rel, item) in wanted.items():
+        dst = dst_dir / rel
+        try:
+            if key not in manifest:
+                had_original = dst.is_file()
+                if had_original:
+                    backup = backup_dir / _TRACKED_BACKUPS / key
+                    backup.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(dst, backup)
+                manifest[key] = had_original
+                _save_tracked_manifest(backup_dir, manifest)
+            copy_file_atomic(item, dst)
+            installed.append(rel)
+        except OSError as exc:
+            errors.append(f"{rel}: {exc}")
+    if errors:
+        raise OSError("; ".join(errors))
+    return installed
+
+
+def restore_tracked_files(dst_dir: Path, backup_dir: Path, keep: Collection[str] = ()) -> tuple[int, list[str]]:
+    """Undo install_tracked_files: put each backed-up original back, and delete
+    the files that had no original. Entries named in `keep` stay installed.
+    Returns (restored count, names that could NOT be restored). A name whose
+    backup file has gone missing is reported and dropped (nothing to retry);
+    one that failed on a locked file stays tracked so the next call retries."""
+    manifest = _load_tracked_manifest(backup_dir)
+    restored = 0
+    failed: list[str] = []
+    for rel in list(manifest):
+        if rel in keep:
+            continue
+        dst = dst_dir / rel
+        backup = backup_dir / _TRACKED_BACKUPS / rel
+        try:
+            if not manifest[rel]:
+                dst.unlink(missing_ok=True)
+            elif backup.is_file():
+                copy_file_atomic(backup, dst)
+                backup.unlink()
+            else:
+                failed.append(rel)
+                del manifest[rel]
+                continue
+        except OSError:
+            failed.append(rel)
+            continue
+        del manifest[rel]
+        restored += 1
+    if manifest or (backup_dir / _TRACKED_MANIFEST).exists():
+        _save_tracked_manifest(backup_dir, manifest)
+    return restored, failed
 
 
 def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
@@ -695,6 +857,31 @@ def copy_or_clear(src: str | Path, dst: str | Path) -> None:
         _copy_file_if_needed(src_path, dst_path)
     else:
         dst_path.unlink(missing_ok=True)
+
+
+def copy_first_or_clear(sources: list[Path], dst: str | Path) -> Path | None:
+    """Copy the first existing file in sources to dst; if none exists, delete any stale dst
+    left by a previous stadium (same clean-up guarantee as copy_or_clear). Returns the source
+    that was copied, or None when dst was cleared."""
+    dst_path = Path(dst)
+    for src in sources:
+        src_path = Path(src)
+        if src_path.is_file():
+            _copy_file_if_needed(src_path, dst_path)
+            return src_path
+    dst_path.unlink(missing_ok=True)
+    return None
+
+
+_BCSTADIUMCAMS_NAMES = ("bcstadiumcams_176.dat", "bcstadiumcams_261.dat")
+
+
+def clear_entrance_cams(dst_dir: Path) -> None:
+    """Delete both slots' entrance/exterior camera files, so neither a previous custom
+    stadium's own EntranceScene nor an [stadiumentrancecam] pack leaks into a match played
+    on a vanilla/unassigned stadium."""
+    for name in _BCSTADIUMCAMS_NAMES:
+        (dst_dir / name).unlink(missing_ok=True)
 
 
 def copy_tvlogo(src: str | Path, dst: str | Path) -> str:

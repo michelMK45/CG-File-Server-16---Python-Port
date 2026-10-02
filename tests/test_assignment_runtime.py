@@ -104,6 +104,30 @@ class WriteStadiumGoalpostOverridesTests(unittest.TestCase):
         reloaded = SessionIniFile(self.ini_path)
         self.assertFalse(reloaded.key_exists("Anfield", "stadiumgoalpost"))
 
+    def test_entrance_camera_is_written_alongside_the_goalposts_for_every_stadium(self) -> None:
+        # assign_stadium passes all three sections in one call; the entrance
+        # camera's own "None" delete must not wipe out the goalpost write.
+        runtime, ini = self.make_runtime()
+        runtime._write_stadium_goalpost_overrides(
+            ["Anfield", "Old Trafford"],
+            {"stadiumgoalpost": "1", "stadiumgoalposttexture": "None", "stadiumentrancecam": "Aerial"},
+        )
+        reloaded = SessionIniFile(self.ini_path)
+        for name in ("Anfield", "Old Trafford"):
+            self.assertEqual(reloaded.read(name, "stadiumgoalpost"), "1")
+            self.assertEqual(reloaded.read(name, "stadiumentrancecam"), "Aerial")
+
+    def test_entrance_camera_none_clears_it_without_touching_the_goalpost(self) -> None:
+        runtime, _ini = self.make_runtime()
+        runtime._write_stadium_goalpost_overrides(["Anfield"], {"stadiumentrancecam": "Aerial"})
+        runtime2, _ini2 = self.make_runtime()
+        runtime2._write_stadium_goalpost_overrides(
+            ["Anfield"], {"stadiumgoalpost": "1", "stadiumgoalposttexture": "None", "stadiumentrancecam": "None"},
+        )
+        reloaded = SessionIniFile(self.ini_path)
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumentrancecam"))
+        self.assertEqual(reloaded.read("Anfield", "stadiumgoalpost"), "1")
+
 
 if __name__ == "__main__":
     unittest.main()

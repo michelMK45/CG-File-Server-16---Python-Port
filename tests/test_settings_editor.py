@@ -145,6 +145,47 @@ class StadiumEditorSaveGoalpostOverridesTests(unittest.TestCase):
         reloaded = SessionIniFile(self.ini.path)
         self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
 
+    def test_entrance_camera_override_persists_alongside_everything_else(self) -> None:
+        frame = self.make_stadium_frame()
+        frame.key_var.set("176")
+        frame.assigned_stadium_list.insert("end", "Anfield")
+        frame._stadium_params["Anfield"] = ("4", "0", "0")
+        frame._stadium_goalpost["Anfield"] = "1"
+        frame._stadium_goalpost_texture["Anfield"] = "None"
+        frame._stadium_entrance_cam["Anfield"] = "Aerial"
+        frame.save_entry()
+
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
+        self.assertEqual(reloaded.read("Anfield", "stadiumgoalpost"), "1")
+        self.assertEqual(reloaded.read("Anfield", "stadiumentrancecam"), "Aerial")
+
+    def test_entrance_camera_set_to_none_deletes_the_existing_override(self) -> None:
+        self.ini.write("Anfield", "Aerial", "stadiumentrancecam")
+        self.ini.save()
+        frame = self.make_stadium_frame()
+        frame.key_var.set("176")
+        frame.assigned_stadium_list.insert("end", "Anfield")
+        frame._stadium_params["Anfield"] = ("4", "0", "0")
+        frame._stadium_goalpost["Anfield"] = "1"
+        frame._stadium_goalpost_texture["Anfield"] = "None"
+        frame._stadium_entrance_cam["Anfield"] = "None"
+        frame.save_entry()
+
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
+        self.assertEqual(reloaded.read("Anfield", "stadiumgoalpost"), "1")
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumentrancecam"))
+
+    def test_loading_an_entry_reads_the_existing_entrance_camera(self) -> None:
+        self.ini.write("176", "Anfield,4,0,0", "stadium")
+        self.ini.write("Anfield", "Aerial", "stadiumentrancecam")
+        self.ini.save()
+        frame = self.make_stadium_frame()
+        frame.load_entry("176")
+        self.assertEqual(frame._stadium_entrance_cam, {"Anfield": "Aerial"})
+        self.assertEqual(frame.entrance_cam_var.get(), "Aerial")
+
 
 @unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
 class StadiumEditorAssetPickerTests(unittest.TestCase):
@@ -172,6 +213,8 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
             "Goalpost/GoalpostModel/1/preview.png",
             "Goalpost/GoalpostModel/2/specificgoalpost_0_0.rx3",
             "Goalpost/GoalpostColor/Azul/specificnetsupportpost_0_0_textures.rx3",
+            "Camera/EntranceScene/Aerial/preview.png",
+            "Camera/EntranceScene/Plain/bcstadiumcams_176.dat",
         ):
             path = fsw / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -238,6 +281,16 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
         self.assertEqual(by_value["1"].image_path, self.exedir / "FSW" / "Goalpost" / "GoalpostModel" / "1" / "preview.png")
         self.assertIsNone(by_value["2"].image_path)  # no preview.<ext> in that pack
 
+    def test_entrance_camera_offers_none_first_and_the_pack_preview_file(self) -> None:
+        frame = self.make_frame()
+        variable, label_key, items = frame._stadium_picker_setup("entrancecam")
+        self.assertIs(variable, frame.entrance_cam_var)
+        self.assertEqual(label_key, "dialog.editor.field.entrance_cam")
+        self.assertEqual([item.value for item in items], ["None", "Aerial", "Plain"])
+        by_value = {item.value: item for item in items}
+        self.assertEqual(by_value["Aerial"].image_path, self.exedir / "FSW" / "Camera" / "EntranceScene" / "Aerial" / "preview.png")
+        self.assertIsNone(by_value["Plain"].image_path)
+
     def test_goalpost_texture_previews_are_rendered_from_the_rx3_reusing_the_cache(self) -> None:
         rendered = self.exedir / "azul.png"
         calls = []
@@ -282,6 +335,8 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
         self.assertEqual(frame._stadium_goalpost_texture["Anfield"], "Azul")
         self.run_picker(frame, "goalpost", "1")
         self.assertEqual(frame._stadium_goalpost["Anfield"], "1")
+        self.run_picker(frame, "entrancecam", "Plain")
+        self.assertEqual(frame._stadium_entrance_cam["Anfield"], "Plain")
 
     def test_the_current_value_is_passed_so_the_grid_can_highlight_it(self) -> None:
         frame = self.make_frame()
@@ -302,7 +357,7 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
 
     def test_every_preview_combo_has_a_picker_button_that_follows_the_combo_state(self) -> None:
         frame = self.make_frame()
-        combos = (frame.police_combo, frame.pitch_combo, frame.net_combo, frame.goalpost_combo, frame.goalpost_texture_combo)
+        combos = (frame.police_combo, frame.pitch_combo, frame.net_combo, frame.goalpost_combo, frame.goalpost_texture_combo, frame.entrance_cam_combo)
         for combo in combos:
             self.assertTrue(combo.picker_button.instate(["disabled"]), "no stadium row selected yet")
         self.select_stadium(frame)
@@ -319,6 +374,40 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
         spec = SectionSpec("scoreboard", "Scoreboards", kind="simple", directory="ScoreBoardGBD")
         frame = SettingsSectionFrame(self.root, self.app, spec)
         self.assertFalse(hasattr(frame.value_combo, "picker_button"))
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class EntranceCamPriorityHintTests(unittest.TestCase):
+    """Every editor tab where an Entrance Camera pack can be picked explains that the
+    pack wins over the stadium's own EntranceScene folder."""
+
+    HINT_KEY = "dialog.stadium.entrance_cam_hint"
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        (exedir / "FSW").mkdir(parents=True)
+        self.app = FakeApp(exedir, SessionIniFile(exedir / "FSW" / "settings.ini"))
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def hint_labels(self, spec: SectionSpec) -> list[tk.Label]:
+        frame = SettingsSectionFrame(self.root, self.app, spec)
+        return [w for w in frame.body.winfo_children() if isinstance(w, tk.Label) and w.cget("text") == self.HINT_KEY]
+
+    def test_stadium_settings_tab_shows_the_hint(self) -> None:
+        spec = SectionSpec("stadium", "Team Stadiums", kind="stadium", directory="StadiumGBD")
+        self.assertEqual(len(self.hint_labels(spec)), 1)
+
+    def test_entrance_cameras_by_stadium_name_tab_shows_the_hint(self) -> None:
+        spec = SectionSpec("stadiumentrancecam", "Entrance Cameras By Stadium Name", kind="simple", directory="FSW\\Camera\\EntranceScene", key_stadium_picker=True)
+        self.assertEqual(len(self.hint_labels(spec)), 1)
+
+    def test_other_simple_tabs_do_not_show_it(self) -> None:
+        spec = SectionSpec("stadiumgoalpost", "Goalpost Models By Stadium Name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True)
+        self.assertEqual(self.hint_labels(spec), [])
 
 
 if __name__ == "__main__":

@@ -23,6 +23,19 @@ class Offsets:
     NTCP: list[int] = field(default_factory=lambda: [644])
     NTRI: list[int] = field(default_factory=lambda: [632])
     NTTR: list[int] = field(default_factory=lambda: [624])
+    # Net tension selector (0/1/2), same ORINETDEPTHBASE-relative net struct as
+    # NTDP/NTCP/NTRI/NTTR above (offset sits between NTTR=624 and NTRI=632).
+    # Contributed 2026-09-27 by a forum user who reports it live-tested on their
+    # own build/install and paired it with a hand-edited attribdb.bin providing
+    # loose/normal/tense soccernet physics presets (not part of this repo).
+    # Confirmed working live by the maintainer on 2026-10-01 (verbal confirmation
+    # in a session, no CE log kept here), so the net-profile write includes it
+    # (AssetRuntime.tv_bumper_page). Per the reporter, the tension
+    # value currently only has a visible effect at Down Deep == 1089438971 or
+    # 1093138971 ("Tri deep"); other depths silently ignore it. They also note
+    # soccernet's lines must be disabled in the stadium's rna.ini/cl.ini for the
+    # tension change to take effect at all, which then breaks supports beyond 4.
+    NTTT: list[int] = field(default_factory=lambda: [628])
     STDNAMEOFFSET176: list[int] = field(default_factory=lambda: [408, 48, 7393])
     STDNAMEOFFSET261: list[int] = field(default_factory=lambda: [296, 48, 13553])
     # Alternate final-leaf offsets for the same two struct chains. The scoreboard
@@ -200,6 +213,7 @@ class Offsets:
             self.NTCP,
             self.NTRI,
             self.NTTR,
+            self.NTTT,
             self.STDNAMEOFFSET176,
             self.STDNAMEOFFSET261,
             self.STDNAMEOFFSET176B,

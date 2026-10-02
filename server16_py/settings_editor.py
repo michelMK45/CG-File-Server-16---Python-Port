@@ -99,7 +99,13 @@ class SettingsSectionFrame(tk.Frame):
     MAX_ASSIGNED_STADIUMS = 64
     STADIUM_DEFAULTS = {"police": "4", "pitch": "0", "net": "0"}
     POLICE_VALUES = tuple(str(i) for i in range(1, 11))
-    NET_DEFAULTS = {"down": "1086199011", "high": "1087199011", "rig": "4", "shape": "0"}
+    NET_DEFAULTS = {"down": "1089199011", "high": "1087199011", "rig": "2", "shape": "0", "tension": "0"}
+    # Net shape is a 0/1 flag in-engine -- only these two values are valid.
+    # shape_var holds the human-readable label; raw "0"/"1" is what actually
+    # gets read/written to settings.ini (see _load_net_value/_compose_value).
+    SHAPE_VALUE_TO_LABEL = {"0": "square(0)", "1": "triangle(1)"}
+    SHAPE_LABEL_TO_VALUE = {label: value for value, label in SHAPE_VALUE_TO_LABEL.items()}
+    SHAPE_CHOICES = list(SHAPE_VALUE_TO_LABEL.values())
     STADIUM_NAME_DEFAULTS = {"name": "", "active": "1"}
     CHANTS_DEFAULTS = {
         "folder": "",
@@ -335,6 +341,8 @@ class SettingsSectionFrame(tk.Frame):
         if self.spec.kind == "simple":
             self.value_var = tk.StringVar()
             self.value_combo = self._add_combo_row(self.body, 0, self.spec.value_label, self.value_var, self._available_choices())
+            if self.spec.section == "stadiumentrancecam":
+                self._add_entrance_cam_hint(1)
         elif self.spec.kind == "stadium":
             self._build_stadium_editor()
         elif self.spec.kind == "net":
@@ -368,6 +376,10 @@ class SettingsSectionFrame(tk.Frame):
         # FSW/Goalpost/GoalpostColor/<name>/), not one combined folder.
         self._stadium_goalpost: dict[str, str] = {}
         self._stadium_goalpost_texture: dict[str, str] = {}
+        # [stadiumentrancecam] (FSW/Camera/EntranceScene/<name>/ packs, see
+        # StadiumRuntime.resolve_entrance_cam_sources) -- same name-keyed,
+        # separately-persisted convention as the two goalpost dicts above.
+        self._stadium_entrance_cam: dict[str, str] = {}
         self._active_stadium_name: str | None = None
         self.body.grid_columnconfigure(0, weight=1)
         self.body.grid_columnconfigure(1, weight=1)
@@ -546,7 +558,25 @@ class SettingsSectionFrame(tk.Frame):
         self.goalpost_texture_var = tk.StringVar(value="None")
         self.goalpost_texture_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalposttexture"))
         self.goalpost_texture_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.goalpost_texture"), self.goalpost_texture_var, self._available_goalpost_choices("GoalpostColor"), picker=lambda: self._pick_stadium_asset("goalposttexture"))
+        self.entrance_cam_var = tk.StringVar(value="None")
+        self.entrance_cam_var.trace_add("write", lambda *_: self._on_stadium_param_changed("entrancecam"))
+        self.entrance_cam_combo = self._add_combo_row(self.body, 7, self.tr("dialog.editor.field.entrance_cam"), self.entrance_cam_var, self._available_entrance_cam_choices(), picker=lambda: self._pick_stadium_asset("entrancecam"))
+        self._add_entrance_cam_hint(8)
         self._refresh_stadium_assigned_state()
+
+    def _add_entrance_cam_hint(self, row: int) -> None:
+        """Pack-vs-stadium-camera priority note (see StadiumRuntime.resolve_entrance_cam_sources),
+        shown wherever an Entrance Camera pack can be picked in this editor."""
+        tk.Label(
+            self.body,
+            text=self.tr("dialog.stadium.entrance_cam_hint"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 8),
+            anchor="w",
+            wraplength=420,
+            justify="left",
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(4, 4))
 
     def _stadium_default_triple(self) -> tuple[str, str, str]:
         return (self.STADIUM_DEFAULTS["police"], self.STADIUM_DEFAULTS["pitch"], self.STADIUM_DEFAULTS["net"])
@@ -571,8 +601,26 @@ class SettingsSectionFrame(tk.Frame):
         texture = self.app.settings_ini.read(name, "stadiumgoalposttexture").strip() if self.app.settings_ini.key_exists(name, "stadiumgoalposttexture") else ""
         return model or "None", texture or "None"
 
+    def _entrance_cam_dir(self) -> Path:
+        return self.app.exedir / "FSW" / "Camera" / "EntranceScene"
+
+    def _available_entrance_cam_choices(self) -> list[str]:
+        base = self._entrance_cam_dir()
+        choices = ["None"]
+        if base.exists():
+            choices.extend(sorted(path.name for path in base.iterdir() if path.is_dir()))
+        return choices
+
+    def _lookup_existing_entrance_cam(self, name: str) -> str:
+        """name's CURRENT [stadiumentrancecam] value from settings.ini, for the
+        same reason as _lookup_existing_goalpost_overrides (kept separate so
+        that one's 2-tuple stays as it is)."""
+        if self.app.settings_ini.key_exists(name, "stadiumentrancecam"):
+            return self.app.settings_ini.read(name, "stadiumentrancecam").strip() or "None"
+        return "None"
+
     def _set_stadium_param_controls_state(self, state: str) -> None:
-        for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo):
+        for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo, self.entrance_cam_combo):
             combo.configure(state=state)
             # The picker button (see _add_combo_row) follows its combo: with no
             # single Assigned row selected there's nothing for a pick to write into.
@@ -612,6 +660,10 @@ class SettingsSectionFrame(tk.Frame):
             color_dir = self.app.exedir / "FSW" / "Goalpost" / "GoalpostColor"
             items = goalpost_texture_items(color_dir, self._available_goalpost_choices("GoalpostColor"), self.app.stadium_runtime)
             return self.goalpost_texture_var, "dialog.editor.field.goalpost_texture", items
+        if field == "entrancecam":
+            # Same preview.<ext>-inside-the-pack convention as GoalpostModel.
+            items = goalpost_model_items(self._entrance_cam_dir(), self._available_entrance_cam_choices())
+            return self.entrance_cam_var, "dialog.editor.field.entrance_cam", items
         raise ValueError(f"no asset picker for stadium field {field!r}")
 
     def _on_assigned_selection_changed(self) -> None:
@@ -629,6 +681,7 @@ class SettingsSectionFrame(tk.Frame):
             self.net_var.set(net)
             self.goalpost_var.set(self._stadium_goalpost.get(name, "None"))
             self.goalpost_texture_var.set(self._stadium_goalpost_texture.get(name, "None"))
+            self.entrance_cam_var.set(self._stadium_entrance_cam.get(name, "None"))
             self._set_stadium_param_controls_state("normal")
             self.stadium_params_label.configure(text=self.tr("dialog.editor.stadium_multi.editing_params", name=name))
         else:
@@ -648,12 +701,16 @@ class SettingsSectionFrame(tk.Frame):
             self._update_goalpost_model_preview()
         elif field == "goalposttexture":
             self._update_goalpost_texture_preview()
+        elif field == "entrancecam":
+            self._update_entrance_cam_preview()
         if self._active_stadium_name is None:
             return
         if field == "goalpost":
             self._stadium_goalpost[self._active_stadium_name] = self.goalpost_var.get().strip() or "None"
         elif field == "goalposttexture":
             self._stadium_goalpost_texture[self._active_stadium_name] = self.goalpost_texture_var.get().strip() or "None"
+        elif field == "entrancecam":
+            self._stadium_entrance_cam[self._active_stadium_name] = self.entrance_cam_var.get().strip() or "None"
         else:
             self._stadium_params[self._active_stadium_name] = (
                 self.police_var.get().strip(), self.pitch_var.get().strip(), self.net_var.get().strip(),
@@ -697,6 +754,8 @@ class SettingsSectionFrame(tk.Frame):
                 model, texture = self._lookup_existing_goalpost_overrides(name)
                 self._stadium_goalpost[name] = model
                 self._stadium_goalpost_texture[name] = texture
+            if name not in self._stadium_entrance_cam:
+                self._stadium_entrance_cam[name] = self._lookup_existing_entrance_cam(name)
             existing.add(name)
             last_added_index = self.assigned_stadium_list.size() - 1
         if last_added_index is not None:
@@ -751,6 +810,10 @@ class SettingsSectionFrame(tk.Frame):
             self._stadium_goalpost_texture[new_name] = goalpost_texture
             self._stadium_goalpost.pop(current_name, None)
             self._stadium_goalpost_texture.pop(current_name, None)
+            # Global-by-name too, same as the goalpost picks above.
+            if new_name not in self._stadium_entrance_cam:
+                self._stadium_entrance_cam[new_name] = self._lookup_existing_entrance_cam(new_name)
+            self._stadium_entrance_cam.pop(current_name, None)
         self.assigned_stadium_list.delete(index)
         self.assigned_stadium_list.insert(index, new_name)
         self.assigned_stadium_list.selection_set(index)
@@ -805,8 +868,10 @@ class SettingsSectionFrame(tk.Frame):
         goalpost_row.grid(row=1, column=0, sticky="nsew", pady=(0, 8))
         goalpost_row.grid_columnconfigure(0, weight=1)
         goalpost_row.grid_columnconfigure(1, weight=1)
+        goalpost_row.grid_columnconfigure(2, weight=1)
         self._build_stadium_preview_box(goalpost_row, 0, self.tr("dialog.stadium.preview.goalpost_model"), "goalpost_model", image_size=(170, 140))
         self._build_stadium_preview_box(goalpost_row, 1, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(170, 140))
+        self._build_stadium_preview_box(goalpost_row, 2, self.tr("dialog.stadium.preview.entrance_cam"), "entrance_cam", image_size=(170, 140))
 
         stadium_wrap = tk.Frame(container, bg=self.app.card)
         stadium_wrap.grid(row=2, column=0, sticky="nsew")
@@ -819,6 +884,7 @@ class SettingsSectionFrame(tk.Frame):
         self._update_police_preview()
         self._update_goalpost_model_preview()
         self._update_goalpost_texture_preview()
+        self._update_entrance_cam_preview()
 
     def _build_stadium_preview_box(
         self,
@@ -941,6 +1007,15 @@ class SettingsSectionFrame(tk.Frame):
             image_path = resolve_goalpost_model_preview_path(self.app.exedir / "FSW" / "Goalpost" / "GoalpostModel", name)
         self._set_preview_image("goalpost_model", image_path, self.tr("placeholder.no_preview"))
 
+    def _update_entrance_cam_preview(self) -> None:
+        if "entrance_cam" not in self._preview_labels:
+            return
+        name = self.entrance_cam_var.get().strip()
+        image_path = None
+        if name and name != "None":
+            image_path = resolve_goalpost_model_preview_path(self._entrance_cam_dir(), name)
+        self._set_preview_image("entrance_cam", image_path, self.tr("placeholder.no_preview"))
+
     def _update_goalpost_texture_preview(self) -> None:
         # Unlike every other preview in this panel (all plain image files), a
         # GoalpostColor pack has no preview image convention -- the preview
@@ -988,11 +1063,14 @@ class SettingsSectionFrame(tk.Frame):
         self.down_var = tk.StringVar(value=self.NET_DEFAULTS["down"])
         self.high_var = tk.StringVar(value=self.NET_DEFAULTS["high"])
         self.rig_var = tk.StringVar(value=self.NET_DEFAULTS["rig"])
-        self.shape_var = tk.StringVar(value=self.NET_DEFAULTS["shape"])
+        self.shape_var = tk.StringVar(value=self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]])
+        self.tension_var = tk.StringVar(value=self.NET_DEFAULTS["tension"])
         self._add_entry_row(self.body, 0, "Down Deep", self.down_var)
         self._add_entry_row(self.body, 1, "High Deep", self.high_var)
         self._add_combo_row(self.body, 2, "Rig", self.rig_var, [str(i) for i in range(0, 11)])
-        self._add_combo_row(self.body, 3, "Shape", self.shape_var, ["0", "1", "2", "3", "4"])
+        shape_combo = self._add_combo_row(self.body, 3, "Shape", self.shape_var, self.SHAPE_CHOICES)
+        shape_combo.configure(state="readonly")  # only square(0)/triangle(1) are valid in-engine
+        self._add_combo_row(self.body, 4, "Tension", self.tension_var, ["0", "1", "2"])
 
     def _build_scoreboard_name_editor(self) -> None:
         self.display_name_var = tk.StringVar()
@@ -1517,12 +1595,14 @@ class SettingsSectionFrame(tk.Frame):
             self._stadium_params = {}
             self._stadium_goalpost = {}
             self._stadium_goalpost_texture = {}
+            self._stadium_entrance_cam = {}
             self._refresh_stadium_assigned_state()
         elif self.spec.kind == "net":
             self.down_var.set(self.NET_DEFAULTS["down"])
             self.high_var.set(self.NET_DEFAULTS["high"])
             self.rig_var.set(self.NET_DEFAULTS["rig"])
-            self.shape_var.set(self.NET_DEFAULTS["shape"])
+            self.shape_var.set(self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]])
+            self.tension_var.set(self.NET_DEFAULTS["tension"])
         elif self.spec.kind == "scoreboardstdname":
             self.display_name_var.set("")
         elif self.spec.kind == "chants":
@@ -1567,6 +1647,7 @@ class SettingsSectionFrame(tk.Frame):
         self._stadium_params = {}
         self._stadium_goalpost = {}
         self._stadium_goalpost_texture = {}
+        self._stadium_entrance_cam = {}
         if value and value != "None":
             entries = StadiumRuntime._parse_stadium_entries(value)
             if not entries:
@@ -1592,6 +1673,7 @@ class SettingsSectionFrame(tk.Frame):
                 model, texture = self._lookup_existing_goalpost_overrides(name)
                 self._stadium_goalpost[name] = model
                 self._stadium_goalpost_texture[name] = texture
+                self._stadium_entrance_cam[name] = self._lookup_existing_entrance_cam(name)
         if self.assigned_stadium_list.size() > 0:
             self.assigned_stadium_list.selection_set(0)
             self.assigned_stadium_list.activate(0)
@@ -1599,12 +1681,14 @@ class SettingsSectionFrame(tk.Frame):
 
     def _load_net_value(self, value: str) -> None:
         parts = [part.strip() for part in value.split(",")]
-        while len(parts) < 4:
+        while len(parts) < 5:
             parts.append("")
         self.down_var.set(parts[0] or self.NET_DEFAULTS["down"])
         self.high_var.set(parts[1] or self.NET_DEFAULTS["high"])
         self.rig_var.set(parts[2] or self.NET_DEFAULTS["rig"])
-        self.shape_var.set(parts[3] or self.NET_DEFAULTS["shape"])
+        shape_raw = (parts[3] or self.NET_DEFAULTS["shape"]).strip()
+        self.shape_var.set(self.SHAPE_VALUE_TO_LABEL.get(shape_raw, self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]]))
+        self.tension_var.set(parts[4] or self.NET_DEFAULTS["tension"])
 
     def _load_scoreboard_name_value(self, key: str, value: str) -> None:
         # Format: DisplayName  (comma-separated values are supported, we take first part)
@@ -1670,7 +1754,8 @@ class SettingsSectionFrame(tk.Frame):
                     self.down_var.get().strip(),
                     self.high_var.get().strip(),
                     self.rig_var.get().strip(),
-                    self.shape_var.get().strip(),
+                    self.SHAPE_LABEL_TO_VALUE.get(self.shape_var.get().strip(), self.NET_DEFAULTS["shape"]),
+                    self.tension_var.get().strip(),
                 ]
             )
         if self.spec.kind == "scoreboardstdname":
@@ -1760,6 +1845,9 @@ class SettingsSectionFrame(tk.Frame):
         for name, texture in self._stadium_goalpost_texture.items():
             if not texture or texture == "None":
                 self.app.settings_ini.delete_key(name, "stadiumgoalposttexture")
+        for name, entrance_cam in self._stadium_entrance_cam.items():
+            if not entrance_cam or entrance_cam == "None":
+                self.app.settings_ini.delete_key(name, "stadiumentrancecam")
 
     def _write_stadium_goalpost_overrides(self) -> None:
         """The write() half -- see _clear_stale_stadium_goalpost_overrides,
@@ -1771,6 +1859,9 @@ class SettingsSectionFrame(tk.Frame):
         for name, texture in self._stadium_goalpost_texture.items():
             if texture and texture != "None":
                 self.app.settings_ini.write(name, texture, "stadiumgoalposttexture")
+        for name, entrance_cam in self._stadium_entrance_cam.items():
+            if entrance_cam and entrance_cam != "None":
+                self.app.settings_ini.write(name, entrance_cam, "stadiumentrancecam")
 
     def delete_entry(self) -> None:
         key = self.key_var.get().strip() or self.selected_key
@@ -1858,6 +1949,7 @@ def stadium_specs() -> list[SectionSpec]:
         SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD", key_stadium_picker=True),
         SectionSpec("stadiumgoalpost", "dialog.editor.choice.goalpost_models_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True),
         SectionSpec("stadiumgoalposttexture", "dialog.editor.choice.goalpost_textures_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostColor", key_stadium_picker=True),
+        SectionSpec("stadiumentrancecam", "dialog.editor.choice.entrance_cams_by_stadium_name", kind="simple", directory="FSW\\Camera\\EntranceScene", key_stadium_picker=True),
         SectionSpec("exclude", "Excluded Competitions", kind="exclude"),
     ]
 

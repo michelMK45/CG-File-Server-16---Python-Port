@@ -391,6 +391,9 @@ class StadiumDialog(BaseDialog):
         # separately selectable packs -- see StadiumRuntime.resolve_goalpost_sources.
         self.selectedgoalpost = tk.StringVar(value="None")
         self.selectedgoalposttexture = tk.StringVar(value="None")
+        # [stadiumentrancecam]: a shared FSW/Camera/EntranceScene/<name>/ pack of
+        # bcstadiumcams_176/261.dat -- see StadiumRuntime.resolve_entrance_cam_sources.
+        self.selectedentrancecam = tk.StringVar(value="None")
         self.selectedstadium = tk.StringVar()
         # Which (comp, section) assignment targets this dialog session has
         # already pre-loaded the existing selection for (see
@@ -411,6 +414,7 @@ class StadiumDialog(BaseDialog):
         self.police_source = self._first_existing(exedir / "FSW" / "Images" / "Police", exedir / "FSW" / "Police")
         self.goalpost_model_source = exedir / "FSW" / "Goalpost" / "GoalpostModel"
         self.goalpost_texture_source = exedir / "FSW" / "Goalpost" / "GoalpostColor"
+        self.entrance_cam_source = exedir / "FSW" / "Camera" / "EntranceScene"
         self._all_stadiums = ["None"]
         self._country_group_labels = {"All Countries": self.tr("dialog.stadium.all_countries")}
         self._all_stadiums.extend(discover_stadium_names(self.stadium_source))
@@ -613,6 +617,34 @@ class StadiumDialog(BaseDialog):
         )
         self._build_preview(goalpost_texture_wrap, 0, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(155, 135), row=2)
 
+        # Same two-column grid as goalpost_row so the combo lines up with theirs. No preview
+        # box: camera packs ship no image to show. The right-hand column holds the priority
+        # note (pack vs. the stadium's own camera).
+        entrance_cam_row = tk.Frame(preview_bottom, bg=self.card)
+        entrance_cam_row.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        entrance_cam_row.grid_columnconfigure(0, weight=1)
+        entrance_cam_row.grid_columnconfigure(1, weight=1)
+        entrance_cam_wrap = tk.Frame(entrance_cam_row, bg=self.card)
+        entrance_cam_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        entrance_cam_wrap.grid_columnconfigure(0, weight=1)
+        self._combo(
+            entrance_cam_wrap,
+            0,
+            self.tr("dialog.stadium.entrance_cam"),
+            self._folder_names(self.entrance_cam_source),
+            self.selectedentrancecam,
+            picker=lambda: self._pick_asset("entrancecam"),
+        )
+        self._dark_label(
+            entrance_cam_row,
+            self.tr("dialog.stadium.entrance_cam_hint"),
+            muted=True,
+            font=("Bahnschrift", 9),
+            anchor="nw",
+            justify="left",
+            wraplength=200,
+        ).grid(row=0, column=1, sticky="nw", padx=(6, 0))
+
         # <MouseWheel> only fires on the exact widget under the cursor, not
         # its ancestors -- binding just right_canvas/right_body (as before)
         # left the wheel dead over almost the whole panel, since that's
@@ -668,7 +700,8 @@ class StadiumDialog(BaseDialog):
         locations those combos and their preview boxes already use. The refresh
         callback is what <<ComboboxSelected>> would have run: setting a
         StringVar programmatically doesn't fire that event, so a pick made in
-        the grid has to invoke it by hand to update the preview box."""
+        the grid has to invoke it by hand to update the preview box. It is None for
+        the entrance camera, which has no preview box to update."""
         if field == "police":
             items = png_items(self.POLICE_VALUES, self.police_source)
             return self.selectedpolice, "dialog.stadium.police_pattern", items, self._on_police_changed
@@ -686,6 +719,10 @@ class StadiumDialog(BaseDialog):
                 self.goalpost_texture_source, self._folder_names(self.goalpost_texture_source), self.app.stadium_runtime,
             )
             return self.selectedgoalposttexture, "dialog.stadium.goalpost_texture", items, self._on_goalpost_texture_changed
+        if field == "entrancecam":
+            # Same preview.<ext>-inside-the-pack convention as GoalpostModel.
+            items = goalpost_model_items(self.entrance_cam_source, self._folder_names(self.entrance_cam_source))
+            return self.selectedentrancecam, "dialog.stadium.entrance_cam", items, None
         raise ValueError(f"no asset picker for stadium field {field!r}")
 
     def _pick_asset(self, field: str) -> None:
@@ -709,7 +746,8 @@ class StadiumDialog(BaseDialog):
             pass
         if picker.result is not None:
             variable.set(picker.result)
-            on_changed()
+            if on_changed is not None:
+                on_changed()
 
     def _bind_mousewheel_target(self, *widgets: tk.Misc, scroll_callback) -> None:
         def on_mousewheel(event):
@@ -914,8 +952,11 @@ class StadiumDialog(BaseDialog):
         if self.app.settings_ini.key_exists(stadiums[0], "stadiumgoalposttexture"):
             existing_texture = self.app.settings_ini.read(stadiums[0], "stadiumgoalposttexture").strip()
             self.selectedgoalposttexture.set(existing_texture or "None")
-        # .set() alone doesn't fire <<ComboboxSelected>> -- refresh both
-        # goalpost previews explicitly, same as pitch/net/police already
+        if self.app.settings_ini.key_exists(stadiums[0], "stadiumentrancecam"):
+            existing_entrance_cam = self.app.settings_ini.read(stadiums[0], "stadiumentrancecam").strip()
+            self.selectedentrancecam.set(existing_entrance_cam or "None")
+        # .set() alone doesn't fire <<ComboboxSelected>> -- refresh the
+        # override previews explicitly, same as pitch/net/police already
         # need to right after this same preload elsewhere in this class.
         if getattr(self, "_ui_ready", False):
             self._on_goalpost_model_changed()
@@ -1092,6 +1133,7 @@ class StadiumDialog(BaseDialog):
             "selectedpolice": police_id,
             "selectedgoalpost": self.selectedgoalpost.get(),
             "selectedgoalposttexture": self.selectedgoalposttexture.get(),
+            "selectedentrancecam": self.selectedentrancecam.get(),
         }
         self.close_ok(payload)
 
