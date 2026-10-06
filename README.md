@@ -49,13 +49,16 @@ New here? Start with [Getting Started](#getting-started) to install the app, the
 | Stadium | Per-stadium Broadcast camera tuning | `bcgameplay_176/261.dat` setup | [Gameplay Camera Files](#gameplay-camera-files) |
 | Stadium | Reusing one entrance/exterior camera across stadiums | Shared `FSW/Camera/EntranceScene` packs and their priority over the stadium's own camera | [Entrance Camera Packs](#entrance-camera-packs) |
 | Stadium | Goal net depth, rig, shape and tension | The five net values, where they're edited, and the Tension caveat | [Stadium Net Values](#stadium-net-values) |
-| Scoreboard / TV Logo / Movie | Scoreboard packs | `ScoreBoardGBD` folder layout and round/tournament/home-team assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
+| Scoreboard / TV Logo / Movie | Scoreboard packs | `ScoreBoardGBD` folder layout and round/tournament/derby/home-team assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
 | Scoreboard / TV Logo / Movie | TV Logo packs | `TVLogoGBD` folder layout and assignment | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
 | Scoreboard / TV Logo / Movie | Movie packs (intro movie / competition bumper) | `MoviesGBD` folder layout, assignment, and video preview | [Scoreboard, TV Logo & Movie Packs](#scoreboard-tv-logo--movie-packs) |
+| Scoreboard / TV Logo / Movie | A scoreboard, TV logo or movie for one specific fixture | Derby keys (`<home id>vs<away id>`), where to assign them, and their place in the priority order | [Derby Assignments](#derby-assignments) |
 | Camera | Camera mod packages (Anth's AIO Camera Mod) | Required folder layout and how applying a preset works | [Camera Packages](#camera-packages-1) |
 | Kits | Building custom kit packs for Kit Mixer | `FSW/Kits` folder structure | [Kit Mixer — `FSW/Kits` Package Structure](#kit-mixer--fswkits-package-structure) |
 | Kits | Ready-made kit sets + F7–F11 in-game hotkeys | Kit Sets folder layout and hotkey behavior | [Kit Sets](#kit-sets) |
 | Chants & Audio | Team/goal chants and the pre-kickoff entrance anthem | `FSW/Chants` layout, volumes, and the Team Entrance sequence | [Chants Audio Files](#chants-audio-files) · [Team Entrance](#team-entrance) |
+| Chants & Audio | Several goal songs or entrance anthems per team, picked at random | Numbered `ClubSong2.mp3` / `Entrance2.mp3` variants and which file names count | [Random Goal Songs & Entrance Anthems](#random-goal-songs--entrance-anthems) |
+| Chants & Audio | An entrance anthem for a whole competition or one round | `[tournamententrance]` / `[roundentrance]` and their priority over the home team's | [Tournament / round entrance](#tournament--round-entrance) |
 | Extra assets | Ball / Referee / Wipe / Adboard packs | Folder layout for each of the four extra asset modules | [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) |
 | Gameplay | Using non-Xbox controllers in FIFA | Bridging up to 4 physical pads into virtual Xbox 360 pads, optionally hiding the raw pad from FIFA | [Gamepads Bridge](#gamepads-bridge) |
 | Gameplay | Raising the 3-substitution match limit | Using the Substitutions control safely | [Custom Substitutions Details](#custom-substitutions-details) |
@@ -81,7 +84,7 @@ The fastest path from "just downloaded it" to a working custom match:
 
 ### Live Match-Aware Asset Switching
 
-The app attaches to FIFA 16's memory to read the current match context — home team, competition, round — and automatically applies whichever stadium, scoreboard, TV logo, movie, and chants you've assigned to that match. Assignments can be set by home team, round, tournament, or a default fallback, so there's no manual file-swapping before each match.
+The app attaches to FIFA 16's memory to read the current match context — home team, competition, round — and automatically applies whichever stadium, scoreboard, TV logo, movie, and chants you've assigned to that match. Assignments can be set by home team, round, tournament, or a default fallback — and, for scoreboards, TV logos and movies, by one specific fixture (a [derby](#derby-assignments)) — so there's no manual file-swapping before each match.
 
 ### In-Game Interactive Overlay
 
@@ -96,7 +99,8 @@ A fullscreen overlay renders directly on top of FIFA 16 — even in exclusive fu
 - A manual **in-game stadium picker** when random stadium selection is turned off — see [Manual Stadium Picker & Multi-Stadium Assignments](#manual-stadium-picker--multi-stadium-assignments).
 - The Stadiums tab's assign wizard also covers **Goalpost Model** and **Goalpost Texture** (after Police/Pitch/Net), with previews — see [Goalpost Model & Texture Packs](#goalpost-model--texture-packs).
 - A **Kits** tab to cycle Kit Sets in-game with F7–F11 — see [Kit Sets](#kit-sets).
-- Shows the active assignment mode (Round, Tournament, Home Team, or Default) for each asset type.
+- Shows the active assignment mode (Round, Tournament, Derby, Home Team, or Default) for each asset type.
+- The Scoreboards, TV Logos and Movies tabs offer a **Derby** scope next to Home Team / Round / Tournament, to assign a pack to the fixture being played — see [Derby Assignments](#derby-assignments).
 - Can be disabled entirely from the settings panel if you only want the desktop window; an overlay performance mode is also available for lower-end setups, which skips thumbnail/preview rendering in the overlay.
 
 ⚠ **Known limitation:** a mouse click can still also reach FIFA's own menu underneath while the overlay is open, since FIFA reads mouse input through exclusive DirectInput rather than window messages. Mouse works fine for navigating the CGFS menu itself — just be mindful of where you click on screen while it's open.
@@ -129,7 +133,7 @@ Build a custom kit per team and kit type (home / away / keeper / third) without 
 
 ### New Asset Modules: Ball, Referee, Wipe, Adboard
 
-Four additional per-round/tournament asset assignments, editable from the Settings Editor exactly like Scoreboard/TV Logo/Movies: match **Ball**, **Referee** kits, **Wipe** transition animations, and **Adboard** pitch-side advertising. Each has its own Setup tab toggle. See [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) for folder layout.
+Four additional per-round asset assignments, editable from the Settings Editor's **Match Assets** tab (with a texture preview of each pack): match **Ball**, **Referee** kits, **Wipe** transition animations, and **Adboard** pitch-side advertising. Each has its own switch in the Dashboard's Modules card. See [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) for folder layout.
 
 ### Assets Extractor
 
@@ -145,7 +149,7 @@ A dedicated **Gamepads** tab that translates up to 4 physical controllers (non-X
 
 ### Chants & Audio
 
-Assign per-team/tournament chants and anthems under `FSW/Chants`, played back through the app's own audio engine during matches, including held goal-song playback that doesn't overlap the regular chants loop, plus an optional per-team entrance anthem (`Entrance.mp3`) played during the pre-kickoff walkout — see [Chants Audio Files](#chants-audio-files) below.
+Assign per-team/tournament chants and anthems under `FSW/Chants`, played back through the app's own audio engine during matches, including held goal-song playback that doesn't overlap the regular chants loop, plus an optional per-team entrance anthem (`Entrance.mp3`) played during the pre-kickoff walkout, which a tournament or a single round can override with its own. A folder can hold several numbered goal songs and entrance anthems (`ClubSong2.mp3`, `Entrance2.mp3`…), picked at random — see [Chants Audio Files](#chants-audio-files) below.
 
 ### Discord Rich Presence
 
@@ -244,7 +248,7 @@ The **Modules** card on the Dashboard switches each feature on or off (stored un
 |---|---|
 | **Stadium** | Stadium, Entrance Camera, Goalposts, Stadium Net |
 | **UI** | TVLogo, Scoreboard, Stadium Name, Movies |
-| **Sound** | Chants, Away Chants, Away Club Song, Team Entrance Anthem |
+| **Sound** | Chants, Away Chants, Away Club Song, Team Entrance Anthem, Tournament Entrance Anthem |
 | **Game** | Ball, Adboard, Referee, Wipe |
 | **Other** | Autorun, Discord RPC |
 
@@ -264,11 +268,34 @@ MoviesGBD/<pack name>/
   bumper.big
 ```
 
-- **Scoreboard** — each `ScoreBoardGBD/<pack name>/` folder is assigned per round, tournament, or home team from the "Scoreboard" tab/section of the Settings Editor (`[Scoreboard]`/`[HomeTeamScoreBoard]`). Folders and `.zip`/`.rar` archives are both supported, the same as stadiums. A scoreboard pack can optionally ship per-TV-logo variant subfolders (matching whichever TV Logo the current match resolved to) — if one exists it's used instead of the pack's own top level. With no assignment, the vanilla default scoreboard stays active. Requires the **ScoreBoard** module enabled in the Modules card.
-- **TV Logo** — same idea, `TVLogoGBD/<pack name>/`, assigned via `[TVLogo]`/`[HomeTeamTvLogo]`. Requires the **TvLogo** module.
+- **Scoreboard** — each `ScoreBoardGBD/<pack name>/` folder is assigned per round, tournament, derby match, or home team from the "Scoreboard" tab/section of the Settings Editor (`[Scoreboard]`/`[DerbyScoreBoard]`/`[HomeTeamScoreBoard]`) — see [Derby Assignments](#derby-assignments) for the fixture-specific one. Folders and `.zip`/`.rar` archives are both supported, the same as stadiums. A scoreboard pack can optionally ship per-TV-logo variant subfolders (matching whichever TV Logo the current match resolved to) — if one exists it's used instead of the pack's own top level. With no assignment, the vanilla default scoreboard stays active. Requires the **ScoreBoard** module enabled in the Modules card.
+- **TV Logo** — same idea, `TVLogoGBD/<pack name>/`, assigned via `[TVLogo]`/`[DerbyTvLogo]`/`[HomeTeamTvLogo]`. Requires the **TvLogo** module.
 - **Movie** — `MoviesGBD/<pack name>/` holding `bootflowoutro.vp8` (the pre-match intro movie) and/or `bumper.big` (the competition bumper). Assigned via the "Assign Movie" dialog or the Settings Editor's Movies/TeamMovies/DerbyMatch tabs, by round, tournament, derby match, or home team — see [Assignment & Settings Editors](#assignment--settings-editors) for the embedded video preview that dialog shows. If a stadium has its own `StadiumMovie.vp8`/`StadiumBumper.big` (§ [Stadium Folder And Archive Loading](#stadium-folder-and-archive-loading)), that takes priority over a Movie assignment for that match. Requires the **Movies** module.
 
 All three fall back to the vanilla defaults under `FSW/ScoreBoard`, `FSW/TVLogo`, and `FSW/Nav` respectively whenever nothing is assigned or a module is disabled, so turning a module off never leaves the game without a scoreboard/logo/movie.
+
+#### Derby Assignments
+
+A **derby** assignment targets one specific fixture instead of a team or a competition — a dedicated scoreboard, TV logo or movie for El Clásico, say. Movies already had this (`[DerbyMatch]`); scoreboards and TV logos now have it too. The key is `<home team id>vs<away team id>`, using the team ids the Dashboard shows, and the value is the pack's folder name:
+
+```ini
+[DerbyScoreBoard]
+241vs243=LaLiga EA Sports
+
+[DerbyTvLogo]
+241vs243=LaLiga TV
+
+[DerbyMatch]
+241vs243=El Clasico Intro
+```
+
+- **The key is ordered.** `241vs243` only matches team 241 playing at home against 243; add a `243vs241` entry for the return fixture.
+- **Priority**, most specific first: **round > tournament > derby > home team > default**. A pack assigned to the match's round or tournament therefore still wins over the derby one; the derby entry is what replaces the home team's (or the default) pack, typically in a friendly or in a competition with nothing assigned.
+- **Where to assign it:**
+  - **Assign Scoreboard** dialog (TVLogo/ScoreBoard Assignment) → Assignment Mode **Derby matchers**, with both teams already selected in FIFA. It saves the TV logo and the scoreboard you picked for that fixture; whichever one you leave on `default` is not written (if that fixture already had one, you're asked whether to reset it).
+  - **F12 overlay** → Scoreboards, TV Logos or Movies tab → **Derby** scope.
+  - **Settings Editor** → *Scoreboards → Derby Scoreboards*, *TV Logos → Derby TV Logos*, *Movies → Derby Movies*. The **Use Current Derby** button fills the key from the match on screen (it stays empty until both teams are known), or type it by hand.
+- Each one needs its own module on (**ScoreBoard**, **TvLogo**, **Movies**), like any other assignment of that type.
 
 ### Stadium Preview Images
 
@@ -318,8 +345,8 @@ editor) and read from:
 ```text
 FSW/Chants/<folder>/Support/*.mp3
 FSW/Chants/<folder>/Complaint/*.mp3
-FSW/Chants/<folder>/ClubSong.mp3
-FSW/Chants/<folder>/Entrance.mp3
+FSW/Chants/<folder>/ClubSong.mp3      (+ ClubSong2.mp3, ClubSong3.mp3 ... optional)
+FSW/Chants/<folder>/Entrance.mp3      (+ Entrance2.mp3, Entrance3.mp3 ... optional)
 ```
 
 - `Support` covers a draw, winning, or losing by 1–2 goals (a different configured volume for
@@ -331,11 +358,41 @@ FSW/Chants/<folder>/Entrance.mp3
 - `Entrance.mp3` (optional) plays for the **home** team only, timed to FIFA's pre-kickoff 3D
   player walkout — see [Team Entrance](#team-entrance) below for the full trigger/fade-out
   behavior. Only used when the `TeamEntrance` module is enabled.
+- Both can have numbered variants next to them, picked at random — see
+  [Random Goal Songs & Entrance Anthems](#random-goal-songs--entrance-anthems) below.
 
 Each `chantsid` entry is a CSV: `folder, vol_draw, vol_winning, vol_losing1, vol_losing2,
 vol_complaint, vol_goal, silence_probability, silence_max_seconds, away_chant_probability,
 entrance_volume, entrance_delay_seconds`. The last two fields are optional — omitting them (the
 older 10-field format) falls back to entrance volume `0.16` and delay `7.0`s.
+
+#### Random Goal Songs & Entrance Anthems
+
+A chants folder can hold more than one goal song and more than one entrance anthem. Add numbered
+copies next to the originals and one is picked at random — a goal song for **each goal**, an
+entrance anthem for **each match**:
+
+```text
+FSW/Chants/<folder>/ClubSong.mp3
+FSW/Chants/<folder>/ClubSong2.mp3
+FSW/Chants/<folder>/ClubSong3.mp3
+FSW/Chants/<folder>/Entrance.mp3
+FSW/Chants/<folder>/Entrance2.mp3
+```
+
+- **Only the name plus a number counts**: `ClubSong.mp3`, `ClubSong2.mp3`, `ClubSong15.mp3`
+  (upper/lower case doesn't matter). Anything else is ignored, so `ClubSong_old.mp3`,
+  `ClubSong - copy.mp3`, `Entrance2b.mp3` and the `.original.mp3` backups left by **Fix Chant
+  Audio Files** never play. The files must sit directly in the folder, not in a sub-folder.
+- The numbers don't need to be consecutive, and the un-numbered file is optional: a folder with
+  only `Entrance2.mp3` still plays it.
+- The pick is plainly random, so the same track can come up twice in a row.
+- It applies everywhere those files are used: the away team's goal song (**Away Club Song**
+  module) and the folders assigned to a [tournament or round entrance](#tournament--round-entrance).
+- Nothing changes in `settings.ini` — the volume and delay of the folder's `[chantsid]` line apply
+  to every variant. The Chants tab's status panel and `runtime/server16.log` show which file played
+  (`Goal audio started: ClubSong2.mp3`, `Team entrance armed: … track=<folder>/Entrance2.mp3`).
+- A folder with a single `ClubSong.mp3` / `Entrance.mp3` behaves exactly as before.
 
 ### Team Entrance
 
@@ -380,7 +437,8 @@ Current Round ID* buttons fill the key):
 ```
 
 The value is `folder[,volume[,delay_seconds]]`, with the same defaults as a team entrance (`0.16`,
-`7.0`s). The track is `FSW/Chants/<folder>/Entrance.mp3`. If the assigned folder has no
+`7.0`s). The track is `FSW/Chants/<folder>/Entrance.mp3` — or a random one of its
+[numbered variants](#random-goal-songs--entrance-anthems). If the assigned folder has no
 `Entrance.mp3`, that level is logged and skipped and the next one is tried, so a typo never silences
 the match. Edit both from **Edit Chants Settings** (the *Tournament Entrance* and *Round Entrance*
 tabs). It needs both the `TeamEntrance` and `TournamentEntrance` modules on (Modules card, *Sound*
@@ -640,7 +698,7 @@ Extraction doesn't regenerate BH by itself — run **Regen BH** (Installer tab) 
 
 ### Ball, Referee, Wipe & Adboard Folders
 
-Four ini-only asset modules, each assignable per round/tournament from the Settings Editor exactly like Scoreboard/TV Logo/Movies, with their own Setup tab toggle:
+Four asset modules, each assigned per round (key = the Round ID the Dashboard shows) from the Settings Editor's **Match Assets** tab, with their own switch in the Dashboard's Modules card (*Game* group):
 
 ```text
 FSW/balls/<folder>/*.rx3          -> data/sceneassets/ball
@@ -664,7 +722,7 @@ Pack files are installed with their own names, so a file named like one the game
 
 The simplest pack uses **one id** for all its files — it can be any number — and then works for whichever round you assign it to. A pack that deliberately carries files for **several** competitions (one set per id) is left as it is, so its ids must be the real ones the game asks for. In Ball, Referee and Wipe packs `.png` previews, `desktop.ini` and `Thumbs.db` are never installed; an Adboard pack installs only its `.rx3` files and the files with `cornerflag` in their name.
 
-All four modules are assigned per competition only (no per-stadium folders). Each module warns in the Setup tab if assets are assigned while its module toggle is switched off.
+All four modules are assigned per round only (no per-stadium folders). When a pack is assigned to the match's round but its module is switched off, an "(OFF)" warning notification says the assets were skipped.
 
 ### Settings Export & Import
 
@@ -759,18 +817,22 @@ Everything below is about building and working on the codebase itself — not ne
 - `server16_py/win32_types.py`: shared Win32 ctypes type definitions.
 - `server16_py/assignment_runtime.py`: assignment flow for stadiums, scoreboards, TV logos, movies, and exclusions.
 - `server16_py/stadium_runtime.py`: stadium loading and application logic, including folder and archive sources.
-- `server16_py/asset_runtime.py`: scoreboard, TV logo, movie, and related routing.
-- `server16_py/chants_runtime.py`: chants and audio playback runtime.
+- `server16_py/asset_runtime.py`: scoreboard, TV logo, movie (round / tournament / derby / home team lookups) and Ball/Referee/Wipe/Adboard routing.
+- `server16_py/match_asset_ids.py`: works out the id the game asks for in a Ball/Referee/Wipe/Adboard pack and plans the rename-on-install.
+- `server16_py/chants_runtime.py`: chants and audio playback runtime, including the random pick among numbered `ClubSong`/`Entrance` variants.
 - `server16_py/camera_runtime.py`: Anth camera package discovery, preview, and application.
 - `server16_py/kit_mixer.py`: Kit Mixer runtime — mixes jersey/shorts textures, kit numbers, kit UI thumbnails, and jersey name color (Advanced tab), plus Kit Sets/`[kitgk]` linked-goalkeeper support (Simple tab), with a per-kit-type restore manager.
 - `server16_py/gamepad_bridge_runtime.py` / `server16_py/hidhide_runtime.py` / `server16_py/win_elevation.py`: Gamepads tab — physical-to-virtual Xbox 360 bridging (ViGEmBus), optional HidHide cloaking of the physical pad from FIFA, and shared UAC-elevation helpers.
 - `server16_py/gamepad_test_dialog.py`: live raw-vs-translated controller test panel.
+- `server16_py/xinput_players.py`: tells which XInput player each real or virtual pad is, for the Gamepads tab's Xbox Controllers card.
 - `server16_py/substitution_runtime.py`: live in-game hook that lets you raise FIFA 16's hardcoded substitution limit for the current match.
-- `server16_py/entrance_runtime.py`: Team Entrance runtime — per-home-team walkout anthem playback.
+- `server16_py/entrance_runtime.py`: Team Entrance runtime — walkout anthem playback (round > tournament > home team).
 - `server16_py/match_string_patcher.py`: live memory scan-and-patch coordinators, including the one behind the `scoreboardstdname` fix.
 - `server16_py/settings_editor.py`: settings editing UI.
 - `server16_py/dialogs.py`: assignment dialogs.
 - `server16_py/team_picker_dialog.py` / `server16_py/stadium_picker_dialog.py`: browsable Team/Stadium picker dialogs with crest/logo previews and search.
+- `server16_py/asset_grid_picker_dialog.py` / `server16_py/asset_grid_items.py`: the **▦** thumbnail-grid picker beside the asset dropdowns.
+- `server16_py/rx3_texture_preview.py`: the Match Assets tabs' `.rx3` texture preview box with ◀ ▶.
 - `server16_py/video_preview.py`: embedded `ffpyplayer`-based movie (`.vp8`) preview widget shared by the Movie assignment dialog and the settings editor, decoding on its own worker thread.
 - `server16_py/movie_preview_runtime.py`: streams decoded preview frames into the D3D overlay for in-overlay movie previews.
 - `server16_py/dds_image_worker.py`: 32-bit bridge that bakes a loose `.png`/`.jpg` into a kit-selection UI `.dds` thumbnail.

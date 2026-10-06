@@ -20,7 +20,7 @@ from .asset_grid_items import (
     png_items,
 )
 from .asset_grid_picker_dialog import AssetGridPickerDialog
-from .chants_runtime import MciAudioPlayer
+from .chants_runtime import MciAudioPlayer, numbered_tracks
 from .file_tools import (
     discover_stadium_names,
     resolve_goalpost_model_preview_path,
@@ -195,6 +195,8 @@ class SettingsSectionFrame(tk.Frame):
     }
     PLAY_ICON = "▶"
     STOP_ICON = "■"
+    # Canvas units the chants preview's track list moves per wheel notch.
+    CHANTS_PREVIEW_WHEEL_UNITS = 3
     # Heading of the grid picker for each Match Asset section ("Choose Ball").
     MATCH_ASSET_FIELD_KEYS = {
         "ball": "dialog.editor.field.ball",
@@ -353,6 +355,7 @@ class SettingsSectionFrame(tk.Frame):
         scroll_content.bind("<Configure>", lambda _e: body_canvas.configure(scrollregion=body_canvas.bbox("all")))
         body_canvas.bind("<Configure>", lambda e: body_canvas.itemconfigure(content_window, width=e.width))
 
+        self._body_canvas = body_canvas
         self.body = tk.Frame(scroll_content, bg=self.app.card)
         self.body.grid(row=0, column=0, sticky="nsew", padx=12, pady=(0, 8))
         self.body.grid_columnconfigure(0, weight=1)
@@ -1243,11 +1246,12 @@ class SettingsSectionFrame(tk.Frame):
         self._add_chants_field_row(self.body, 11, self.tr("dialog.editor.field.entrance_delay"), self.entrance_delay_var, to=45.0, resolution=0.5)
 
     def _available_entrance_choices(self) -> list[str]:
-        """Chants folders that hold the exact `Entrance.mp3` the entrance
-        runtime plays -- the other folders could never produce a track here.
+        """Chants folders that hold an `Entrance.mp3` (or `Entrance2.mp3`...)
+        the entrance runtime can play -- the other folders could never produce
+        a track here.
         (The combobox stays editable, so a folder still being set up can be typed.)"""
         base = self.app.exedir / (self.spec.directory or "")
-        return [name for name in self._available_choices() if (base / name / "Entrance.mp3").is_file()]
+        return [name for name in self._available_choices() if numbered_tracks(base / name, "Entrance")]
 
     def _build_entrance_editor(self) -> None:
         """[tournamententrance]/[roundentrance]: `folder,volume,delay`, the same
@@ -1384,6 +1388,9 @@ class SettingsSectionFrame(tk.Frame):
 
         self._preview_rows_frame.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(preview_window, width=e.width))
+        # Bound here, before any row exists; _refresh_chants_preview binds the
+        # rows each time it rebuilds them.
+        self._bind_chants_preview_mousewheel(canvas)
 
         # Rebuild the list whenever the folder changes, whether the user typed
         # it directly or picked it from the combobox -- both go through the
@@ -1418,10 +1425,33 @@ class SettingsSectionFrame(tk.Frame):
                 fg=self.app.muted,
                 font=("Bahnschrift", 9),
             ).pack(anchor="w", padx=8, pady=6)
-            return
+        else:
+            for path in files:
+                self._add_chants_preview_row(path, path.relative_to(base).as_posix())
+        self._preview_canvas.yview_moveto(0)
+        # The rows were just rebuilt, so their wheel bindings went with them.
+        for child in self._preview_rows_frame.winfo_children():
+            self._bind_chants_preview_mousewheel(child)
 
-        for path in files:
-            self._add_chants_preview_row(path, path.relative_to(base).as_posix())
+    def _on_chants_preview_mousewheel(self, event) -> str:
+        """The wheel over the track list scrolls that list. While every track
+        fits (nothing to scroll there) it scrolls the editor body instead, as
+        it does everywhere else in the panel."""
+        if event.delta == 0:
+            return "break"
+        steps = int(-1 * (event.delta / 120))
+        canvas = self._preview_canvas
+        if canvas.yview() == (0.0, 1.0):
+            self._body_canvas.yview_scroll(steps, "units")
+        else:
+            # A canvas "unit" is a tenth of its height, far less than one row.
+            canvas.yview_scroll(steps * self.CHANTS_PREVIEW_WHEEL_UNITS, "units")
+        return "break"
+
+    def _bind_chants_preview_mousewheel(self, widget: tk.Misc) -> None:
+        widget.bind("<MouseWheel>", self._on_chants_preview_mousewheel)
+        for child in widget.winfo_children():
+            self._bind_chants_preview_mousewheel(child)
 
     def _add_chants_preview_row(self, path: Path, display_name: str) -> None:
         row = tk.Frame(self._preview_rows_frame, bg=self.app.panel)
@@ -1521,7 +1551,7 @@ class SettingsSectionFrame(tk.Frame):
         # Same slot _build_chants_preview_panel/_build_stadium_preview_panel/
         # _build_movie_preview_panel use (row 1 of the scrollable content area,
         # directly below self.body) -- Scoreboard/TVLogo/HomeTeamScoreBoard/
-        # HomeTeamTvLogo are the only "simple"-kind specs pointed at
+        # HomeTeamTvLogo/DerbyScoreBoard/DerbyTvLogo are the only "simple"-kind specs pointed at
         # ScoreBoardGBD/TVLogoGBD, so this is mutually exclusive with the
         # other panels. Looks for the same thumbnail ScoreboardDialog
         # (dialogs.py) shows: <folder>/render/thumbnail/<key>.<ext>, falling
@@ -1712,9 +1742,11 @@ class SettingsSectionFrame(tk.Frame):
         binds each one, skipping tk.Listbox so a listbox with its own many
         rows (the Assigned/Available stadium lists) keeps its native
         per-widget wheel scrolling instead of being hijacked into scrolling
-        this outer canvas. Call once, after the full subtree already exists
-        -- widgets added later won't be covered."""
-        if isinstance(widget, tk.Listbox):
+        this outer canvas. The chants preview's track list is skipped for the
+        same reason: it scrolls itself (_bind_chants_preview_mousewheel).
+        Call once, after the full subtree already exists -- widgets added
+        later won't be covered."""
+        if isinstance(widget, tk.Listbox) or widget is getattr(self, "_preview_canvas", None):
             return
 
         def on_mousewheel(event):
@@ -2214,6 +2246,8 @@ def asset_specs() -> list[SectionSpec]:
         SectionSpec("TVLogo", "dialog.editor.choice.competition_tvlogos", kind="simple", directory="TVLogoGBD", key_is_round_id=True, key_is_tournament_id=True),
         SectionSpec("HomeTeamScoreBoard", "dialog.editor.choice.home_team_scoreboards", kind="simple", directory="ScoreBoardGBD", key_is_team_id=True),
         SectionSpec("HomeTeamTvLogo", "dialog.editor.choice.home_team_tvlogos", kind="simple", directory="TVLogoGBD", key_is_team_id=True),
+        SectionSpec("DerbyScoreBoard", "dialog.editor.choice.derby_scoreboards", kind="simple", directory="ScoreBoardGBD", key_is_derby=True),
+        SectionSpec("DerbyTvLogo", "dialog.editor.choice.derby_tvlogos", kind="simple", directory="TVLogoGBD", key_is_derby=True),
         SectionSpec("movies", "dialog.editor.choice.competition_movies", kind="simple", directory="MoviesGBD", key_is_round_id=True, key_is_tournament_id=True),
         SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD", key_is_team_id=True),
         SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD", key_is_derby=True),
@@ -2260,8 +2294,8 @@ def asset_tab_groups() -> list[SpecGroup]:
     return _grouped(
         asset_specs(),
         [
-            ("dialog.editor.group.scoreboards", ("Scoreboard", "HomeTeamScoreBoard")),
-            ("dialog.editor.group.tvlogos", ("TVLogo", "HomeTeamTvLogo")),
+            ("dialog.editor.group.scoreboards", ("Scoreboard", "HomeTeamScoreBoard", "DerbyScoreBoard")),
+            ("dialog.editor.group.tvlogos", ("TVLogo", "HomeTeamTvLogo", "DerbyTvLogo")),
             ("dialog.editor.group.movies", ("movies", "TeamMovies", "DerbyMatch")),
             ("", ("kitsid",)),
             ("dialog.editor.group.match_assets", ("ball", "referee", "wipe", "adboard")),

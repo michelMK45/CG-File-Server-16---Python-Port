@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import shutil
 import struct
 import sys
@@ -201,6 +202,27 @@ def read_open_play_inputs(memory: Memory, offsets) -> tuple[int | None, int | No
         except Exception:
             values.append(None)
     return values[0], values[1]
+
+
+def numbered_tracks(folder: Path, base_name: str) -> list[Path]:
+    """The variants of one named track in a chants folder: `<base_name>.mp3`,
+    `<base_name>2.mp3`, `<base_name>3.mp3`... (the name plus an optional
+    number, any case), in `folder` itself, sorted by name. Anything else that
+    merely starts with the name (`ClubSong_old.mp3`, `Entrance.original.mp3`)
+    is not a variant."""
+    pattern = re.compile(rf"{re.escape(base_name)}\d*\.mp3", re.IGNORECASE)
+    try:
+        found = [path for path in folder.iterdir() if pattern.fullmatch(path.name) and path.is_file()]
+    except OSError:
+        return []
+    return sorted(found, key=lambda path: path.name.lower())
+
+
+def pick_numbered_track(folder: Path, base_name: str, rng) -> Path | None:
+    """A random one of numbered_tracks() -- plainly random, so the same one can
+    come up twice in a row. None when the folder has none."""
+    tracks = numbered_tracks(folder, base_name)
+    return rng.choice(tracks) if tracks else None
 
 
 class ChantsRuntime:
@@ -1009,23 +1031,26 @@ class ChantsRuntime:
             app.log(f"Goal club song skipped for {team_id}: invalid chantsid config")
             return False
         folder = parts[0].replace("/", "\\").strip("\\")
-        club_song = app.exedir / "FSW" / "Chants" / folder / "ClubSong.mp3"
-        if not club_song.exists():
-            app.log(f"Goal club song skipped for {team_id}: missing {club_song}")
+        # ClubSong.mp3, ClubSong2.mp3...: one at random per goal when the
+        # folder holds several.
+        song_dir = app.exedir / "FSW" / "Chants" / folder
+        club_song = pick_numbered_track(song_dir, "ClubSong", app._chants_rng)
+        if club_song is None:
+            app.log(f"Goal club song skipped for {team_id}: missing {song_dir / 'ClubSong.mp3'}")
             return False
         volume = self._safe_float(parts[6], 0.08)
         try:
             played = self._play_goal_track(
                 club_song,
                 volume,
-                "ClubSong",
+                club_song.stem,
                 "Club song",
                 f"Club anthem {team_id}",
                 "Return to crowd after anthem",
                 minimum_hold_seconds=12.0,
                 chants_memory=chants_memory,
             )
-            app._set_display_async("audio_current", "ClubSong")
+            app._set_display_async("audio_current", club_song.stem)
             app._set_display_async("audio_clubsong", team_id)
             return played
         except Exception as exc:

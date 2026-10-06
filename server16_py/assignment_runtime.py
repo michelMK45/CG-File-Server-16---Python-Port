@@ -91,6 +91,7 @@ class AssignmentRuntime:
                 "0": (app.TOURNAME, "Tournament"),
                 "1": (app.TOURROUNDID, "Round"),
                 "2": (app.HID, "Home Team"),
+                "4": (app.derby if app.HID and app.AID else "", "Derby"),
             },
         )
         if not comp:
@@ -100,6 +101,8 @@ class AssignmentRuntime:
         app.log(f"Scoreboard assignment using {resolved}: {comp}")
         if resolved == "Home Team":
             self.teamscoreboards(comp, tvlogo, scoreboard)
+        elif resolved == "Derby":
+            self.derbyscoreboards(comp, tvlogo, scoreboard)
         else:
             self.scoreboards(comp, tvlogo, scoreboard)
 
@@ -255,6 +258,10 @@ class AssignmentRuntime:
     def teamscoreboards(self, comp: str, tvlogo: str, scoreboard: str) -> None:
         self.assign_with_delete(comp, "HomeTeamTvLogo", tvlogo, "default", f"Home Team {comp} has been assigned {tvlogo} TVLogo")
         self.assign_with_delete(comp, "HomeTeamScoreBoard", scoreboard, "default", f"Home Team {comp} has been assigned {scoreboard} Scoreboard")
+
+    def derbyscoreboards(self, comp: str, tvlogo: str, scoreboard: str) -> None:
+        self.assign_with_delete(comp, "DerbyTvLogo", tvlogo, "default", f"Derby {comp} has been assigned {tvlogo} TVLogo")
+        self.assign_with_delete(comp, "DerbyScoreBoard", scoreboard, "default", f"Derby {comp} has been assigned {scoreboard} Scoreboard")
 
     def moviesassign(self, comp: str, movie: str, section: str) -> None:
         self.assign_with_delete(comp, section, movie, "None", f"{section} for {comp} set to {movie}")

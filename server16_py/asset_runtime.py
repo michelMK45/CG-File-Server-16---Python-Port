@@ -201,6 +201,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "TVLogo"),
                     (app.TOURNAME, "TVLogo"),
+                    (app.derby, "DerbyTvLogo"),
                     (app.HID, "HomeTeamTvLogo"),
                 ],
                 fallback=("0", "TVLogo"),
@@ -209,6 +210,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "TVLogo", "Round"),
                     (app.TOURNAME, "TVLogo", "Tournament"),
+                    (app.derby, "DerbyTvLogo", "Derby"),
                     (app.HID, "HomeTeamTvLogo", "Home Team"),
                 ],
                 fallback=("0", "TVLogo", "Default"),
@@ -229,6 +231,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "TVLogo"),
                     (app.TOURNAME, "TVLogo"),
+                    (app.derby, "DerbyTvLogo"),
                     (app.HID, "HomeTeamTvLogo"),
                 ],
                 fallback=("0", "TVLogo"),
@@ -241,6 +244,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "Scoreboard"),
                     (app.TOURNAME, "Scoreboard"),
+                    (app.derby, "DerbyScoreBoard"),
                     (app.HID, "HomeTeamScoreBoard"),
                 ],
                 fallback=("0", "Scoreboard"),
@@ -249,6 +253,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "Scoreboard", "Round"),
                     (app.TOURNAME, "Scoreboard", "Tournament"),
+                    (app.derby, "DerbyScoreBoard", "Derby"),
                     (app.HID, "HomeTeamScoreBoard", "Home Team"),
                 ],
                 fallback=("0", "Scoreboard", "Default"),
@@ -308,6 +313,7 @@ class AssetRuntime:
                 [
                     (app.TOURROUNDID, "Scoreboard"),
                     (app.TOURNAME, "Scoreboard"),
+                    (app.derby, "DerbyScoreBoard"),
                     (app.HID, "HomeTeamScoreBoard"),
                 ],
                 fallback=("0", "Scoreboard"),

@@ -1234,6 +1234,7 @@ class OverlayMixin:
         if tab_name in {"scoreboards", "tvlogos"}:
             return [
                 ("Home Team", "2"),
+                ("Derby", "4"),
                 ("Default / Friendly", "3"),
                 ("Round", "1"),
                 ("Tournament", "0"),
@@ -1272,6 +1273,7 @@ class OverlayMixin:
                     "1": (self.TOURROUNDID, "Round"),
                     "2": (self.HID, "Home Team"),
                     "3": ("0", "Default"),
+                    "4": (self.derby if self.HID and self.AID else "", "Derby"),
                 },
             )
         if tab_name == "movies":
@@ -1543,11 +1545,11 @@ class OverlayMixin:
             return
 
         if tab_name == "scoreboards":
-            key = "HomeTeamScoreBoard" if resolved == "Home Team" else "Scoreboard"
+            key = {"Home Team": "HomeTeamScoreBoard", "Derby": "DerbyScoreBoard"}.get(resolved, "Scoreboard")
             self._write_overlay_assignment(key, comp, selected_item, source)
             return
         if tab_name == "tvlogos":
-            key = "HomeTeamTvLogo" if resolved == "Home Team" else "TVLogo"
+            key = {"Home Team": "HomeTeamTvLogo", "Derby": "DerbyTvLogo"}.get(resolved, "TVLogo")
             self._write_overlay_assignment(key, comp, selected_item, source)
             return
         if tab_name == "movies":

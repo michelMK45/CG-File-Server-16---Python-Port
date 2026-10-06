@@ -315,6 +315,15 @@ class CompetitionEntranceEditorTests(unittest.TestCase):
         frame = self.make_frame("tournamententrance")
         self.assertEqual(frame._available_entrance_choices(), ["Cups/Champions", "Teams/Arsenal"])
 
+    def test_a_folder_with_only_a_numbered_entrance_is_offered_too(self) -> None:
+        chants = self.exedir / "FSW" / "Chants"
+        (chants / "Teams" / "NoEntrance" / "Entrance2.mp3").write_bytes(b"test")
+        # Not a variant: name + number only (see chants_runtime.numbered_tracks).
+        (chants / "Teams" / "Other").mkdir()
+        (chants / "Teams" / "Other" / "Entrance_old.mp3").write_bytes(b"test")
+        frame = self.make_frame("tournamententrance")
+        self.assertEqual(frame._available_entrance_choices(), ["Cups/Champions", "Teams/Arsenal", "Teams/NoEntrance"])
+
     def test_save_writes_folder_volume_and_delay_under_the_key(self) -> None:
         frame = self.make_frame("tournamententrance")
         frame.key_var.set("78")
@@ -367,6 +376,79 @@ class CompetitionEntranceEditorTests(unittest.TestCase):
         self.assertEqual(frame.entrance_volume_var.get(), "0.16")
         self.assertEqual(frame.entrance_delay_var.get(), "7.0")
         self.assertEqual(frame.chants_folder_var.get(), "Cups/Champions")
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class ChantsPreviewMouseWheelTests(unittest.TestCase):
+    """The track list of the chants preview panel scrolls with the wheel. It
+    used to be bound, with the rest of the panel, to the editor body's scroll,
+    and the rows rebuilt on a folder change were not bound to anything."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        for folder, count in (("Long", 40), ("Short", 1)):
+            support = self.exedir / "FSW" / "Chants" / folder / "Support"
+            support.mkdir(parents=True)
+            for index in range(count):
+                (support / f"chant{index:02d}.mp3").write_bytes(b"test")
+        self.root = tk.Tk()
+        self.root.geometry("1000x600")
+        self.addCleanup(self.root.destroy)
+        app = FakeApp(self.exedir, SessionIniFile(self.exedir / "FSW" / "settings.ini"))
+        spec = next(spec for spec in audio_specs() if spec.section == "chantsid")
+        self.frame = SettingsSectionFrame(self.root, app, spec)
+        self.frame.pack(fill="both", expand=True)
+
+    def show(self, folder: str) -> None:
+        self.frame.chants_folder_var.set(folder)
+        self.root.update()
+
+    def wheel(self, delta: int) -> None:
+        self.frame._on_chants_preview_mousewheel(SimpleNamespace(delta=delta))
+        self.root.update()
+
+    def descendants(self, widget) -> list:
+        found = [widget]
+        for child in widget.winfo_children():
+            found.extend(self.descendants(child))
+        return found
+
+    def test_wheel_scrolls_the_track_list_and_not_the_editor_body(self) -> None:
+        self.show("Long")
+        canvas = self.frame._preview_canvas
+        body_before = self.frame._body_canvas.yview()
+        self.assertEqual(canvas.yview()[0], 0.0)
+        self.wheel(-120)
+        down = canvas.yview()[0]
+        self.assertGreater(down, 0.0)
+        self.assertEqual(self.frame._body_canvas.yview(), body_before)
+        self.wheel(120)
+        self.assertLess(canvas.yview()[0], down)
+
+    def test_rows_rebuilt_on_a_folder_change_are_bound_too(self) -> None:
+        self.show("Short")
+        self.show("Long")
+        widgets = self.descendants(self.frame._preview_canvas)
+        self.assertGreater(len(widgets), 40)
+        for widget in widgets:
+            self.assertIn("_on_chants_preview_mousewheel", widget.bind("<MouseWheel>"))
+
+    def test_a_list_that_fits_hands_the_wheel_to_the_editor_body(self) -> None:
+        self.show("Short")
+        self.assertEqual(self.frame._preview_canvas.yview(), (0.0, 1.0))
+        with mock.patch.object(self.frame._body_canvas, "yview_scroll") as body_scroll:
+            self.wheel(-120)
+        body_scroll.assert_called_once_with(1, "units")
+
+    def test_changing_folder_returns_the_list_to_the_top(self) -> None:
+        self.show("Long")
+        self.wheel(-360)
+        self.assertGreater(self.frame._preview_canvas.yview()[0], 0.0)
+        self.show("Short")
+        self.show("Long")
+        self.assertEqual(self.frame._preview_canvas.yview()[0], 0.0)
 
 
 @unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
@@ -648,10 +730,12 @@ class LiveContextKeyButtonTests(unittest.TestCase):
                 self.assertEqual(key_buttons, ["button.use_home_team", "button.use_away_team", "button.pick_team"])
 
     def test_derby_button_fills_home_vs_away(self) -> None:
-        frame = self.make_frame("DerbyMatch")
-        self.assertIn("button.use_current_derby", self.button_texts(frame))
-        frame._use_current_derby_key()
-        self.assertEqual(frame.key_var.get(), "241vs243")
+        for section in ("DerbyMatch", "DerbyScoreBoard", "DerbyTvLogo"):
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                self.assertIn("button.use_current_derby", self.button_texts(frame))
+                frame._use_current_derby_key()
+                self.assertEqual(frame.key_var.get(), "241vs243")
 
     def test_derby_button_clears_the_key_until_both_teams_are_known(self) -> None:
         # app.derby degrades to "vs" when nothing was read; the runtimes never
@@ -668,7 +752,7 @@ class LiveContextKeyButtonTests(unittest.TestCase):
         self.assertEqual(frame.key_var.get(), "")
 
     def test_only_the_derby_section_gets_the_derby_button(self) -> None:
-        for section in ("movies", "TeamMovies"):
+        for section in ("movies", "TeamMovies", "Scoreboard", "HomeTeamScoreBoard", "TVLogo", "HomeTeamTvLogo"):
             with self.subTest(section=section):
                 self.assertNotIn("button.use_current_derby", self.button_texts(self.make_frame(section)))
 
@@ -715,9 +799,9 @@ class TabLayoutTests(unittest.TestCase):
                     else:
                         self.assertEqual(group.tab_title, group.specs[0].title)
 
-    def test_the_scoreboard_tab_holds_the_competition_and_home_team_scoreboards(self) -> None:
+    def test_the_scoreboard_tab_holds_the_competition_home_team_and_derby_scoreboards(self) -> None:
         group = next(group for group in asset_tab_groups() if group.specs[0].section == "Scoreboard")
-        self.assertEqual([spec.section for spec in group.specs], ["Scoreboard", "HomeTeamScoreBoard"])
+        self.assertEqual([spec.section for spec in group.specs], ["Scoreboard", "HomeTeamScoreBoard", "DerbyScoreBoard"])
 
     def test_every_tab_title_is_a_locale_key_present_in_every_language(self) -> None:
         import json
@@ -775,7 +859,11 @@ class GroupedSettingsEditorTests(unittest.TestCase):
         )
         self.assertEqual(
             self.tab_texts(self.sub_notebook(editor, 0)),
-            ["dialog.editor.choice.competition_scoreboards", "dialog.editor.choice.home_team_scoreboards"],
+            [
+                "dialog.editor.choice.competition_scoreboards",
+                "dialog.editor.choice.home_team_scoreboards",
+                "dialog.editor.choice.derby_scoreboards",
+            ],
         )
         self.assertEqual(len(self.sub_notebook(editor, 2).tabs()), 3)
         self.assertEqual(len(self.sub_notebook(editor, 4).tabs()), 4)

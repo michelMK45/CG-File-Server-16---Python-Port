@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import random
 import sys
 import threading
 import time
@@ -7,7 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from .chants_runtime import MciAudioPlayer, OpenPlayDetector, read_open_play_inputs
+from .chants_runtime import MciAudioPlayer, OpenPlayDetector, pick_numbered_track, read_open_play_inputs
 from .memory_access import Memory
 
 if TYPE_CHECKING:
@@ -65,10 +66,12 @@ class TeamEntranceRuntime:
         *,
         player_factory: Callable[[], MciAudioPlayer] = MciAudioPlayer,
         memory_factory: Callable[[], Memory] = Memory,
+        rng: random.Random | None = None,
     ) -> None:
         self.app = app
         self._player_factory = player_factory
         self._memory_factory = memory_factory
+        self._rng = rng or random.Random()
         self._lock = threading.RLock()
         self._worker_generation = 0
         self._worker_running = False
@@ -116,8 +119,16 @@ class TeamEntranceRuntime:
             parts[2] if len(parts) > 2 else "",
         )
 
-    def _track_for(self, folder: str) -> Path:
-        return self.app.exedir / "FSW" / "Chants" / folder / "Entrance.mp3"
+    def _track_for(self, folder: str) -> Path | None:
+        """The folder's entrance track: Entrance.mp3, or a random one of
+        Entrance.mp3, Entrance2.mp3... when it holds several. None when it has
+        none.
+
+        Called on every start_for_match(), including the re-arms it then drops
+        as the same match: only the pick a worker is scheduled with is ever
+        played, so a match keeps one track."""
+        track_dir = self.app.exedir / "FSW" / "Chants" / folder
+        return pick_numbered_track(track_dir, "Entrance", self._rng)
 
     def _resolve_team_config(self, team_id: str) -> TeamEntranceConfig | None:
         app = self.app
@@ -128,7 +139,7 @@ class TeamEntranceRuntime:
             return None
         folder, volume, delay = parsed
         track = self._track_for(folder)
-        if not track.is_file():
+        if track is None:
             return None
         return TeamEntranceConfig(track=track, volume=volume, delay_seconds=delay, source="team")
 
@@ -153,7 +164,7 @@ class TeamEntranceRuntime:
                 continue
             folder, volume, delay = parsed
             track = self._track_for(folder)
-            if not track.is_file():
+            if track is None:
                 app.log(f"Team entrance: {source} {key} is assigned folder {folder!r} but its Entrance.mp3 is missing")
                 continue
             return TeamEntranceConfig(track=track, volume=volume, delay_seconds=delay, source=source)

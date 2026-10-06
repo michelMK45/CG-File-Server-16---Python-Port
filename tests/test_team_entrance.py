@@ -1036,5 +1036,95 @@ class TeamEntranceRuntimeTests(unittest.TestCase):
             self.assertTrue(any("did not resume" in line for line in app.logs))
 
 
+class FirstChoiceRng:
+    """random.Random stand-in: always the first candidate, so a test can tell
+    which tracks were offered."""
+
+    def __init__(self) -> None:
+        self.offered: list[list[str]] = []
+
+    def choice(self, candidates):
+        self.offered.append([path.name for path in candidates])
+        return candidates[0]
+
+
+class NumberedEntranceTests(unittest.TestCase):
+    """Entrance.mp3, Entrance2.mp3...: one at random per match, for the team
+    folder and the tournament/round folders alike."""
+
+    def make_runtime(self, names: tuple[str, ...], ini_values: dict[tuple[str, str], str] | None = None):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for folder in ("Team", "Cup"):
+            for name in names:
+                track = root / "FSW" / "Chants" / folder / name
+                track.parent.mkdir(parents=True, exist_ok=True)
+                track.write_bytes(b"test")
+        values = {("1", "chantsid"): "Team,0,0,0,0,0,0,0,0,0,0.2,0"}
+        values.update(ini_values or {})
+        app = FakeApp(root, FakeIni(values))
+        rng = FirstChoiceRng()
+        return TeamEntranceRuntime(app, rng=rng), app, rng
+
+    def arm(self, runtime: TeamEntranceRuntime) -> TeamEntranceConfig | None:
+        """start_for_match() with the worker thread stubbed out; the config it
+        was scheduled with, or None when nothing was scheduled."""
+        with patch("server16_py.entrance_runtime.threading.Thread") as thread_cls:
+            started = runtime.start_for_match()
+        return thread_cls.call_args.kwargs["args"][2] if started else None
+
+    def test_every_numbered_variant_is_a_candidate_and_nothing_else(self) -> None:
+        runtime, _app, rng = self.make_runtime(
+            ("Entrance.mp3", "entrance2.MP3", "Entrance10.mp3", "Entrance_old.mp3", "Entrance.original.mp3", "ClubSong.mp3")
+        )
+        runtime._resolve_config("1")
+        self.assertEqual(rng.offered, [["Entrance.mp3", "Entrance10.mp3", "entrance2.MP3"]])
+
+    def test_a_folder_with_only_numbered_tracks_still_plays(self) -> None:
+        runtime, _app, _rng = self.make_runtime(("Entrance2.mp3",))
+        self.assertEqual(runtime._resolve_config("1").track.name, "Entrance2.mp3")
+
+    def test_a_folder_without_any_variant_has_no_entrance(self) -> None:
+        runtime, _app, rng = self.make_runtime(("Entrance_old.mp3", "ClubSong.mp3"))
+        self.assertIsNone(runtime._resolve_config("1"))
+        self.assertEqual(rng.offered, [])
+
+    def test_every_match_draws_from_all_the_variants_so_one_can_repeat(self) -> None:
+        # Plainly random: the track of the previous match stays a candidate.
+        runtime, app, rng = self.make_runtime(("Entrance.mp3", "Entrance2.mp3"))
+        for _ in range(3):
+            self.assertEqual(self.arm(runtime).track.name, "Entrance.mp3")
+            app._kickoff_generation += 1
+        self.assertEqual(rng.offered, [["Entrance.mp3", "Entrance2.mp3"]] * 3)
+
+    def test_a_rearm_of_the_same_match_does_not_start_another_track(self) -> None:
+        # The blank-page arm fallback / a mid-walkout Restart calls
+        # start_for_match() again for the same match key: whatever that call
+        # resolves, no second worker may be scheduled with it.
+        runtime, app, _rng = self.make_runtime(("Entrance.mp3", "Entrance2.mp3", "Entrance3.mp3"))
+        self.assertIsNotNone(self.arm(runtime))
+        for _ in range(3):
+            app._entrance_sequence += 1
+            self.assertIsNone(self.arm(runtime))
+
+    def test_competition_folders_pick_among_their_own_variants(self) -> None:
+        runtime, app, rng = self.make_runtime(
+            ("Entrance.mp3", "Entrance2.mp3"), {("5", "tournamententrance"): "Cup,0.4,4"}
+        )
+        app.tournament_enabled = True
+        app.TOURNAME = "5"
+        config = self.arm(runtime)
+        self.assertEqual(config.source, "tournament")
+        self.assertEqual(config.track.parent.name, "Cup")
+        self.assertEqual(rng.offered[-1], ["Entrance.mp3", "Entrance2.mp3"])
+        # With the module off the home team's own folder is drawn from instead.
+        app._kickoff_generation += 1
+        app.tournament_enabled = False
+        config = self.arm(runtime)
+        self.assertEqual(config.source, "team")
+        self.assertEqual(config.track.parent.name, "Team")
+
+
 if __name__ == "__main__":
     unittest.main()

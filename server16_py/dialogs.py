@@ -29,6 +29,7 @@ SCOREBOARD_SCOPE_OPTIONS = (
     ("1", "dialog.scope.specific_round"),
     ("2", "dialog.scope.team_scoreboard"),
     ("3", "dialog.scope.friendly_default"),
+    ("4", "dialog.scope.derby_matchers"),
 )
 
 MOVIE_SCOPE_OPTIONS = (
