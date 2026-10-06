@@ -15,7 +15,7 @@ from typing import Callable, Iterable
 
 import tkinter as tk
 
-from .file_tools import resolve_goalpost_model_preview_path, resolve_goalpost_texture_rx3_path
+from .file_tools import match_asset_rx3_files, resolve_goalpost_model_preview_path, resolve_goalpost_texture_rx3_path
 
 # Glyph on the small button beside a combo that opens the grid picker.
 PICKER_ICON = "▦"
@@ -76,6 +76,29 @@ def _goalpost_texture_item(color_dir: Path, name: str, stadium_runtime) -> Asset
     return AssetGridItem(
         name, name, render=lambda: stadium_runtime.render_goalpost_texture_preview(source_rx3, cache_key=name, reuse_cached=True),
     )
+
+
+def match_asset_items(kind: str, base_dir: Path, names: Iterable[str], assets_runtime) -> list[AssetGridItem]:
+    """Match Asset packs (ball / referee / wipe / adboard). A pack has no
+    preview image on disk, so its cell shows the FIRST texture of its first
+    .rx3, rendered by `assets_runtime.render_match_asset_textures`. That render
+    is cached per .rx3 and shared with the editor's own texture preview, so a
+    pack looked at in either place is instant in the other. Packs without an
+    .rx3 show the placeholder."""
+    return [_match_asset_item(kind, Path(base_dir) / name, name, assets_runtime) for name in names]
+
+
+def _match_asset_item(kind: str, pack_dir: Path, name: str, assets_runtime) -> AssetGridItem:
+    rx3_files = match_asset_rx3_files(pack_dir)
+    if not rx3_files:
+        return AssetGridItem(name, name)
+    first_rx3 = rx3_files[0]  # bound here, not read from a comprehension variable
+
+    def render() -> Path | None:
+        textures = assets_runtime.render_match_asset_textures(kind, pack_dir, first_rx3)
+        return textures[0] if textures else None
+
+    return AssetGridItem(name, name, render=render)
 
 
 def make_picker_button(parent: tk.Misc, app, command: Callable[[], None]) -> ttk.Button:

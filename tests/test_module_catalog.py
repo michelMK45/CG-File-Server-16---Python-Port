@@ -43,7 +43,7 @@ class ModuleCatalogTests(unittest.TestCase):
             [
                 ("stadium", ["Stadium", "EntranceCam", "Goalposts", "StadiumNet"]),
                 ("ui", ["TvLogo", "ScoreBoard", "StadiumName", "Movies"]),
-                ("sound", ["Chants", "AwayChants", "AwayClubSong", "TeamEntrance"]),
+                ("sound", ["Chants", "AwayChants", "AwayClubSong", "TeamEntrance", "TournamentEntrance"]),
                 ("game", ["Ball", "Adboard", "Referee", "Wipe"]),
                 ("other", ["Autorun", "DiscordRPC"]),
             ],
@@ -114,6 +114,20 @@ class LoadModuleStatesTests(unittest.TestCase):
             app = self.make_app(ini_path)
             SettingsMixin._load_module_states(app)
             self.assertFalse(app.module_states["StadiumName"])
+
+    def test_tournament_entrance_defaults_to_on_when_absent_but_an_explicit_off_is_kept(self) -> None:
+        # Nothing is assigned on an upgraded install, so on is harmless; a user who
+        # switched it off must stay off.
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp) / "settings.ini")
+            SettingsMixin._load_module_states(app)
+            self.assertTrue(app.module_states["TournamentEntrance"])
+        with tempfile.TemporaryDirectory() as tmp:
+            ini_path = Path(tmp) / "settings.ini"
+            ini_path.write_text("[Modules]\nTournamentEntrance=0\n", encoding="utf-8")
+            app = self.make_app(ini_path)
+            SettingsMixin._load_module_states(app)
+            self.assertFalse(app.module_states["TournamentEntrance"])
 
     def test_autorun_is_never_switched_on_by_default(self) -> None:
         # It launches FIFA at startup, so unlike the other late modules a missing entry means off.

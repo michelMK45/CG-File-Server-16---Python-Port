@@ -111,6 +111,8 @@ class LocalizationMixin:
             widgets["test"].configure(text=self.tr("button.gamepads.test"))
             widgets["remove"].configure(text=self.tr("button.gamepads.remove"))
             widgets["hide_check"].configure(text=self.tr("toggle.gamepads.hide_from_fifa"))
+        for idx, widgets in self.gamepad_xinput_rows.items():
+            widgets["label"].configure(text=self.tr("label.gamepads.xinput_player", n=idx + 1))
         self._refresh_gamepad_slot_rows()
 
     def _apply_settings_tab_localization(self) -> None:

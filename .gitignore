@@ -61,3 +61,7 @@ CLAUDE.md
 
 # Local-only Claude context docs (referenced from CLAUDE.md)
 docs/*.md
+
+# Local game-assignment data written by the app when run from source — the
+# shipped template is install_data/FSW/, which stays tracked.
+/FSW/

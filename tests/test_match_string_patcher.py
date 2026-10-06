@@ -847,6 +847,96 @@ class StadiumDbNamePatchCoordinatorTests(unittest.TestCase):
         self.assertIsNone(result)
         self.assertIsNone(coordinator.get_current_name("176"))
 
+    def test_nothing_is_written_while_the_page_suspends_the_patch(self) -> None:
+        # bugs-scoreboardstdname.md Part 23: a scan that outlived the pre-match
+        # window wrote into an unconfirmed copy of the vanilla name while FIFA
+        # sat in the Kick-Off menus, and died ~3s later. _is_current is the one
+        # gate every worker iteration, fast probe and _patch_one passes.
+        text = "Waldstadion".encode("utf-8")
+        capacity = len(text) + 1
+        memory = FakeMemory(text + b"\x00", base_address=0x54000)
+        app = make_db_app(memory)
+        allowed = {"value": False}
+        app.stadium_name_patch_allowed = lambda: allowed["value"]
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        key = coordinator._key("176")
+
+        self.assertFalse(coordinator._is_current(key))
+        ok = coordinator._patch_one(key, (memory.base_address, capacity, "utf-8"), "Waldstadion", "Anfield")
+        self.assertFalse(ok)
+        self.assertEqual(bytes(memory.buffer), text + b"\x00")
+        self.assertIsNone(coordinator.get_current_name("176"))
+
+        # Back on a pre-match page the very same call writes as before.
+        allowed["value"] = True
+        self.assertTrue(coordinator._is_current(key))
+        ok = coordinator._patch_one(key, (memory.base_address, capacity, "utf-8"), "Waldstadion", "Anfield")
+        self.assertTrue(ok)
+        self.assertEqual(coordinator.get_current_name("176"), "Anfield")
+
+    def test_request_spawns_no_scan_while_the_page_suspends_the_patch(self) -> None:
+        memory = FakeMemory(b"\x00" * 16, base_address=0x55000)
+        app = make_db_app(memory)
+        allowed = {"value": False}
+        app.stadium_name_patch_allowed = lambda: allowed["value"]
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        key = coordinator._key("176")
+        coordinator._pending[key] = ("Waldstadion", "Anfield")
+        with patch.object(coordinator, "_scan_and_patch", return_value=None) as scan:
+            coordinator._worker(key, True)
+            scan.assert_not_called()
+            self.assertEqual(coordinator._scan_attempts, {})
+
+            # Control: the same pending request does scan once the page allows it
+            # (otherwise the assertions above would hold for any reason at all).
+            allowed["value"] = True
+            coordinator._worker(key, True)
+            scan.assert_called_once()
+            self.assertEqual(coordinator._scan_attempts, {key: 1})
+
+    def run_attempts(self, coordinator, key, count: int, found=None) -> None:
+        coordinator._pending[key] = ("Waldstadion", "Anfield")
+        with patch.object(coordinator, "_scan_and_patch", return_value=found):
+            for _ in range(count):
+                coordinator._worker(key, True)
+                coordinator._pending[key] = ("Waldstadion", "Anfield")  # the app's next retry tick
+
+    def test_scan_budget_is_exhausted_only_after_the_last_attempt_finishes(self) -> None:
+        # The retry bar ends on this (Part 25): 20 barren attempts, not the 60s window.
+        memory = FakeMemory(b"\x00" * 16, base_address=0x56000)
+        coordinator = StadiumDbNamePatchCoordinator(make_db_app(memory))
+        key = coordinator._key("176")
+        self.assertFalse(coordinator.scan_budget_exhausted("176"))
+        self.run_attempts(coordinator, key, StadiumDbNamePatchCoordinator.MAX_SCAN_ATTEMPTS - 1)
+        self.assertFalse(coordinator.scan_budget_exhausted("176"))
+        self.run_attempts(coordinator, key, 1)
+        self.assertTrue(coordinator.scan_budget_exhausted("176"))
+        self.assertFalse(coordinator.scan_budget_exhausted("261"))  # per slot
+
+    def test_a_scan_still_running_does_not_count_as_exhausted(self) -> None:
+        memory = FakeMemory(b"\x00" * 16, base_address=0x57000)
+        coordinator = StadiumDbNamePatchCoordinator(make_db_app(memory))
+        key = coordinator._key("176")
+        coordinator._scan_attempts[key] = StadiumDbNamePatchCoordinator.MAX_SCAN_ATTEMPTS  # started, not finished
+        self.assertFalse(coordinator.scan_budget_exhausted("176"))
+
+    def test_a_known_copy_keeps_the_budget_from_counting_as_exhausted(self) -> None:
+        memory = FakeMemory(b"\x00" * 16, base_address=0x58000)
+        coordinator = StadiumDbNamePatchCoordinator(make_db_app(memory))
+        key = coordinator._key("176")
+        self.run_attempts(coordinator, key, StadiumDbNamePatchCoordinator.MAX_SCAN_ATTEMPTS)
+        self.assertTrue(coordinator.scan_budget_exhausted("176"))
+        coordinator._cache[key] = [(0x1234, 12, "utf-8")]  # e.g. found by the fast watch
+        self.assertFalse(coordinator.scan_budget_exhausted("176"))
+
+    def test_reset_clears_the_exhausted_state(self) -> None:
+        memory = FakeMemory(b"\x00" * 16, base_address=0x59000)
+        coordinator = StadiumDbNamePatchCoordinator(make_db_app(memory))
+        key = coordinator._key("176")
+        self.run_attempts(coordinator, key, StadiumDbNamePatchCoordinator.MAX_SCAN_ATTEMPTS)
+        coordinator.reset()
+        self.assertFalse(coordinator.scan_budget_exhausted("176"))
+
     def test_get_current_name_is_none_before_any_confirmed_success(self) -> None:
         memory = FakeMemory(b"\x00" * 16, base_address=0x31000)
         app = make_db_app(memory)

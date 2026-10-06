@@ -4,11 +4,21 @@ import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
+from tkinter import ttk
 from types import SimpleNamespace
 from unittest import mock
 
 from server16_py.ini_file import SessionIniFile
-from server16_py.settings_editor import SectionSpec, SettingsSectionFrame
+from server16_py.settings_editor import (
+    SectionSpec,
+    SettingsAreaEditor,
+    SettingsSectionFrame,
+    asset_specs,
+    asset_tab_groups,
+    audio_specs,
+    stadium_specs,
+    stadium_tab_groups,
+)
 
 
 def _tk_available() -> bool:
@@ -185,6 +195,178 @@ class StadiumEditorSaveGoalpostOverridesTests(unittest.TestCase):
         frame.load_entry("176")
         self.assertEqual(frame._stadium_entrance_cam, {"Anfield": "Aerial"})
         self.assertEqual(frame.entrance_cam_var.get(), "Aerial")
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class CurrentRoundIdKeyButtonTests(unittest.TestCase):
+    """Ball/Referee/Wipe/Adboard are keyed by the round id, so their editors get a
+    "Use Current Round ID" button next to Key (like Use Home/Away Team for team keys)."""
+
+    ROUND_KEYED = ("ball", "referee", "wipe", "adboard")
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        (exedir / "FSW").mkdir(parents=True)
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.app = FakeApp(exedir, SessionIniFile(exedir / "FSW" / "settings.ini"))
+        self.app.TOURROUNDID = "103"
+
+    def make_frame(self, section: str) -> SettingsSectionFrame:
+        spec = next(spec for spec in asset_specs() if spec.section == section)
+        return SettingsSectionFrame(self.root, self.app, spec)
+
+    def button_texts(self, widget) -> list[str]:
+        found: list[str] = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == "TButton":
+                found.append(str(child.cget("text")))
+            found.extend(self.button_texts(child))
+        return found
+
+    def test_round_keyed_modules_get_the_button_and_it_fills_the_key(self) -> None:
+        for section in self.ROUND_KEYED:
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                self.assertIn("button.use_current_round_id", self.button_texts(frame))
+                frame.key_var.set("")
+                frame._use_current_round_key()
+                self.assertEqual(frame.key_var.get(), "103")
+
+    def test_no_round_read_yet_clears_the_key_instead_of_failing(self) -> None:
+        self.app.TOURROUNDID = ""
+        frame = self.make_frame("ball")
+        frame.key_var.set("old")
+        frame._use_current_round_key()
+        self.assertEqual(frame.key_var.get(), "")
+
+    def test_team_keyed_sections_do_not_get_the_button(self) -> None:
+        for section in ("HomeTeamScoreBoard", "HomeTeamTvLogo", "TeamMovies", "kitsid"):
+            with self.subTest(section=section):
+                self.assertNotIn("button.use_current_round_id", self.button_texts(self.make_frame(section)))
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class CompetitionEntranceEditorTests(unittest.TestCase):
+    """[tournamententrance] / [roundentrance]: `folder,volume,delay` keyed by the
+    current tournament / round id (see TeamEntranceRuntime._parse_competition_values).
+    Real SessionIniFile, like the stadium save tests above."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        for folder in ("Teams/Arsenal", "Cups/Champions"):
+            track = self.exedir / "FSW" / "Chants" / folder / "Entrance.mp3"
+            track.parent.mkdir(parents=True)
+            track.write_bytes(b"test")
+        # A chants folder with no Entrance.mp3 must not be offered.
+        (self.exedir / "FSW" / "Chants" / "Teams" / "NoEntrance").mkdir()
+        self.ini = SessionIniFile(self.exedir / "FSW" / "settings.ini")
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.app = FakeApp(self.exedir, self.ini)
+        self.app.TOURNAME = "78"
+        self.app.TOURROUNDID = "103"
+
+    def make_frame(self, section: str) -> SettingsSectionFrame:
+        spec = next(spec for spec in audio_specs() if spec.section == section)
+        return SettingsSectionFrame(self.root, self.app, spec)
+
+    def button_texts(self, widget) -> list[str]:
+        found: list[str] = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == "TButton":
+                found.append(str(child.cget("text")))
+            found.extend(self.button_texts(child))
+        return found
+
+    def test_sections_are_offered_next_to_the_team_chants_editor(self) -> None:
+        self.assertEqual(
+            [spec.section for spec in audio_specs()],
+            ["chantsid", "tournamententrance", "roundentrance"],
+        )
+
+    def test_each_section_gets_its_own_use_current_id_button(self) -> None:
+        tournament = self.make_frame("tournamententrance")
+        self.assertIn("button.use_current_tournament_id", self.button_texts(tournament))
+        self.assertNotIn("button.use_current_round_id", self.button_texts(tournament))
+        tournament._use_current_tournament_key()
+        self.assertEqual(tournament.key_var.get(), "78")
+
+        round_frame = self.make_frame("roundentrance")
+        self.assertIn("button.use_current_round_id", self.button_texts(round_frame))
+        self.assertNotIn("button.use_current_tournament_id", self.button_texts(round_frame))
+        round_frame._use_current_round_key()
+        self.assertEqual(round_frame.key_var.get(), "103")
+
+    def test_no_tournament_read_yet_clears_the_key_instead_of_failing(self) -> None:
+        self.app.TOURNAME = ""
+        frame = self.make_frame("tournamententrance")
+        frame.key_var.set("old")
+        frame._use_current_tournament_key()
+        self.assertEqual(frame.key_var.get(), "")
+
+    def test_only_folders_with_an_entrance_track_are_offered(self) -> None:
+        frame = self.make_frame("tournamententrance")
+        self.assertEqual(frame._available_entrance_choices(), ["Cups/Champions", "Teams/Arsenal"])
+
+    def test_save_writes_folder_volume_and_delay_under_the_key(self) -> None:
+        frame = self.make_frame("tournamententrance")
+        frame.key_var.set("78")
+        frame.chants_folder_var.set("Cups/Champions")
+        frame.entrance_volume_var.set("0.30")
+        frame.entrance_delay_var.set("5.5")
+        frame.save_entry()
+        self.assertEqual(SessionIniFile(self.ini.path).read("78", "tournamententrance"), "Cups/Champions,0.30,5.5")
+
+    def test_blank_volume_and_delay_are_saved_as_the_defaults(self) -> None:
+        frame = self.make_frame("roundentrance")
+        frame.key_var.set("103")
+        frame.chants_folder_var.set("Cups/Champions")
+        frame.entrance_volume_var.set("")
+        frame.entrance_delay_var.set("  ")
+        frame.save_entry()
+        self.assertEqual(SessionIniFile(self.ini.path).read("103", "roundentrance"), "Cups/Champions,0.16,7.0")
+
+    def test_empty_folder_is_not_saved(self) -> None:
+        frame = self.make_frame("tournamententrance")
+        frame.key_var.set("78")
+        frame.chants_folder_var.set("")
+        with mock.patch("server16_py.settings_editor.messagebox") as box:
+            frame.save_entry()
+        box.showwarning.assert_called_once()
+        self.assertFalse(SessionIniFile(self.ini.path).key_exists("78", "tournamententrance"))
+
+    def test_loading_an_entry_fills_the_form_and_tolerates_a_folder_only_value(self) -> None:
+        self.ini.write("78", "Cups/Champions,0.25,3", "tournamententrance")
+        self.ini.write("79", "Teams/Arsenal", "tournamententrance")
+        self.ini.save()
+        frame = self.make_frame("tournamententrance")
+        frame.load_entry("78")
+        self.assertEqual(
+            (frame.chants_folder_var.get(), frame.entrance_volume_var.get(), frame.entrance_delay_var.get()),
+            ("Cups/Champions", "0.25", "3"),
+        )
+        frame.load_entry("79")
+        self.assertEqual(
+            (frame.chants_folder_var.get(), frame.entrance_volume_var.get(), frame.entrance_delay_var.get()),
+            ("Teams/Arsenal", "0.16", "7.0"),
+        )
+
+    def test_new_entry_resets_to_the_defaults(self) -> None:
+        frame = self.make_frame("roundentrance")
+        frame.entrance_volume_var.set("0.9")
+        frame.entrance_delay_var.set("30")
+        frame.new_entry()
+        self.assertEqual(frame.key_var.get(), "")
+        self.assertEqual(frame.entrance_volume_var.get(), "0.16")
+        self.assertEqual(frame.entrance_delay_var.get(), "7.0")
+        self.assertEqual(frame.chants_folder_var.get(), "Cups/Champions")
 
 
 @unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
@@ -408,6 +590,498 @@ class EntranceCamPriorityHintTests(unittest.TestCase):
     def test_other_simple_tabs_do_not_show_it(self) -> None:
         spec = SectionSpec("stadiumgoalpost", "Goalpost Models By Stadium Name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True)
         self.assertEqual(self.hint_labels(spec), [])
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class LiveContextKeyButtonTests(unittest.TestCase):
+    """Sections whose key the runtimes read from the live game context get a button
+    next to Key that fills it from that context: round and/or tournament id for the
+    competition-keyed ones (the runtimes try the round id, then the tournament id),
+    "{home}vs{away}" for derbies, the engine stadium id for [stadiumnetid]."""
+
+    COMPETITION_KEYED = ("Scoreboard", "TVLogo", "movies", "comp", "exclude")
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        (exedir / "FSW").mkdir(parents=True)
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.app = FakeApp(exedir, SessionIniFile(exedir / "FSW" / "settings.ini"))
+        self.app.HID = "241"
+        self.app.AID = "243"
+        self.app.derby = "241vs243"
+        self.app.TOURNAME = "78"
+        self.app.TOURROUNDID = "103"
+        self.app.STADID = "5"
+
+    def make_frame(self, section: str) -> SettingsSectionFrame:
+        spec = next(spec for spec in (*asset_specs(), *stadium_specs()) if spec.section == section)
+        return SettingsSectionFrame(self.root, self.app, spec)
+
+    def button_texts(self, widget) -> list[str]:
+        found: list[str] = []
+        for child in widget.winfo_children():
+            if child.winfo_class() == "TButton":
+                found.append(str(child.cget("text")))
+            found.extend(self.button_texts(child))
+        return found
+
+    def test_competition_keyed_sections_offer_round_and_tournament(self) -> None:
+        for section in self.COMPETITION_KEYED:
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                texts = self.button_texts(frame)
+                self.assertIn("button.use_current_round_id", texts)
+                self.assertIn("button.use_current_tournament_id", texts)
+                frame._use_current_round_key()
+                self.assertEqual(frame.key_var.get(), "103")
+                frame._use_current_tournament_key()
+                self.assertEqual(frame.key_var.get(), "78")
+
+    def test_team_keyed_sections_keep_their_team_buttons_only(self) -> None:
+        for section in ("HomeTeamScoreBoard", "TeamMovies", "stadium"):
+            with self.subTest(section=section):
+                key_buttons = [t for t in self.button_texts(self.make_frame(section)) if t.startswith(("button.use_", "button.pick_"))]
+                self.assertEqual(key_buttons, ["button.use_home_team", "button.use_away_team", "button.pick_team"])
+
+    def test_derby_button_fills_home_vs_away(self) -> None:
+        frame = self.make_frame("DerbyMatch")
+        self.assertIn("button.use_current_derby", self.button_texts(frame))
+        frame._use_current_derby_key()
+        self.assertEqual(frame.key_var.get(), "241vs243")
+
+    def test_derby_button_clears_the_key_until_both_teams_are_known(self) -> None:
+        # app.derby degrades to "vs" when nothing was read; the runtimes never
+        # look a derby up in that state, so never write it as a key.
+        self.app.AID = ""
+        self.app.derby = "241vs"
+        frame = self.make_frame("DerbyMatch")
+        frame.key_var.set("old")
+        frame._use_current_derby_key()
+        self.assertEqual(frame.key_var.get(), "")
+        self.app.HID = ""
+        self.app.derby = "vs"
+        frame._use_current_derby_key()
+        self.assertEqual(frame.key_var.get(), "")
+
+    def test_only_the_derby_section_gets_the_derby_button(self) -> None:
+        for section in ("movies", "TeamMovies"):
+            with self.subTest(section=section):
+                self.assertNotIn("button.use_current_derby", self.button_texts(self.make_frame(section)))
+
+    def test_net_by_stadium_id_gets_the_current_stadium_id_button(self) -> None:
+        frame = self.make_frame("stadiumnetid")
+        self.assertIn("button.use_current_stadium_id", self.button_texts(frame))
+        frame._use_current_stadium_id_key()
+        self.assertEqual(frame.key_var.get(), "5")
+        # Keyed by stadium NAME instead: picks from the stadium list, not an id.
+        by_name = self.button_texts(self.make_frame("stadiumnetname"))
+        self.assertNotIn("button.use_current_stadium_id", by_name)
+        self.assertIn("button.pick_stadium", by_name)
+
+    def test_no_context_read_yet_clears_the_key_instead_of_failing(self) -> None:
+        self.app.STADID = ""
+        frame = self.make_frame("stadiumnetid")
+        frame.key_var.set("old")
+        frame._use_current_stadium_id_key()
+        self.assertEqual(frame.key_var.get(), "")
+
+
+class TabLayoutTests(unittest.TestCase):
+    """stadium_tab_groups()/asset_tab_groups() only re-arrange stadium_specs()/
+    asset_specs(): a spec left out of the layout would silently vanish from its editor."""
+
+    def test_every_spec_lands_in_exactly_one_group(self) -> None:
+        for name, specs, groups in (
+            ("stadium", stadium_specs(), stadium_tab_groups()),
+            ("asset", asset_specs(), asset_tab_groups()),
+        ):
+            with self.subTest(editor=name):
+                self.assertCountEqual(
+                    [spec.section for group in groups for spec in group.specs],
+                    [spec.section for spec in specs],
+                )
+
+    def test_groups_with_several_specs_are_titled_and_lone_specs_use_their_own_title(self) -> None:
+        for groups in (stadium_tab_groups(), asset_tab_groups()):
+            for group in groups:
+                with self.subTest(first=group.specs[0].section):
+                    if len(group.specs) > 1:
+                        self.assertTrue(group.title.startswith("dialog.editor.group."))
+                        self.assertEqual(group.tab_title, group.title)
+                    else:
+                        self.assertEqual(group.tab_title, group.specs[0].title)
+
+    def test_the_scoreboard_tab_holds_the_competition_and_home_team_scoreboards(self) -> None:
+        group = next(group for group in asset_tab_groups() if group.specs[0].section == "Scoreboard")
+        self.assertEqual([spec.section for spec in group.specs], ["Scoreboard", "HomeTeamScoreBoard"])
+
+    def test_every_tab_title_is_a_locale_key_present_in_every_language(self) -> None:
+        import json
+
+        locales = Path(__file__).resolve().parent.parent / "server16_py" / "locales"
+        catalogs = {lang: json.loads((locales / f"{lang}.json").read_text(encoding="utf-8")) for lang in ("en", "es", "pt")}
+        groups = (*stadium_tab_groups(), *asset_tab_groups())
+        titles = {group.tab_title for group in groups} | {spec.title for group in groups for spec in group.specs}
+        for title in titles:
+            for lang, catalog in catalogs.items():
+                with self.subTest(title=title, lang=lang):
+                    self.assertIn(title, catalog)
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class GroupedSettingsEditorTests(unittest.TestCase):
+    """SettingsAreaEditor: a multi-spec group is one top-level tab holding a
+    sub-notebook; everything that used to work on the flat notebook (active
+    frame, initial section, reload on tab change, preview stop) goes through it."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        (exedir / "FSW").mkdir(parents=True)
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.app = FakeApp(exedir, SessionIniFile(exedir / "FSW" / "settings.ini"))
+        self.app._window = lambda: self.root
+
+    def make_editor(self, groups, initial_section: str | None = None) -> SettingsAreaEditor:
+        editor = SettingsAreaEditor(self.app, "Editor", groups, initial_section=initial_section)
+        self.addCleanup(editor.destroy)
+        return editor
+
+    @staticmethod
+    def tab_texts(notebook: ttk.Notebook) -> list[str]:
+        return [notebook.tab(tab, "text") for tab in notebook.tabs()]
+
+    def sub_notebook(self, editor: SettingsAreaEditor, index: int) -> ttk.Notebook:
+        return editor._sub_notebooks[editor.notebook.nametowidget(editor.notebook.tabs()[index])]
+
+    def test_asset_editor_top_level_tabs_and_sub_tabs(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        self.assertEqual(
+            self.tab_texts(editor.notebook),
+            [
+                "dialog.editor.group.scoreboards",
+                "dialog.editor.group.tvlogos",
+                "dialog.editor.group.movies",
+                "dialog.editor.choice.kits_ids",
+                "dialog.editor.group.match_assets",
+            ],
+        )
+        self.assertEqual(
+            self.tab_texts(self.sub_notebook(editor, 0)),
+            ["dialog.editor.choice.competition_scoreboards", "dialog.editor.choice.home_team_scoreboards"],
+        )
+        self.assertEqual(len(self.sub_notebook(editor, 2).tabs()), 3)
+        self.assertEqual(len(self.sub_notebook(editor, 4).tabs()), 4)
+
+    def test_stadium_editor_top_level_tabs(self) -> None:
+        editor = self.make_editor(stadium_tab_groups())
+        self.assertEqual(
+            self.tab_texts(editor.notebook),
+            [
+                "dialog.editor.group.stadiums",
+                "dialog.editor.group.nets",
+                "dialog.editor.group.goalposts",
+                "dialog.editor.choice.scoreboard_stadium_name",
+                "dialog.editor.choice.entrance_cams_by_stadium_name",
+                "dialog.editor.choice.excluded_competitions",
+            ],
+        )
+        self.assertEqual(
+            self.tab_texts(self.sub_notebook(editor, 0)),
+            ["dialog.editor.choice.team_stadiums", "dialog.editor.choice.competition_stadiums"],
+        )
+
+    def test_a_lone_spec_is_a_plain_tab_without_a_sub_notebook(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        kits = editor.notebook.nametowidget(editor.notebook.tabs()[3])
+        self.assertIsInstance(kits, SettingsSectionFrame)
+        self.assertNotIn(kits, editor._sub_notebooks)
+
+    def test_flat_spec_list_still_builds_one_plain_tab_per_spec(self) -> None:
+        editor = self.make_editor(audio_specs())
+        self.assertEqual(len(editor.notebook.tabs()), len(audio_specs()))
+        self.assertEqual(editor._sub_notebooks, {})
+        self.assertEqual(set(editor.frames), {spec.section.lower() for spec in audio_specs()})
+
+    def test_every_section_has_a_frame(self) -> None:
+        for groups, specs in ((stadium_tab_groups(), stadium_specs()), (asset_tab_groups(), asset_specs())):
+            editor = self.make_editor(groups)
+            self.assertEqual(set(editor.frames), {spec.section.lower() for spec in specs})
+
+    def test_initial_section_inside_a_group_selects_the_group_and_the_sub_tab(self) -> None:
+        editor = self.make_editor(asset_tab_groups(), initial_section="HomeTeamTvLogo")
+        self.assertIs(editor._active_frame(), editor.frames["hometeamtvlogo"])
+        self.assertEqual(editor.notebook.index(editor.notebook.select()), 1)
+
+    def test_initial_section_is_case_insensitive_and_reaches_lone_tabs(self) -> None:
+        editor = self.make_editor(asset_tab_groups(), initial_section="KITSID")
+        self.assertIs(editor._active_frame(), editor.frames["kitsid"])
+
+    def test_unknown_initial_section_is_ignored(self) -> None:
+        editor = self.make_editor(asset_tab_groups(), initial_section="nope")
+        self.assertIs(editor._active_frame(), editor.frames["scoreboard"])
+
+    def test_active_frame_follows_the_sub_tab_selection(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        self.assertIs(editor._active_frame(), editor.frames["scoreboard"])
+        self.sub_notebook(editor, 0).select(editor.frames["hometeamscoreboard"])
+        self.assertIs(editor._active_frame(), editor.frames["hometeamscoreboard"])
+
+    def test_switching_sub_tab_reloads_the_frame_that_becomes_visible(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        editor.update()
+        target = editor.frames["hometeamscoreboard"]
+        with mock.patch.object(target, "reload_entries") as reload:
+            self.sub_notebook(editor, 0).select(target)
+            editor.update()
+        reload.assert_called()
+
+    def test_switching_top_level_tab_reloads_the_sub_tab_shown_inside_it(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        editor.update()
+        self.sub_notebook(editor, 1).select(editor.frames["hometeamtvlogo"])
+        editor.notebook.select(0)
+        editor.update()
+        target = editor.frames["hometeamtvlogo"]
+        with mock.patch.object(target, "reload_entries") as reload:
+            editor.notebook.select(1)
+            editor.update()
+        reload.assert_called()
+
+    def test_any_tab_change_stops_every_frames_preview(self) -> None:
+        editor = self.make_editor(asset_tab_groups())
+        stoppers = {name: mock.patch.object(frame, "_stop_preview").start() for name, frame in editor.frames.items()}
+        self.addCleanup(mock.patch.stopall)
+        editor._on_tab_changed()
+        for name, stop in stoppers.items():
+            with self.subTest(section=name):
+                stop.assert_called_once()
+
+
+MATCH_ASSET_SECTIONS = ("ball", "referee", "wipe", "adboard")
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class MatchAssetsTabTests(unittest.TestCase):
+    """The Ball / Referee / Wipe / Adboard tabs of the Match Assets group: a
+    texture preview with arrows below the Value combo, and the grid picker
+    button beside it. The 32-bit render itself is replaced by a recorder (it is
+    covered by test_asset_runtime_rx3.py); these tests pin what the TAB asks
+    for and what it does with the answers."""
+
+    FOLDERS = {"ball": "balls", "referee": "referee", "wipe": "wipe", "adboard": "adboards"}
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.exedir = Path(self._tmp.name)
+        fsw = self.exedir / "FSW"
+        for rel in (
+            "balls/Adidas/ball.rx3",
+            "balls/Plain/readme.txt",  # a pack folder with no .rx3
+            "wipe/Pack8/specificwipe_0_996_0.rx3",
+            "wipe/Pack8/specificwipe_0_996_1.rx3",
+            "referee/Orange/kit_0.rx3",
+            "adboards/Banners/specificadboard_0_1_0_0.rx3",
+        ):
+            path = fsw / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(b"x")
+        self.ini = SessionIniFile(fsw / "settings.ini")
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.addCleanup(self.root.update_idletasks)
+        self.app = FakeApp(self.exedir, self.ini)
+        self.render_calls: list[tuple[str, Path, Path]] = []
+        self.textures_per_file = 2
+
+        def render(kind: str, pack_dir: Path, rx3: Path) -> list[Path]:
+            self.render_calls.append((kind, pack_dir, rx3))
+            return [self.make_png(f"{kind}_{pack_dir.name}_{rx3.stem}_{i}.png") for i in range(self.textures_per_file)]
+
+        self.app.assets_runtime = SimpleNamespace(render_match_asset_textures=render)
+
+    def make_png(self, name: str) -> Path:
+        from PIL import Image
+
+        path = self.exedir / name
+        Image.new("RGBA", (16, 16), (10, 120, 200, 255)).save(path)
+        return path
+
+    def make_frame(self, section: str) -> SettingsSectionFrame:
+        spec = next(spec for spec in asset_specs() if spec.section == section)
+        frame = SettingsSectionFrame(self.root, self.app, spec)
+        self.addCleanup(frame.destroy)
+        return frame
+
+    def pump(self, until, timeout: float = 5.0) -> None:
+        import time
+
+        deadline = time.monotonic() + timeout
+        while not until():
+            self.assertLess(time.monotonic(), deadline, "timed out waiting for the preview")
+            self.root.update()
+            time.sleep(0.005)
+
+    def run_picker(self, frame: SettingsSectionFrame, result: str | None) -> SimpleNamespace:
+        calls = []
+
+        def fake_dialog(master, field_label, items, current="", **_kwargs):
+            call = SimpleNamespace(master=master, field_label=field_label, items=items, current=current, result=result)
+            calls.append(call)
+            return call
+
+        with mock.patch("server16_py.settings_editor.AssetGridPickerDialog", fake_dialog):
+            frame._pick_match_asset()
+        self.assertEqual(len(calls), 1)
+        return calls[0]
+
+    # ------------------------------------------------------------------ layout
+
+    def test_exactly_the_four_match_asset_specs_ask_for_the_preview(self) -> None:
+        flagged = {spec.section for spec in asset_specs() if spec.rx3_preview}
+        self.assertEqual(flagged, set(MATCH_ASSET_SECTIONS))
+        group = next(group for group in asset_tab_groups() if group.title == "dialog.editor.group.match_assets")
+        self.assertEqual({spec.section for spec in group.specs}, flagged)
+
+    def test_each_match_asset_tab_has_the_texture_preview_and_a_picker_button(self) -> None:
+        for section in MATCH_ASSET_SECTIONS:
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                self.assertIsNotNone(frame._rx3_preview)
+                self.assertTrue(hasattr(frame.value_combo, "picker_button"))
+                self.assertEqual(frame.value_combo.picker_button.cget("text"), "▦")
+
+    def test_other_asset_tabs_are_left_exactly_as_they_were(self) -> None:
+        for section in ("Scoreboard", "TVLogo", "movies", "kitsid"):
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                self.assertIsNone(frame._rx3_preview)
+                self.assertFalse(hasattr(frame.value_combo, "picker_button"))
+
+    def test_the_preview_starts_with_no_pack(self) -> None:
+        frame = self.make_frame("wipe")
+        self.assertEqual(frame._rx3_preview.frames, [])
+        self.assertEqual(self.render_calls, [])
+
+    # --------------------------------------------------------------- preview
+
+    def test_choosing_a_pack_previews_every_texture_of_every_rx3_in_it(self) -> None:
+        frame = self.make_frame("wipe")
+        frame.value_var.set("Pack8")
+        self.pump(lambda: len(frame._rx3_preview.frames) == 4)  # 2 files x 2 textures
+        pack = self.exedir / "FSW" / "wipe" / "Pack8"
+        self.assertEqual(
+            self.render_calls,
+            [("wipe", pack, pack / "specificwipe_0_996_0.rx3"), ("wipe", pack, pack / "specificwipe_0_996_1.rx3")],
+        )
+        self.assertEqual([f.rx3 for f in frame._rx3_preview.frames],
+                         ["specificwipe_0_996_0.rx3"] * 2 + ["specificwipe_0_996_1.rx3"] * 2)
+
+    def test_each_tab_looks_in_its_own_folder_with_its_own_kind(self) -> None:
+        for section, pack in (("ball", "Adidas"), ("referee", "Orange"), ("adboard", "Banners")):
+            with self.subTest(section=section):
+                self.render_calls.clear()
+                frame = self.make_frame(section)
+                frame.value_var.set(pack)
+                self.pump(lambda: len(frame._rx3_preview.frames) == 2)
+                (kind, pack_dir, _rx3), = self.render_calls
+                self.assertEqual(kind, section)
+                self.assertEqual(pack_dir, self.exedir / "FSW" / self.FOLDERS[section] / pack)
+
+    def test_a_pack_without_rx3_or_an_unknown_value_never_renders(self) -> None:
+        frame = self.make_frame("ball")
+        for value in ("Plain", "NoSuchPack", "   "):
+            frame.value_var.set(value)
+            self.root.update()
+            self.pump(lambda: frame._rx3_preview_job is None)
+        self.assertEqual(self.render_calls, [])
+        self.assertEqual(frame._rx3_preview.frames, [])
+
+    def test_a_burst_of_changes_renders_only_the_value_it_settles_on(self) -> None:
+        # Stepping through the combo with the arrow keys must not launch a
+        # 32-bit render per press.
+        frame = self.make_frame("ball")
+        with mock.patch.object(frame._rx3_preview, "show_pack") as show:
+            for value in ("A", "Ad", "Adi", "Adidas"):
+                frame.value_var.set(value)
+            self.pump(lambda: show.called)
+        show.assert_called_once()
+        self.assertEqual(show.call_args.args[0], self.exedir / "FSW" / "balls" / "Adidas")
+
+    def test_loading_an_entry_refreshes_the_preview(self) -> None:
+        # key 12 -> pack Adidas, like a saved [ball] entry. Saved to disk because
+        # load_entry() reloads the file first, which drops unsaved writes.
+        self.ini.write("12", "Adidas", "ball")
+        self.ini.save()
+        frame = self.make_frame("ball")
+        frame.load_entry("12")
+        self.pump(lambda: len(frame._rx3_preview.frames) == 2)
+        self.assertEqual(frame.value_var.get(), "Adidas")
+
+    def test_destroying_the_tab_with_a_refresh_pending_is_safe(self) -> None:
+        frame = self.make_frame("ball")
+        frame.value_var.set("Adidas")
+        self.assertIsNotNone(frame._rx3_preview_job)
+        frame.destroy()
+        self.assertIsNone(frame._rx3_preview_job)
+        for _ in range(30):
+            self.root.update()
+
+    # ---------------------------------------------------------------- picker
+
+    def test_the_grid_offers_every_pack_folder_with_a_texture_render_where_there_is_an_rx3(self) -> None:
+        frame = self.make_frame("ball")
+        call = self.run_picker(frame, None)
+        by_value = {item.value: item for item in call.items}
+        self.assertEqual(list(by_value), ["Adidas", "Plain"])
+        self.assertIsNone(by_value["Plain"].render)  # no .rx3: placeholder
+        first_texture = by_value["Adidas"].render()
+        self.assertEqual(first_texture.name, "ball_Adidas_ball_0.png")  # the FIRST texture of the pack
+        self.assertEqual(self.render_calls, [("ball", self.exedir / "FSW" / "balls" / "Adidas", self.exedir / "FSW" / "balls" / "Adidas" / "ball.rx3")])
+
+    def test_the_grid_is_titled_for_the_tab_and_highlights_the_current_value(self) -> None:
+        for section, key in (("ball", "ball"), ("referee", "referee"), ("wipe", "wipe"), ("adboard", "adboard")):
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                frame.value_var.set("  Chosen ")
+                call = self.run_picker(frame, None)
+                self.assertEqual(call.field_label, f"dialog.editor.field.{key}")
+                self.assertEqual(call.current, "Chosen")
+
+    def test_choosing_in_the_grid_sets_the_value_and_previews_that_pack(self) -> None:
+        frame = self.make_frame("wipe")
+        self.run_picker(frame, "Pack8")
+        self.assertEqual(frame.value_var.get(), "Pack8")
+        self.pump(lambda: len(frame._rx3_preview.frames) == 4)
+
+    def test_cancelling_the_grid_leaves_the_value_untouched(self) -> None:
+        frame = self.make_frame("wipe")
+        frame.value_var.set("Pack8")
+        self.run_picker(frame, None)
+        self.assertEqual(frame.value_var.get(), "Pack8")
+
+    def test_the_grid_rereads_the_folder_so_a_new_pack_shows_up(self) -> None:
+        frame = self.make_frame("ball")
+        (self.exedir / "FSW" / "balls" / "Added").mkdir()
+        call = self.run_picker(frame, None)
+        self.assertIn("Added", [item.value for item in call.items])
+
+    def test_the_picker_button_opens_the_grid(self) -> None:
+        frame = self.make_frame("ball")
+        calls = []
+        with mock.patch("server16_py.settings_editor.AssetGridPickerDialog",
+                        lambda *a, **k: calls.append((a, k)) or SimpleNamespace(result=None)):
+            frame.value_combo.picker_button.invoke()
+        self.assertEqual(len(calls), 1)
 
 
 if __name__ == "__main__":

@@ -59,54 +59,6 @@ class AssetToastGatingTests(unittest.TestCase):
         self.assertEqual(app.toast_calls, [("TV Logo (OFF)", "Assets skipped", 1, "tv")])
 
 
-class FakeAdboardApp:
-    """Enough of Server16App for AssetRuntime._apply_adboard_runtime_impl to
-    run against a real, on-disk FSW/adboards/<stadium>/ folder."""
-
-    def __init__(self, base: Path, awaiting: bool) -> None:
-        self.exedir = base
-        self.curstad = "Anfield"
-        self.TOURROUNDID = ""
-        self._active_adboard_injected_files: list[str] = []
-        self._worker_queue: "queue.Queue" = queue.Queue()
-        self._awaiting = awaiting
-        self.logs: list[str] = []
-
-    def stadium_picker_awaiting_selection(self) -> bool:
-        return self._awaiting
-
-    def tr(self, key: str) -> str:
-        return key
-
-    def log(self, *parts) -> None:
-        self.logs.append(" ".join(str(p) for p in parts))
-
-
-class AdboardQueuedToastGatingTests(unittest.TestCase):
-    def _make_app(self, awaiting: bool) -> FakeAdboardApp:
-        tmp = Path(tempfile.mkdtemp())
-        stadium_dir = tmp / "FSW" / "adboards" / "Anfield"
-        stadium_dir.mkdir(parents=True)
-        (stadium_dir / "board1.rx3").write_bytes(b"data")
-        return FakeAdboardApp(tmp, awaiting)
-
-    def test_adboard_toast_not_queued_while_stadium_picker_awaits_selection(self) -> None:
-        app = self._make_app(awaiting=True)
-        AssetRuntime(app)._apply_adboard_runtime_impl()
-        # The asset itself still applies -- only the notification is held back.
-        self.assertEqual(app._active_adboard_injected_files, ["board1.rx3"])
-        self.assertTrue(app._worker_queue.empty())
-
-    def test_adboard_toast_queued_once_stadium_is_selected(self) -> None:
-        app = self._make_app(awaiting=False)
-        AssetRuntime(app)._apply_adboard_runtime_impl()
-        self.assertFalse(app._worker_queue.empty())
-        kind, title, body, duration_ms, icon = app._worker_queue.get_nowait()
-        self.assertEqual(kind, "toast")
-        self.assertEqual(body, "Anfield")
-
-
-
 class FakeIni:
     def __init__(self, data: dict[str, dict[str, str]]) -> None:
         self._data = data
@@ -116,6 +68,46 @@ class FakeIni:
 
     def read(self, key: str, section: str) -> str:
         return self._data.get(section, {}).get(key, "")
+
+
+class FakeAdboardApp(FakeApp):
+    """Enough of Server16App for AssetRuntime._apply_adboard_runtime_impl to
+    run against a real, on-disk FSW/adboards/<folder>/ pack assigned to round R1."""
+
+    def __init__(self, base: Path, awaiting: bool) -> None:
+        super().__init__(awaiting)
+        self.exedir = base
+        self.TOURROUNDID = "R1"
+        self.settings_ini = FakeIni({"adboard": {"R1": "Banners"}})
+        self._active_adboard_injected_files: list[str] = []
+        self.logs: list[str] = []
+
+    def tr(self, key: str) -> str:
+        return key
+
+    def log(self, *parts) -> None:
+        self.logs.append(" ".join(str(p) for p in parts))
+
+
+class AdboardToastGatingTests(unittest.TestCase):
+    def _make_app(self, awaiting: bool) -> FakeAdboardApp:
+        tmp = Path(tempfile.mkdtemp())
+        pack_dir = tmp / "FSW" / "adboards" / "Banners"
+        pack_dir.mkdir(parents=True)
+        (pack_dir / "board1.rx3").write_bytes(b"data")
+        return FakeAdboardApp(tmp, awaiting)
+
+    def test_adboard_toast_not_shown_while_stadium_picker_awaits_selection(self) -> None:
+        app = self._make_app(awaiting=True)
+        AssetRuntime(app)._apply_adboard_runtime_impl()
+        # The asset itself still applies -- only the notification is held back.
+        self.assertEqual(app._active_adboard_injected_files, ["board1.rx3"])
+        self.assertEqual(app.toast_calls, [])
+
+    def test_adboard_toast_shown_once_stadium_is_selected(self) -> None:
+        app = self._make_app(awaiting=False)
+        AssetRuntime(app)._apply_adboard_runtime_impl()
+        self.assertEqual(app.toast_calls, [("notify.adboard_loaded", "Banners", 0, "adboard")])
 
 
 class StadiumNetOffToastTests(unittest.TestCase):

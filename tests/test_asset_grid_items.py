@@ -13,6 +13,7 @@ from server16_py.asset_grid_items import (
     goalpost_model_items,
     goalpost_texture_items,
     make_picker_button,
+    match_asset_items,
     png_items,
 )
 
@@ -87,6 +88,36 @@ class ItemBuilderTests(unittest.TestCase):
             (azul_rx3, "Azul", {"reuse_cached": True}),
             (rojo_rx3, "Rojo", {"reuse_cached": True}),
         ])
+
+    def test_match_asset_items_preview_each_pack_by_the_first_texture_of_its_first_rx3(self) -> None:
+        wipe_a = self.tmp / "Wipes" / "A"
+        wipe_b = self.tmp / "Wipes" / "B"
+        self.touch("Wipes/A/second.rx3")
+        first_a = self.touch("Wipes/A/first.rx3")
+        first_b = self.touch("Wipes/B/only.rx3")
+        (self.tmp / "Wipes" / "Empty").mkdir()  # a pack folder without any .rx3
+        calls = []
+
+        def render(kind, pack_dir, rx3):
+            calls.append((kind, pack_dir, rx3))
+            return [self.tmp / f"{pack_dir.name}-0.png", self.tmp / f"{pack_dir.name}-1.png"]
+
+        runtime = SimpleNamespace(render_match_asset_textures=render)
+        items = {i.value: i for i in match_asset_items("wipe", self.tmp / "Wipes", ["A", "B", "Empty"], runtime)}
+
+        self.assertIsNone(items["Empty"].render)  # nothing to render: the placeholder shows
+        self.assertTrue(all(i.image_path is None for i in items.values()))
+        self.assertEqual([i.label for i in items.values()], ["A", "B", "Empty"])
+        # Each closure is bound to ITS pack (the late-binding trap) and takes the first texture.
+        self.assertEqual(items["A"].render(), self.tmp / "A-0.png")
+        self.assertEqual(items["B"].render(), self.tmp / "B-0.png")
+        self.assertEqual(calls, [("wipe", wipe_a, first_a), ("wipe", wipe_b, first_b)])
+
+    def test_match_asset_item_without_a_rendered_texture_has_no_image(self) -> None:
+        self.touch("Balls/Ball1/ball.rx3")
+        runtime = SimpleNamespace(render_match_asset_textures=lambda kind, pack_dir, rx3: [])
+        (item,) = match_asset_items("ball", self.tmp / "Balls", ["Ball1"], runtime)
+        self.assertIsNone(item.render())
 
     def test_builders_accept_any_iterable_not_just_lists(self) -> None:
         self.assertEqual([i.value for i in png_items(iter(("1", "2")), self.tmp)], ["1", "2"])

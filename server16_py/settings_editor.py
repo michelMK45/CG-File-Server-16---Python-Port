@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 import tkinter as tk
@@ -15,6 +16,7 @@ from .asset_grid_items import (
     goalpost_model_items,
     goalpost_texture_items,
     make_picker_button,
+    match_asset_items,
     png_items,
 )
 from .asset_grid_picker_dialog import AssetGridPickerDialog
@@ -26,6 +28,7 @@ from .file_tools import (
     resolve_stadium_preview_path,
     stadium_preview_fallback_path,
 )
+from .rx3_texture_preview import Rx3TexturePreview
 from .stadium_picker_dialog import StadiumPickerDialog
 from .stadium_runtime import StadiumRuntime
 from .team_picker_dialog import TeamPickerDialog
@@ -41,15 +44,41 @@ class SectionSpec:
     directory: str | None = None
     recursive: bool = False
     key_is_team_id: bool = False
+    key_is_round_id: bool = False
+    key_is_tournament_id: bool = False
+    key_is_derby: bool = False
+    key_is_stadium_id: bool = False
     key_stadium_picker: bool = False
+    # Match Assets (ball/referee/wipe/adboard): the value is a pack folder of
+    # .rx3 files, so the tab shows a texture preview with arrows and the combo
+    # gets the grid picker. `section` doubles as the preview's cache "kind".
+    rx3_preview: bool = False
+
+
+@dataclass(frozen=True)
+class SpecGroup:
+    """One top-level tab of SettingsAreaEditor. Two or more specs become
+    sub-tabs of that tab; a single spec is shown as a plain tab (no nested
+    notebook with one lonely sub-tab). `title` is only used for the
+    multi-spec case -- a lone spec's tab is labelled with the spec's own title."""
+
+    specs: tuple[SectionSpec, ...]
+    title: str = ""
+
+    @property
+    def tab_title(self) -> str:
+        return self.title if len(self.specs) > 1 and self.title else self.specs[0].title
 
 
 class SettingsAreaEditor(tk.Toplevel):
-    def __init__(self, app, title: str, specs: list[SectionSpec], initial_section: str | None = None) -> None:
+    def __init__(self, app, title: str, specs: list[SectionSpec | SpecGroup], initial_section: str | None = None) -> None:
         owner = app._window() if hasattr(app, "_window") else app
         super().__init__(owner)
         self.app = app
-        self.specs = specs
+        # A bare SectionSpec is a group of one, so flat spec lists (the chants
+        # editor) and grouped layouts (stadium/asset editors) share one code path.
+        self.groups = [spec if isinstance(spec, SpecGroup) else SpecGroup((spec,)) for spec in specs]
+        self.specs = [spec for group in self.groups for spec in group.specs]
         self.configure(bg=app.bg)
         self.title(title)
         zoom = getattr(getattr(app, "settings", None), "ui_zoom", 1.0)
@@ -65,17 +94,60 @@ class SettingsAreaEditor(tk.Toplevel):
         self.notebook = ttk.Notebook(self, style="Server16.TNotebook")
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
         self.frames: dict[str, SettingsSectionFrame] = {}
-        for spec in specs:
-            frame = SettingsSectionFrame(self.notebook, app, spec)
-            self.notebook.add(frame, text=app.tr(spec.title) if hasattr(app, "tr") else spec.title)
-            self.frames[spec.section.lower()] = frame
-        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        # Top-level tab widget of a multi-spec group -> the sub-notebook inside
+        # it, and section (lowercase) -> that sub-notebook, so the active frame
+        # and initial_section can be resolved through the extra level.
+        self._sub_notebooks: dict[tk.Misc, ttk.Notebook] = {}
+        self._section_notebook: dict[str, ttk.Notebook] = {}
+        self._section_tab: dict[str, tk.Misc] = {}
+        for group in self.groups:
+            if len(group.specs) == 1:
+                spec = group.specs[0]
+                frame = SettingsSectionFrame(self.notebook, app, spec)
+                self.notebook.add(frame, text=self._tab_text(group.tab_title))
+                self.frames[spec.section.lower()] = frame
+                self._section_tab[spec.section.lower()] = frame
+                continue
+            host = tk.Frame(self.notebook, bg=app.bg)
+            sub_notebook = ttk.Notebook(host, style="Server16.Sub.TNotebook")
+            sub_notebook.pack(fill="both", expand=True, pady=(6, 0))
+            self.notebook.add(host, text=self._tab_text(group.tab_title))
+            self._sub_notebooks[host] = sub_notebook
+            for spec in group.specs:
+                frame = SettingsSectionFrame(sub_notebook, app, spec)
+                sub_notebook.add(frame, text=self._tab_text(spec.title))
+                self.frames[spec.section.lower()] = frame
+                self._section_notebook[spec.section.lower()] = sub_notebook
+                self._section_tab[spec.section.lower()] = host
+        for notebook in (self.notebook, *self._sub_notebooks.values()):
+            notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
         if initial_section:
-            for index, spec in enumerate(specs):
-                if spec.section.lower() == initial_section.lower():
-                    self.notebook.select(index)
-                    break
+            self.select_section(initial_section)
         self._refresh_active_frame()
+
+    def _tab_text(self, title: str) -> str:
+        return self.app.tr(title) if hasattr(self.app, "tr") else title
+
+    def select_section(self, section: str) -> None:
+        """Shows the tab (and, inside a group, the sub-tab) holding `section`."""
+        key = section.lower()
+        frame = self.frames.get(key)
+        if frame is None:
+            return
+        sub_notebook = self._section_notebook.get(key)
+        if sub_notebook is not None:
+            sub_notebook.select(frame)
+        self.notebook.select(self._section_tab[key])
+
+    def _active_frame(self) -> SettingsSectionFrame | None:
+        try:
+            current = self.notebook.nametowidget(self.notebook.select())
+            sub_notebook = self._sub_notebooks.get(current)
+            if sub_notebook is not None:
+                current = sub_notebook.nametowidget(sub_notebook.select())
+        except tk.TclError:
+            return None
+        return current if isinstance(current, SettingsSectionFrame) else None
 
     def _on_tab_changed(self, _event=None) -> None:
         for frame in self.frames.values():
@@ -85,9 +157,9 @@ class SettingsAreaEditor(tk.Toplevel):
         self._refresh_active_frame()
 
     def _refresh_active_frame(self) -> None:
-        current_tab = self.notebook.nametowidget(self.notebook.select())
-        if isinstance(current_tab, SettingsSectionFrame):
-            current_tab.reload_entries()
+        frame = self._active_frame()
+        if frame is not None:
+            frame.reload_entries()
 
 
 class SettingsSectionFrame(tk.Frame):
@@ -123,6 +195,17 @@ class SettingsSectionFrame(tk.Frame):
     }
     PLAY_ICON = "▶"
     STOP_ICON = "■"
+    # Heading of the grid picker for each Match Asset section ("Choose Ball").
+    MATCH_ASSET_FIELD_KEYS = {
+        "ball": "dialog.editor.field.ball",
+        "referee": "dialog.editor.field.referee",
+        "wipe": "dialog.editor.field.wipe",
+        "adboard": "dialog.editor.field.adboard",
+    }
+    # Pause before a changed Match Asset value starts rendering its textures
+    # (each pack costs a seconds-long 32-bit subprocess), so stepping through
+    # the combo with the arrow keys doesn't launch one per press.
+    RX3_PREVIEW_DELAY_MS = 250
 
     def __init__(self, parent: tk.Misc, app, spec: SectionSpec) -> None:
         super().__init__(parent, bg=app.bg)
@@ -130,6 +213,8 @@ class SettingsSectionFrame(tk.Frame):
         self.spec = spec
         self.selected_key: str | None = None
         self._refresh_job = None
+        self._rx3_preview: Rx3TexturePreview | None = None
+        self._rx3_preview_job = None
         self._display_keys: list[str] = []
         self._preview_player: MciAudioPlayer | None = None
         self._preview_playing_path: Path | None = None
@@ -237,15 +322,13 @@ class SettingsSectionFrame(tk.Frame):
         )
         self.key_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
 
-        if self.spec.key_is_team_id or self.spec.key_stadium_picker:
+        key_button_specs = self._key_button_specs()
+        if key_button_specs:
             key_buttons = tk.Frame(form, bg=self.app.card)
             key_buttons.grid(row=0, column=2, sticky="e", padx=(8, 0), pady=(0, 6))
-            if self.spec.key_is_team_id:
-                ttk.Button(key_buttons, text=self.tr("button.use_home_team"), command=self._use_home_team_key).pack(side="left", padx=(0, 4))
-                ttk.Button(key_buttons, text=self.tr("button.use_away_team"), command=self._use_away_team_key).pack(side="left", padx=(0, 4))
-                ttk.Button(key_buttons, text=self.tr("button.pick_team"), command=self._pick_team_key).pack(side="left")
-            elif self.spec.key_stadium_picker:
-                ttk.Button(key_buttons, text=self.tr("button.pick_stadium"), command=self._pick_stadium_key).pack(side="left")
+            for index, (label_key, command) in enumerate(key_button_specs):
+                last = index == len(key_button_specs) - 1
+                ttk.Button(key_buttons, text=self.tr(label_key), command=command).pack(side="left", padx=(0, 0 if last else 4))
 
         # The editor body (and, for chants/stadium, the preview panel below it)
         # can be taller than the window -- e.g. the stadium preview images only
@@ -276,10 +359,12 @@ class SettingsSectionFrame(tk.Frame):
 
         self._build_editor_body()
 
-        if self.spec.kind == "chants":
+        if self.spec.kind in ("chants", "entrance"):
             self._build_chants_preview_panel(scroll_content)
         elif self.spec.kind == "stadium":
             self._build_stadium_preview_panel(scroll_content)
+        elif self.spec.rx3_preview:
+            self._build_rx3_preview_panel(scroll_content)
         elif self.spec.directory == "MoviesGBD":
             self._build_movie_preview_panel(scroll_content)
         elif self.spec.directory in ("ScoreBoardGBD", "TVLogoGBD"):
@@ -315,11 +400,53 @@ class SettingsSectionFrame(tk.Frame):
             justify="left",
         ).grid(row=3, column=0, sticky="ew", padx=12, pady=(0, 12))
 
+    def _key_button_specs(self) -> list[tuple[str, Callable[[], None]]]:
+        """(locale key, command) of every button shown next to Key. A key can
+        be valid in several ways (Scoreboard/TV Logo/Movies/Competition
+        stadiums accept a round id OR a tournament id, see the runtimes'
+        round-then-tournament lookups), so the helpers add up instead of
+        excluding each other."""
+        spec = self.spec
+        buttons: list[tuple[str, Callable[[], None]]] = []
+        if spec.key_is_team_id:
+            buttons += [
+                ("button.use_home_team", self._use_home_team_key),
+                ("button.use_away_team", self._use_away_team_key),
+                ("button.pick_team", self._pick_team_key),
+            ]
+        if spec.key_is_round_id:
+            buttons.append(("button.use_current_round_id", self._use_current_round_key))
+        if spec.key_is_tournament_id:
+            buttons.append(("button.use_current_tournament_id", self._use_current_tournament_key))
+        if spec.key_is_derby:
+            buttons.append(("button.use_current_derby", self._use_current_derby_key))
+        if spec.key_is_stadium_id:
+            buttons.append(("button.use_current_stadium_id", self._use_current_stadium_id_key))
+        if spec.key_stadium_picker:
+            buttons.append(("button.pick_stadium", self._pick_stadium_key))
+        return buttons
+
     def _use_home_team_key(self) -> None:
         self.key_var.set(getattr(self.app, "HID", "") or "")
 
     def _use_away_team_key(self) -> None:
         self.key_var.set(getattr(self.app, "AID", "") or "")
+
+    def _use_current_round_key(self) -> None:
+        self.key_var.set(getattr(self.app, "TOURROUNDID", "") or "")
+
+    def _use_current_tournament_key(self) -> None:
+        self.key_var.set(getattr(self.app, "TOURNAME", "") or "")
+
+    def _use_current_derby_key(self) -> None:
+        # The runtimes only look a derby up when BOTH teams are known (app.derby
+        # is "{HID}vs{AID}", which degrades to "vs" with no teams read yet).
+        app = self.app
+        derby = getattr(app, "derby", "") if getattr(app, "HID", "") and getattr(app, "AID", "") else ""
+        self.key_var.set(derby or "")
+
+    def _use_current_stadium_id_key(self) -> None:
+        self.key_var.set(getattr(self.app, "STADID", "") or "")
 
     def _pick_team_key(self) -> None:
         dialog = TeamPickerDialog(self.app)
@@ -340,7 +467,10 @@ class SettingsSectionFrame(tk.Frame):
     def _build_editor_body(self) -> None:
         if self.spec.kind == "simple":
             self.value_var = tk.StringVar()
-            self.value_combo = self._add_combo_row(self.body, 0, self.spec.value_label, self.value_var, self._available_choices())
+            self.value_combo = self._add_combo_row(
+                self.body, 0, self.spec.value_label, self.value_var, self._available_choices(),
+                picker=self._pick_match_asset if self.spec.rx3_preview else None,
+            )
             if self.spec.section == "stadiumentrancecam":
                 self._add_entrance_cam_hint(1)
         elif self.spec.kind == "stadium":
@@ -351,6 +481,8 @@ class SettingsSectionFrame(tk.Frame):
             self._build_scoreboard_name_editor()
         elif self.spec.kind == "chants":
             self._build_chants_editor()
+        elif self.spec.kind == "entrance":
+            self._build_entrance_editor()
         elif self.spec.kind == "exclude":
             self.exclude_var = tk.StringVar(value="excluded from stadium server")
             self.exclude_entry = self._add_entry_row(self.body, 0, "Reason", self.exclude_var, readonly=True)
@@ -1110,6 +1242,41 @@ class SettingsSectionFrame(tk.Frame):
         self._add_chants_field_row(self.body, 10, self.tr("dialog.editor.field.vol_entrance"), self.entrance_volume_var)
         self._add_chants_field_row(self.body, 11, self.tr("dialog.editor.field.entrance_delay"), self.entrance_delay_var, to=45.0, resolution=0.5)
 
+    def _available_entrance_choices(self) -> list[str]:
+        """Chants folders that hold the exact `Entrance.mp3` the entrance
+        runtime plays -- the other folders could never produce a track here.
+        (The combobox stays editable, so a folder still being set up can be typed.)"""
+        base = self.app.exedir / (self.spec.directory or "")
+        return [name for name in self._available_choices() if (base / name / "Entrance.mp3").is_file()]
+
+    def _build_entrance_editor(self) -> None:
+        """[tournamententrance]/[roundentrance]: `folder,volume,delay`, the same
+        folder/volume/delay a team's [chantsid] line carries for its entrance
+        (see TeamEntranceRuntime._parse_competition_values). Reuses the chants
+        folder variable so the chants audio preview panel works unchanged."""
+        self.chants_folder_var = tk.StringVar(value=self.CHANTS_DEFAULTS["folder"])
+        self.entrance_volume_var = tk.StringVar(value=self.CHANTS_DEFAULTS["entrance_volume"])
+        self.entrance_delay_var = tk.StringVar(value=self.CHANTS_DEFAULTS["entrance_delay"])
+
+        self.body.grid_columnconfigure(0, weight=0)
+        self.body.grid_columnconfigure(1, weight=0)
+        self.body.grid_columnconfigure(2, weight=1)
+
+        tk.Label(self.body, text=self.tr("dialog.editor.field.chants_folder"), bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=0, column=0, sticky="w", pady=4, padx=(0, 8))
+        ttk.Combobox(self.body, textvariable=self.chants_folder_var, values=self._available_entrance_choices() or [""], font=("Consolas", 10), style="Server16.TCombobox").grid(row=0, column=1, columnspan=2, sticky="ew", pady=4)
+        self._add_chants_field_row(self.body, 1, self.tr("dialog.editor.field.vol_entrance"), self.entrance_volume_var)
+        self._add_chants_field_row(self.body, 2, self.tr("dialog.editor.field.entrance_delay"), self.entrance_delay_var, to=45.0, resolution=0.5)
+        tk.Label(
+            self.body,
+            text=self.tr("dialog.editor.entrance_hint"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 8),
+            anchor="w",
+            wraplength=420,
+            justify="left",
+        ).grid(row=3, column=0, columnspan=3, sticky="w", pady=(6, 4))
+
     def _add_chants_field_row(self, parent: tk.Misc, row: int, label: str, variable: tk.StringVar, from_: float = 0.0, to: float = 1.0, resolution: float = 0.01) -> tk.Entry:
         tk.Label(parent, text=label, bg=self.app.card, fg=self.app.muted, font=("Bahnschrift", 10)).grid(row=row, column=0, sticky="w", pady=2, padx=(0, 8))
 
@@ -1395,6 +1562,59 @@ class SettingsSectionFrame(tk.Frame):
         fallback = value if value else self.tr("placeholder.no_preview")
         self._set_preview_image(key, image_path, fallback)
 
+    def _build_rx3_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Same slot as the other preview panels (row 1 of the scrollable
+        # content, below self.body). Ball/Referee/Wipe/Adboard are the only
+        # specs with rx3_preview, so it is mutually exclusive with them.
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        container.grid_columnconfigure(0, weight=1)
+        self._rx3_preview = Rx3TexturePreview(container, self.app, self.tr("dialog.editor.preview.rx3_title"))
+        self._rx3_preview.grid(row=0, column=0)
+        # Whether the value is typed or picked from the combo/grid, it goes
+        # through the same StringVar (see _build_editor_body's "simple" branch).
+        self.value_var.trace_add("write", lambda *_: self._schedule_rx3_preview())
+        self._refresh_rx3_preview()
+
+    def _schedule_rx3_preview(self) -> None:
+        if self._rx3_preview_job is not None:
+            try:
+                self.after_cancel(self._rx3_preview_job)
+            except Exception:
+                pass
+        self._rx3_preview_job = self.after(self.RX3_PREVIEW_DELAY_MS, self._refresh_rx3_preview)
+
+    def _match_asset_pack_dir(self, name: str) -> Path | None:
+        name = (name or "").strip()
+        return self.app.exedir / self.spec.directory / name if name and self.spec.directory else None
+
+    def _refresh_rx3_preview(self) -> None:
+        self._rx3_preview_job = None
+        preview = self._rx3_preview
+        if preview is None or getattr(self, "_destroyed", False):
+            return
+        pack_dir = self._match_asset_pack_dir(self.value_var.get())
+        kind = self.spec.section.lower()
+
+        def render_file(rx3: Path) -> list[Path]:
+            return self.app.assets_runtime.render_match_asset_textures(kind, pack_dir, rx3)
+
+        preview.show_pack(pack_dir, render_file)
+
+    def _pick_match_asset(self) -> None:
+        """Opens the preview grid for this Match Assets tab and writes the choice
+        into the Value combo (which then refreshes the texture preview like any
+        dropdown change). Re-reads the folders so a pack added while this editor
+        was open still shows up. Cancelling leaves the value untouched."""
+        base = self.app.exedir / (self.spec.directory or "")
+        section = self.spec.section.lower()
+        items = match_asset_items(section, base, self._available_choices(), self.app.assets_runtime)
+        label = self.tr(self.MATCH_ASSET_FIELD_KEYS.get(section, self.spec.title))
+        dialog = AssetGridPickerDialog(self.app, label, items, current=self.value_var.get().strip())
+        self.app.wait_window(dialog)
+        if dialog.result is not None:
+            self.value_var.set(dialog.result)
+
     def _stop_preview(self) -> None:
         movie_panel = getattr(self, "_movie_preview_panel", None)
         if movie_panel is not None:
@@ -1476,6 +1696,12 @@ class SettingsSectionFrame(tk.Frame):
             except Exception:
                 pass
             self._refresh_job = None
+        if self._rx3_preview_job is not None:
+            try:
+                self.after_cancel(self._rx3_preview_job)
+            except Exception:
+                pass
+            self._rx3_preview_job = None
         self._stop_preview()
 
     def _bind_mousewheel_recursive(self, widget: tk.Misc, scroll_callback) -> None:
@@ -1619,6 +1845,11 @@ class SettingsSectionFrame(tk.Frame):
             self.away_prob_var.set(self.CHANTS_DEFAULTS["away_prob"])
             self.entrance_volume_var.set(self.CHANTS_DEFAULTS["entrance_volume"])
             self.entrance_delay_var.set(self.CHANTS_DEFAULTS["entrance_delay"])
+        elif self.spec.kind == "entrance":
+            choices = self._available_entrance_choices()
+            self.chants_folder_var.set(choices[0] if choices else self.CHANTS_DEFAULTS["folder"])
+            self.entrance_volume_var.set(self.CHANTS_DEFAULTS["entrance_volume"])
+            self.entrance_delay_var.set(self.CHANTS_DEFAULTS["entrance_delay"])
         elif self.spec.kind == "exclude":
             self.exclude_var.set("excluded from stadium server")
         self.status_var.set(self.tr("dialog.editor.new_ready"))
@@ -1638,6 +1869,8 @@ class SettingsSectionFrame(tk.Frame):
             self._load_scoreboard_name_value(key, value)
         elif self.spec.kind == "chants":
             self._load_chants_value(value)
+        elif self.spec.kind == "entrance":
+            self._load_entrance_value(value)
         elif self.spec.kind == "exclude":
             self.exclude_var.set(value or "excluded from stadium server")
         self.status_var.set(self.tr("dialog.editor.editing", section=self.spec.section, key=key))
@@ -1736,9 +1969,30 @@ class SettingsSectionFrame(tk.Frame):
         self.entrance_volume_var.set(entrance_volume or self.CHANTS_DEFAULTS["entrance_volume"])
         self.entrance_delay_var.set(entrance_delay or self.CHANTS_DEFAULTS["entrance_delay"])
 
+    def _load_entrance_value(self, value: str) -> None:
+        parts = [part.strip() for part in value.split(",")]
+        parts += [""] * (3 - len(parts))
+        folder, volume, delay = parts[:3]
+        self.chants_folder_var.set(folder or self.CHANTS_DEFAULTS["folder"])
+        self.entrance_volume_var.set(volume or self.CHANTS_DEFAULTS["entrance_volume"])
+        self.entrance_delay_var.set(delay or self.CHANTS_DEFAULTS["entrance_delay"])
+
     def _compose_value(self) -> str:
         if self.spec.kind == "simple":
             return self.value_var.get().strip()
+        if self.spec.kind == "entrance":
+            folder = self.chants_folder_var.get().strip()
+            if not folder:
+                # An empty folder would save ",0.16,7.0": nothing to play.
+                # Returning "" makes save_entry() warn instead of writing it.
+                return ""
+            return ",".join(
+                [
+                    folder,
+                    self.entrance_volume_var.get().strip() or self.CHANTS_DEFAULTS["entrance_volume"],
+                    self.entrance_delay_var.get().strip() or self.CHANTS_DEFAULTS["entrance_delay"],
+                ]
+            )
         if self.spec.kind == "stadium":
             names = list(self.assigned_stadium_list.get(0, "end"))
             if not names:
@@ -1894,7 +2148,7 @@ class SettingsSectionFrame(tk.Frame):
         if not directory:
             return None
         base = self.app.exedir / directory
-        if self.spec.kind == "chants":
+        if self.spec.kind in ("chants", "entrance"):
             folder = self.chants_folder_var.get().strip()
             return base / folder if folder else None
         if self.spec.kind == "simple":
@@ -1942,36 +2196,74 @@ class SettingsSectionFrame(tk.Frame):
 
 def stadium_specs() -> list[SectionSpec]:
     return [
-        SectionSpec("stadium", "Team Stadiums", kind="stadium", directory="StadiumGBD", key_is_team_id=True),
-        SectionSpec("comp", "Competition Stadiums", kind="stadium", directory="StadiumGBD"),
-        SectionSpec("stadiumnetname", "Net By Stadium Name", kind="net", directory="StadiumGBD", key_stadium_picker=True),
-        SectionSpec("stadiumnetid", "Net By Stadium ID", kind="net"),
-        SectionSpec("scoreboardstdname", "Scoreboard Stadium Name", kind="scoreboardstdname", directory="StadiumGBD", key_stadium_picker=True),
+        SectionSpec("stadium", "dialog.editor.choice.team_stadiums", kind="stadium", directory="StadiumGBD", key_is_team_id=True),
+        SectionSpec("comp", "dialog.editor.choice.competition_stadiums", kind="stadium", directory="StadiumGBD", key_is_round_id=True, key_is_tournament_id=True),
+        SectionSpec("stadiumnetname", "dialog.editor.choice.net_by_stadium_name", kind="net", directory="StadiumGBD", key_stadium_picker=True),
+        SectionSpec("stadiumnetid", "dialog.editor.choice.net_by_stadium_id", kind="net", key_is_stadium_id=True),
+        SectionSpec("scoreboardstdname", "dialog.editor.choice.scoreboard_stadium_name", kind="scoreboardstdname", directory="StadiumGBD", key_stadium_picker=True),
         SectionSpec("stadiumgoalpost", "dialog.editor.choice.goalpost_models_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True),
         SectionSpec("stadiumgoalposttexture", "dialog.editor.choice.goalpost_textures_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostColor", key_stadium_picker=True),
         SectionSpec("stadiumentrancecam", "dialog.editor.choice.entrance_cams_by_stadium_name", kind="simple", directory="FSW\\Camera\\EntranceScene", key_stadium_picker=True),
-        SectionSpec("exclude", "Excluded Competitions", kind="exclude"),
+        SectionSpec("exclude", "dialog.editor.choice.excluded_competitions", kind="exclude", key_is_round_id=True, key_is_tournament_id=True),
     ]
 
 
 def asset_specs() -> list[SectionSpec]:
     return [
-        SectionSpec("Scoreboard", "dialog.editor.choice.competition_scoreboards", kind="simple", directory="ScoreBoardGBD"),
-        SectionSpec("TVLogo", "dialog.editor.choice.competition_tvlogos", kind="simple", directory="TVLogoGBD"),
+        SectionSpec("Scoreboard", "dialog.editor.choice.competition_scoreboards", kind="simple", directory="ScoreBoardGBD", key_is_round_id=True, key_is_tournament_id=True),
+        SectionSpec("TVLogo", "dialog.editor.choice.competition_tvlogos", kind="simple", directory="TVLogoGBD", key_is_round_id=True, key_is_tournament_id=True),
         SectionSpec("HomeTeamScoreBoard", "dialog.editor.choice.home_team_scoreboards", kind="simple", directory="ScoreBoardGBD", key_is_team_id=True),
         SectionSpec("HomeTeamTvLogo", "dialog.editor.choice.home_team_tvlogos", kind="simple", directory="TVLogoGBD", key_is_team_id=True),
-        SectionSpec("movies", "dialog.editor.choice.competition_movies", kind="simple", directory="MoviesGBD"),
+        SectionSpec("movies", "dialog.editor.choice.competition_movies", kind="simple", directory="MoviesGBD", key_is_round_id=True, key_is_tournament_id=True),
         SectionSpec("TeamMovies", "dialog.editor.choice.team_movies", kind="simple", directory="MoviesGBD", key_is_team_id=True),
-        SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD"),
+        SectionSpec("DerbyMatch", "dialog.editor.choice.derby_movies", kind="simple", directory="MoviesGBD", key_is_derby=True),
         SectionSpec("kitsid", "dialog.editor.choice.kits_ids", kind="simple", directory="FSW\\Kits", key_is_team_id=True),
-        SectionSpec("ball", "dialog.editor.choice.competition_balls", kind="simple", directory="FSW\\balls"),
-        SectionSpec("referee", "dialog.editor.choice.competition_referees", kind="simple", directory="FSW\\referee"),
-        SectionSpec("wipe", "dialog.editor.choice.competition_wipes", kind="simple", directory="FSW\\wipe"),
-        SectionSpec("adboard", "dialog.editor.choice.competition_adboards", kind="simple", directory="FSW\\adboards"),
+        SectionSpec("ball", "dialog.editor.choice.competition_balls", kind="simple", directory="FSW\\balls", key_is_round_id=True, rx3_preview=True),
+        SectionSpec("referee", "dialog.editor.choice.competition_referees", kind="simple", directory="FSW\\referee", key_is_round_id=True, rx3_preview=True),
+        SectionSpec("wipe", "dialog.editor.choice.competition_wipes", kind="simple", directory="FSW\\wipe", key_is_round_id=True, rx3_preview=True),
+        SectionSpec("adboard", "dialog.editor.choice.competition_adboards", kind="simple", directory="FSW\\adboards", key_is_round_id=True, rx3_preview=True),
     ]
 
 
 def audio_specs() -> list[SectionSpec]:
     return [
         SectionSpec("chantsid", "dialog.editor.choice.chants_ids", kind="chants", directory="FSW\\Chants", recursive=True),
+        SectionSpec("tournamententrance", "dialog.editor.choice.tournament_entrance", kind="entrance", directory="FSW\\Chants", recursive=True, key_is_tournament_id=True),
+        SectionSpec("roundentrance", "dialog.editor.choice.round_entrance", kind="entrance", directory="FSW\\Chants", recursive=True, key_is_round_id=True),
     ]
+
+
+def _grouped(specs: list[SectionSpec], layout: list[tuple[str, tuple[str, ...]]]) -> list[SpecGroup]:
+    """Arranges `specs` into the top-level tabs described by `layout`
+    ((group title, section names)). A section missing from `specs` raises
+    KeyError right away; one missing from `layout` would silently vanish from
+    the editor, which tests/test_settings_editor.py guards against."""
+    by_section = {spec.section: spec for spec in specs}
+    return [SpecGroup(tuple(by_section[name] for name in sections), title) for title, sections in layout]
+
+
+def stadium_tab_groups() -> list[SpecGroup]:
+    return _grouped(
+        stadium_specs(),
+        [
+            ("dialog.editor.group.stadiums", ("stadium", "comp")),
+            ("dialog.editor.group.nets", ("stadiumnetname", "stadiumnetid")),
+            ("dialog.editor.group.goalposts", ("stadiumgoalpost", "stadiumgoalposttexture")),
+            ("", ("scoreboardstdname",)),
+            ("", ("stadiumentrancecam",)),
+            ("", ("exclude",)),
+        ],
+    )
+
+
+def asset_tab_groups() -> list[SpecGroup]:
+    return _grouped(
+        asset_specs(),
+        [
+            ("dialog.editor.group.scoreboards", ("Scoreboard", "HomeTeamScoreBoard")),
+            ("dialog.editor.group.tvlogos", ("TVLogo", "HomeTeamTvLogo")),
+            ("dialog.editor.group.movies", ("movies", "TeamMovies", "DerbyMatch")),
+            ("", ("kitsid",)),
+            ("dialog.editor.group.match_assets", ("ball", "referee", "wipe", "adboard")),
+        ],
+    )

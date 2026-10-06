@@ -652,6 +652,9 @@ class StadiumDbNamePatchCoordinator:
         self._running: set[tuple[int, str]] = set()
         self._pending: dict[tuple[int, str], tuple[str, str]] = {}
         self._scan_attempts: dict[tuple[int, str], int] = {}
+        # Keys whose LAST allowed scan attempt (MAX_SCAN_ATTEMPTS) has finished,
+        # as opposed to merely started -- see scan_budget_exhausted().
+        self._scan_budget_spent: set[tuple[int, str]] = set()
         # List of (address, capacity_bytes, encoding) per key -- EVERY copy of
         # the name discovered this session, not just the first one that could
         # be written. Live testing 2026-09-10 found two simultaneous
@@ -701,6 +704,7 @@ class StadiumDbNamePatchCoordinator:
         with self._state_lock:
             self._pending.clear()
             self._scan_attempts.clear()
+            self._scan_budget_spent.clear()
             self._cache.clear()
             self._current_name.clear()
             self._request_seq.clear()
@@ -725,12 +729,33 @@ class StadiumDbNamePatchCoordinator:
         with self._state_lock:
             return self._current_name.get(key)
 
+    def scan_budget_exhausted(self, injid: str) -> bool:
+        """True once every allowed scan attempt for this slot has FINISHED and no
+        copy of the name is known (cached) -- nothing more will ever be scanned
+        for it in this FIFA process, so waiting longer cannot produce a patch.
+        The budget is per slot for the whole process (see MAX_SCAN_ATTEMPTS), so
+        this also holds from the first tick of a later match after a barren one.
+        A copy found by the fast watch (cached) keeps it False."""
+        key = self._key(injid)
+        if key is None:
+            return False
+        with self._state_lock:
+            return key in self._scan_budget_spent and not self._cache.get(key)
+
     def _is_current(self, key: tuple[int, str]) -> bool:
+        """Whether this key's work may continue: same FIFA process, app open,
+        and the game not on a post-match menu. The page check (Part 23) sits
+        here because this is the one gate every loop iteration, fast probe and
+        write (`_patch_one`) already passes -- so a scan or watch that outlives
+        the pre-match window simply stops, and nothing is written in the menus.
+        An app without `stadium_name_patch_allowed` (tests) is always allowed."""
         app = self.app
+        page_allowed = getattr(app, "stadium_name_patch_allowed", None)
         return bool(
             not app._closing
             and app.memory.is_open()
             and int(getattr(app.memory, "process_id", 0) or 0) == key[0]
+            and (page_allowed is None or page_allowed())
         )
 
     def request(self, injid: str, old_name: str, new_name: str, *, allow_scan: bool = True) -> bool:
@@ -879,6 +904,9 @@ class StadiumDbNamePatchCoordinator:
                     found = self._scan_and_patch(key, old_name, new_name)
                     if found:
                         self._merge_into_cache(key, found)
+                    if attempts_used + 1 >= self.MAX_SCAN_ATTEMPTS:
+                        with self._state_lock:
+                            self._scan_budget_spent.add(key)
 
                 with self._state_lock:
                     # Compare the request *sequence number*, not the pending

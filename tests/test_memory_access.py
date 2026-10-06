@@ -165,5 +165,130 @@ class WriteStringSafeTests(unittest.TestCase):
         self.assertEqual(written, long_name)
 
 
+class ProvenRoomOnlyTests(unittest.TestCase):
+    """bugs-scoreboardstdname.md Part 24: the max_bytes floor lets a name be
+    written over bytes the old string never owned. proven_room_only drops it."""
+
+    def test_the_floor_overruns_a_tightly_packed_neighbour_by_default(self) -> None:
+        # Documents the behaviour proven_room_only exists to avoid: "Old Traf" +
+        # NUL is 9 bytes, so index 8 -- the first byte after "Anfield\0" --
+        # is overwritten (the older test above only inspects index 9).
+        data = b"Anfield\x00" + b"\xAB" * 64
+        memory = FakeMemory(data)
+        memory.write_string_safe(memory.base_address, "Old Trafford", max_bytes=8)
+        self.assertEqual(memory.buffer[8], 0x00)
+
+    def test_never_touches_a_byte_past_the_old_strings_own_nul(self) -> None:
+        data = b"Anfield\x00" + b"\xAB" * 64
+        memory = FakeMemory(data)
+        written, _addr = memory.write_string_safe(
+            memory.base_address, "Old Trafford", max_bytes=63, proven_room_only=True
+        )
+        self.assertEqual(written, "Old Tra")  # truncated to the 7-byte footprint
+        self.assertEqual(bytes(memory.buffer[:8]), b"Old Tra\x00")
+        self.assertEqual(bytes(memory.buffer[8:]), b"\xAB" * 64)  # neighbour untouched
+
+    def test_a_shorter_name_still_fits_and_clears_the_rest_of_the_old_string(self) -> None:
+        data = b"Waldstadion\x00" + b"\xAB" * 16
+        memory = FakeMemory(data)
+        written, _addr = memory.write_string_safe(
+            memory.base_address, "Anfield", max_bytes=63, proven_room_only=True
+        )
+        self.assertEqual(written, "Anfield")
+        self.assertEqual(bytes(memory.buffer[:12]), b"Anfield\x00\x00\x00\x00\x00")
+        self.assertEqual(bytes(memory.buffer[12:]), b"\xAB" * 16)
+
+    def test_measured_zero_padding_counts_as_proven_room(self) -> None:
+        data = b"Anfield\x00" + b"\x00" * 100 + b"\xAB" * 8
+        memory = FakeMemory(data)
+        long_name = "A Very Long Custom Stadium Display Name"
+        written, _addr = memory.write_string_safe(
+            memory.base_address, long_name, max_bytes=63, proven_room_only=True
+        )
+        self.assertEqual(written, long_name)
+        self.assertEqual(bytes(memory.buffer[-8:]), b"\xAB" * 8)
+
+    def test_a_name_longer_than_the_zero_padding_is_cut_at_the_padding(self) -> None:
+        data = b"Anfield\x00" + b"\x00" * 10 + b"\xAB" * 20
+        memory = FakeMemory(data)
+        written, _addr = memory.write_string_safe(
+            memory.base_address, "X" * 100, max_bytes=63, proven_room_only=True
+        )
+        self.assertEqual(len(written), 17)  # footprint 7 + 10 measured zero bytes
+        self.assertEqual(bytes(memory.buffer[18:]), b"\xAB" * 20)
+
+    def test_rejects_an_empty_string_with_no_padding(self) -> None:
+        data = b"\x00" + b"\xAB" * 32
+        memory = FakeMemory(data)
+        with self.assertRaises(MemoryAccessError):
+            memory.write_string_safe(memory.base_address, "Anfield", max_bytes=63, proven_room_only=True)
+        self.assertEqual(bytes(memory.buffer), data)  # nothing written
+
+    def test_offsets_variant_forwards_the_flag(self) -> None:
+        class ResolvingMemory(FakeMemory):
+            def resolve_pointer(self, static_ptr: int, offsets: list) -> int:
+                return self.base_address
+
+        data = b"Anfield\x00" + b"\xAB" * 64
+        memory = ResolvingMemory(data)
+        written, _addr = memory.write_string_with_offsets_safe(
+            0, [0], "Old Trafford", max_bytes=63, proven_room_only=True
+        )
+        self.assertEqual(written, "Old Tra")
+        self.assertEqual(bytes(memory.buffer[8:]), b"\xAB" * 64)
+
+
+class RequireExistingTextTests(unittest.TestCase):
+    """bugs-scoreboardstdname.md Part 25: a pointer chain calibrated on one build
+    can land on an unrelated string on another; only overwrite text we recognise."""
+
+    def test_refuses_to_overwrite_a_string_it_does_not_recognise(self) -> None:
+        data = b"Vodafone Park\x00" + b"\xAB" * 40
+        memory = FakeMemory(data)
+        with self.assertRaises(MemoryAccessError) as caught:
+            memory.write_string_safe(
+                memory.base_address, "Anfield", max_bytes=63, require_existing_text=["Waldstadion"]
+            )
+        self.assertIn("Vodafone Park", str(caught.exception))  # the log says what was there
+        self.assertEqual(bytes(memory.buffer), data)  # nothing written
+
+    def test_writes_when_the_existing_text_contains_an_expected_name(self) -> None:
+        data = b"waldstadion (Fussballstadion)\x00" + b"\x00" * 8
+        memory = FakeMemory(data)
+        written, _addr = memory.write_string_safe(
+            memory.base_address, "Anfield", max_bytes=63,
+            proven_room_only=True, require_existing_text=["Other", "Waldstadion"],
+        )
+        self.assertEqual(written, "Anfield")
+
+    def test_an_empty_string_is_not_recognised(self) -> None:
+        data = b"\x00" * 64
+        memory = FakeMemory(data)
+        with self.assertRaises(MemoryAccessError):
+            memory.write_string_safe(
+                memory.base_address, "Anfield", max_bytes=63, require_existing_text=["Waldstadion"]
+            )
+
+    def test_no_expected_names_means_no_name_gate(self) -> None:
+        for expected in (None, []):
+            data = b"Vodafone Park\x00" + b"\x00" * 20
+            memory = FakeMemory(data)
+            written, _addr = memory.write_string_safe(
+                memory.base_address, "Anfield", max_bytes=63, require_existing_text=expected
+            )
+            self.assertEqual(written, "Anfield")
+
+    def test_offsets_variant_forwards_the_names(self) -> None:
+        class ResolvingMemory(FakeMemory):
+            def resolve_pointer(self, static_ptr: int, offsets: list) -> int:
+                return self.base_address
+
+        data = b"Vodafone Park\x00" + b"\xAB" * 40
+        memory = ResolvingMemory(data)
+        with self.assertRaises(MemoryAccessError):
+            memory.write_string_with_offsets_safe(0, [0], "Anfield", require_existing_text=["Waldstadion"])
+        self.assertEqual(bytes(memory.buffer), data)
+
+
 if __name__ == "__main__":
     unittest.main()

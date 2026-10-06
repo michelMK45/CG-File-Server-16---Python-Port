@@ -44,6 +44,22 @@ def _clean_db_display_name(raw: str) -> str:
 class StadiumRuntime:
     def __init__(self, app: "Server16App") -> None:
         self.app = app
+        # What each pointer-chain slot ("176", "261C", ...) held after OUR last
+        # verified write, so a later match recognises its own previous text.
+        self._chain_last_written: dict[str, str] = {}
+
+    def _chain_expected_names(self, injid: str) -> list[str]:
+        """Names a pointer-chain buffer for this container slot may legitimately hold
+        before we overwrite it: the slot's DB name (raw and as FIFA shows it).
+        Empty when the DB is unavailable, in which case the write is not name-gated."""
+        try:
+            raw = self.app._resolve_stadium_name(injid)
+        except Exception:
+            raw = None
+        if not raw:
+            return []
+        names = [_clean_db_display_name(raw), raw.strip()]
+        return [name for index, name in enumerate(names) if name and name not in names[:index]]
 
     def resolve_scoreboard_display_name(self, stad_name: str) -> str:
         """Resolve the [scoreboardstdname] display name for a stadium, or
@@ -90,8 +106,18 @@ class StadiumRuntime:
             ("261B", app.offsets.STDNAMEOFFSET261B),
             ("261C", app.offsets.STDNAMEOFFSET261C),
         ]
+        expected = {"176": self._chain_expected_names("176"), "261": self._chain_expected_names("261")}
         for label, offsets in slots:
             try:
+                # Part 25 (2026-10-04): only overwrite text we recognise -- the slot's DB
+                # name, or what we wrote here ourselves last time. These offsets were
+                # calibrated on one build; the reporter's version showed "Vodafone Park"
+                # where the on-disk DB says "Waldstadion", i.e. its tables differ, and
+                # the chain may land on some unrelated string. No DB name known =>
+                # nothing to compare against, so the write is only room-limited.
+                recognised = list(expected[label[:3]])
+                if label in self._chain_last_written:
+                    recognised.append(self._chain_last_written[label])
                 safe_value, address = app.memory.write_string_with_offsets_safe(
                     app.offsets.STDNAMEBASE,
                     offsets,
@@ -105,14 +131,21 @@ class StadiumRuntime:
                     # cap and read-back verification, but do not reject the
                     # correct slot only because its old bytes are non-ASCII.
                     require_printable_existing=False,
+                    # Part 24 (2026-10-04): never write past what was measured to
+                    # belong to the old string / be zero padding. The 63-byte floor
+                    # let a 15-43 byte name be written over a packed string table on
+                    # the reporter's install -- the one write common to all three of
+                    # their crashes, and invisible on screen (Part 1).
+                    proven_room_only=True,
+                    require_existing_text=recognised or None,
                 )
+                self._chain_last_written[label] = safe_value
                 if safe_value != std_name:
-                    # write_string_safe's max_bytes=63 below is only a floor —
-                    # it measures real zero-padding past the buffer's own NUL
-                    # and uses that instead when there's more room (see
-                    # Memory.write_string_safe's docstring) — so a truncation
-                    # here means the buffer genuinely has no more space, not
-                    # that a fixed 63-byte cap was hit.
+                    # proven_room_only: the old string's own footprint plus the
+                    # zero padding measured after it was all the room that could
+                    # be proven (see Memory.write_string_safe's docstring), so a
+                    # truncation here means the buffer genuinely has no more
+                    # space, not that a fixed 63-byte cap was hit.
                     app.log(
                         f"Stad name slot {label}: truncated '{std_name}' -> "
                         f"'{safe_value}' (buffer has no more room)"

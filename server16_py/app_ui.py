@@ -12,7 +12,7 @@ from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
 from .dialogs import AboutDialog, ImgbbApiKeyDialog
-from .gamepad_bridge_runtime import GamepadBridgeRuntime
+from .gamepad_bridge_runtime import GamepadBridgeRuntime, XINPUT_USER_COUNT, xinput_gamepad_has_input
 from .file_tools import (
     clear_generated_cache,
     gamepad_button_icon_dir,
@@ -29,7 +29,8 @@ from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTI
 from .team_picker_dialog import TeamPickerDialog
 from .update_checker import UpdateCheckResult
 from . import window_fit
-from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE
+from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE, XINPUT_STATE, XINPUT_SUCCESS
+from .xinput_players import VirtualPadMatcher, may_be_virtual_pad, read_player_identity
 
 try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
@@ -219,6 +220,35 @@ class _ToolTip:
             self._tip = None
 
 
+# Gamepads tab activity lights: how often they are refreshed while the tab is
+# on screen, and how often the tick merely re-checks whether it is.
+GAMEPAD_ACTIVITY_POLL_MS = 50
+GAMEPAD_ACTIVITY_IDLE_MS = 500
+
+
+class _ActivityDot(tk.Canvas):
+    """Small round light for the Gamepads tab: lit while a controller is
+    being used, dark otherwise."""
+
+    # In points, not pixels, so it follows the display DPI and the UI zoom
+    # ("tk scaling") like the text next to it.
+    SIZE = "11p"
+    OVAL = ("1.5p", "1.5p", "9.5p", "9.5p")
+
+    def __init__(self, parent: tk.Misc, bg: str, off: str, on: str, border: str) -> None:
+        super().__init__(parent, width=self.SIZE, height=self.SIZE, bg=bg, highlightthickness=0, bd=0)
+        self._colors = (off, on)
+        self._lit = False
+        self._oval = self.create_oval(*self.OVAL, fill=off, outline=border)
+
+    def set_lit(self, lit: bool) -> None:
+        lit = bool(lit)
+        if lit == self._lit:
+            return
+        self._lit = lit
+        self.itemconfigure(self._oval, fill=self._colors[lit])
+
+
 class UIMixin:
     """Window construction, theming, and all widget interaction — part of Server16App via multiple inheritance."""
 
@@ -349,6 +379,29 @@ class UIMixin:
             "Server16.TNotebook.Tab",
             background=[("selected", self.card_soft), ("active", self.panel_alt)],
             foreground=[("selected", self.fg), ("active", self.fg)],
+        )
+        # Second-level tabs (Settings editors' grouped tabs): same palette, but
+        # tighter and with the selected label in the accent colour so they read
+        # as children of the row above instead of a second identical tab strip.
+        style.configure(
+            "Server16.Sub.TNotebook",
+            background=self.bg,
+            borderwidth=0,
+            tabmargins=(0, 0, 0, 0),
+        )
+        style.configure(
+            "Server16.Sub.TNotebook.Tab",
+            background=self.panel,
+            foreground=self.muted,
+            padding=(12, 5),
+            borderwidth=0,
+            lightcolor=self.panel,
+            darkcolor=self.panel,
+        )
+        style.map(
+            "Server16.Sub.TNotebook.Tab",
+            background=[("selected", self.card_soft), ("active", self.panel_alt)],
+            foreground=[("selected", self.accent), ("active", self.fg)],
         )
         style.configure(
             "Server16.Vertical.TScrollbar",
@@ -3666,8 +3719,17 @@ class UIMixin:
             # fits any real controller name; the row simply stays
             # left-aligned with blank card background to its right.
 
+            # Light + label share column 0. The light is on while the pad
+            # picked for this slot is being used (bridge on or off), so two
+            # pads can be told apart by pressing a button -- driven by
+            # _gamepad_activity_tick().
+            head = tk.Frame(row, bg=self.card)
+            head.grid(row=0, column=0, sticky="w", padx=(0, 8))
+            activity_dot = _ActivityDot(head, self.card, self.card_soft, self.success, "#243654")
+            activity_dot.pack(side="left", padx=(0, 6))
+            self._add_tooltip(activity_dot, "tooltip.gamepads.activity")
             label = tk.Label(
-                row,
+                head,
                 text=self.tr("label.gamepads.slot", n=idx + 1),
                 bg=self.card,
                 fg=self.fg,
@@ -3675,7 +3737,7 @@ class UIMixin:
                 width=8,
                 anchor="w",
             )
-            label.grid(row=0, column=0, sticky="w", padx=(0, 8))
+            label.pack(side="left")
 
             device_var = tk.StringVar(value="")
             device_combo = ttk.Combobox(
@@ -3744,6 +3806,7 @@ class UIMixin:
             self.gamepad_slot_vars[idx] = {"device": device_var, "enabled": enabled_var, "hide_from_fifa": hide_var}
             self.gamepad_slot_widgets[idx] = {
                 "label": label,
+                "activity": activity_dot,
                 "combo": device_combo,
                 "check": enabled_check,
                 "status": status_label,
@@ -3751,6 +3814,47 @@ class UIMixin:
                 "remove": remove_button,
                 "hide_check": hide_check,
             }
+
+        # Xbox/XInput pads are deliberately never offered in the slot combos
+        # above (FIFA already reads them; see is_xinput_device) -- which
+        # looked like "my Xbox pad isn't detected". Listed here read-only, by
+        # XInput player number, with this app's own virtual pads labelled as
+        # such so they aren't mistaken for a second real controller.
+        xinput_card = self._card(outer, "card.gamepads_xinput.title", "card.gamepads_xinput.subtitle")
+        xinput_card.pack(fill="x", pady=(12, 0))
+        xinput_body = tk.Frame(xinput_card, bg=self.card)
+        xinput_body.pack(fill="x", padx=12, pady=(6, 12))
+        self.gamepad_xinput_rows = {}
+        self._xinput_connected = set()
+        self._xinput_virtual_candidates = set()
+        self._xinput_matcher = VirtualPadMatcher()
+        self._gamepad_slot_device_names = {}
+        for idx in range(XINPUT_USER_COUNT):
+            row = tk.Frame(xinput_body, bg=self.card)
+            row.pack(fill="x", pady=3)
+            activity_dot = _ActivityDot(row, self.card, self.card_soft, self.success, "#243654")
+            activity_dot.pack(side="left", padx=(0, 6))
+            self._add_tooltip(activity_dot, "tooltip.gamepads.activity")
+            player_label = tk.Label(
+                row,
+                text=self.tr("label.gamepads.xinput_player", n=idx + 1),
+                bg=self.card,
+                fg=self.fg,
+                font=("Bahnschrift", 10, "bold"),
+                width=10,
+                anchor="w",
+            )
+            player_label.pack(side="left", padx=(0, 8))
+            status_label = tk.Label(
+                row,
+                text=self.tr("status.gamepads.xinput_empty"),
+                bg=self.card,
+                fg=self.muted,
+                font=("Bahnschrift", 9),
+                anchor="w",
+            )
+            status_label.pack(side="left")
+            self.gamepad_xinput_rows[idx] = {"activity": activity_dot, "label": player_label, "status": status_label}
 
         self._refresh_gamepad_driver_status()
         self._refresh_hidhide_driver_status()
@@ -3827,6 +3931,7 @@ class UIMixin:
         devices = self.gamepad_bridge.list_devices()
         display_values = [d.name for d in devices]
         hidhide_installed = self.hidhide.is_hidhide_installed()
+        slot_device_names: dict[int, str] = {}
         for idx in range(4):
             widgets = self.gamepad_slot_widgets.get(idx)
             vars_ = self.gamepad_slot_vars.get(idx)
@@ -3838,6 +3943,7 @@ class UIMixin:
             vars_["enabled"].set(snapshot["enabled"])
             match = next((d for d in devices if d.guid == snapshot["device_guid"]), None)
             if match is not None:
+                slot_device_names[idx] = match.name
                 vars_["device"].set(match.name)
             elif not snapshot["device_guid"]:
                 vars_["device"].set("")
@@ -3861,6 +3967,65 @@ class UIMixin:
                     hide_check.grid()
                 else:
                     hide_check.grid_remove()
+        self._refresh_xinput_rows(slot_device_names)
+
+    def _read_xinput_gamepad(self, index: int):
+        """One XInput player's current XINPUT_GAMEPAD, or None when no
+        controller holds that player number."""
+        if self._xinput is None:
+            return None
+        state = XINPUT_STATE()
+        try:
+            if int(self._xinput.XInputGetState(index, ctypes.byref(state))) != XINPUT_SUCCESS:
+                return None
+        except Exception:
+            return None
+        return state.Gamepad
+
+    def _refresh_xinput_rows(self, slot_device_names: dict[int, str]) -> None:
+        """Re-reads which of the 4 XInput players have a controller and
+        relabels the Xbox controllers card. This ~1Hz pass is the only one
+        that asks about EMPTY players -- XInputGetState on an empty player is
+        slow, so _gamepad_activity_tick() only polls the ones found here."""
+        rows = getattr(self, "gamepad_xinput_rows", None)
+        if not rows:
+            return
+        connected: set[int] = set()
+        candidates: set[int] = set()
+        for idx in rows:
+            if self._read_xinput_gamepad(idx) is None:
+                continue
+            connected.add(idx)
+            if may_be_virtual_pad(read_player_identity(self._xinput_capabilities_ex, idx)):
+                candidates.add(idx)
+        self._xinput_connected = connected
+        self._xinput_virtual_candidates = candidates
+        self._gamepad_slot_device_names = slot_device_names
+        self._relabel_xinput_rows()
+
+    def _relabel_xinput_rows(self) -> None:
+        """Labels each XInput player as empty, a real Xbox pad, or the
+        virtual pad of a slot -- as far as xinput_players.py can tell which
+        player a slot's virtual pad is. One it can't place yet (a real pad
+        that looks just like a virtual one is connected too) reads as a plain
+        Xbox pad until a button on the slot's pad settles it."""
+        pads = self.gamepad_bridge.virtual_pads()
+        slot_by_player = self._xinput_matcher.resolve(
+            {slot: driver_index for slot, (driver_index, _sent) in pads.items()}, self._xinput_virtual_candidates
+        )
+        for idx, widgets in self.gamepad_xinput_rows.items():
+            if idx not in self._xinput_connected:
+                widgets["activity"].set_lit(False)
+                widgets["status"].configure(text=self.tr("status.gamepads.xinput_empty"), fg=self.muted)
+                continue
+            slot = slot_by_player.get(idx)
+            if slot is None:
+                text = self.tr("status.gamepads.xinput_connected")
+            else:
+                text = self.tr("status.gamepads.xinput_virtual", n=slot + 1)
+                if self._gamepad_slot_device_names.get(slot):
+                    text += f" ({self._gamepad_slot_device_names[slot]})"
+            widgets["status"].configure(text=text, fg=self.fg)
 
     def _on_gamepad_slot_device_change(self, index: int) -> None:
         vars_ = self.gamepad_slot_vars.get(index)
@@ -3938,6 +4103,33 @@ class UIMixin:
         except Exception:
             pass
         self._gamepad_tab_job = self.after(1000, self._gamepad_tab_tick)
+
+    def _gamepad_activity_tick(self) -> None:
+        """Drives the round activity lights -- one per bridge slot, one per
+        Xbox/XInput player -- only while the Gamepads tab is really on screen
+        (winfo_viewable is also false with the window minimized or hidden):
+        slot_input_active() keeps a slot's physical pad open for as long as
+        it keeps being asked, which must stop once nobody can see the light."""
+        delay = GAMEPAD_ACTIVITY_IDLE_MS
+        try:
+            if self.gamepads_tab is not None and self.gamepads_tab.winfo_viewable():
+                delay = GAMEPAD_ACTIVITY_POLL_MS
+                for idx, widgets in self.gamepad_slot_widgets.items():
+                    widgets["activity"].set_lit(self.gamepad_bridge.slot_input_active(idx))
+                shown: dict[int, int] = {}
+                for idx, widgets in self.gamepad_xinput_rows.items():
+                    gamepad = self._read_xinput_gamepad(idx) if idx in self._xinput_connected else None
+                    widgets["activity"].set_lit(gamepad is not None and xinput_gamepad_has_input(gamepad))
+                    if gamepad is not None and idx in self._xinput_virtual_candidates:
+                        shown[idx] = int(gamepad.wButtons)
+                # Relabel at once when a button press settles which player a
+                # slot's virtual pad is, rather than on the next 1Hz refresh.
+                sent = {slot: buttons for slot, (_index, buttons) in self.gamepad_bridge.virtual_pads().items()}
+                if self._xinput_matcher.observe(sent, shown):
+                    self._relabel_xinput_rows()
+        except Exception:
+            pass
+        self._gamepad_activity_job = self.after(delay, self._gamepad_activity_tick)
 
     def _build_setup_tab(self) -> None:
         outer = tk.Frame(self.setup_tab, bg=self.bg)

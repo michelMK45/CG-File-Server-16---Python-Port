@@ -117,12 +117,14 @@ class StadiumNameModuleTests(unittest.TestCase):
     class FakeMemory:
         def __init__(self) -> None:
             self.writes: list[tuple] = []
+            self.write_kwargs: list[dict] = []
 
         def is_open(self) -> bool:
             return True
 
         def write_string_with_offsets_safe(self, base, offsets, value, **kwargs):
             self.writes.append((base, tuple(offsets), value))
+            self.write_kwargs.append(kwargs)
             return value, 0x1000
 
     class FakeWatchPatcher(FakeDbNamePatcher):
@@ -154,6 +156,58 @@ class StadiumNameModuleTests(unittest.TestCase):
         self.assertTrue(runtime.stadium_name_enabled())
         self.assertTrue(runtime.write_active_stad_name("Anfield"))
         self.assertEqual(len(app.memory.writes), 6)
+
+    def test_every_pointer_chain_write_is_limited_to_proven_room(self) -> None:
+        # bugs-scoreboardstdname.md Part 24: these six writes are invisible on
+        # screen (Part 1) and were the one write common to every crash a
+        # reporter sent, so none of them may extend past measured room.
+        app = self.make_app(True)
+        StadiumRuntime(app).write_active_stad_name("Anfield")
+        self.assertEqual(len(app.memory.write_kwargs), 6)
+        for kwargs in app.memory.write_kwargs:
+            self.assertIs(kwargs.get("proven_room_only"), True)
+
+    def test_chain_writes_only_overwrite_the_slots_own_db_name_or_our_previous_text(self) -> None:
+        # Part 25: raw and as-displayed DB name of the slot's own id are accepted,
+        # 176* chains are compared with slot 176's name and 261* with slot 261's.
+        app = self.make_app(True)
+        app._resolve_stadium_name = lambda injid: {"176": "_Waldstadion (Fussballstadion)", "261": "Sanderson Park"}[injid]
+        runtime = StadiumRuntime(app)
+        runtime.write_active_stad_name("Anfield")
+        by_label = {offsets: kwargs["require_existing_text"] for (_, offsets, _), kwargs in zip(app.memory.writes, app.memory.write_kwargs)}
+        self.assertEqual(by_label[(1,)], ["Waldstadion", "_Waldstadion (Fussballstadion)"])  # 176
+        self.assertEqual(by_label[(3,)], ["Waldstadion", "_Waldstadion (Fussballstadion)"])  # 176C
+        self.assertEqual(by_label[(4,)], ["Sanderson Park"])  # 261
+        self.assertEqual(by_label[(6,)], ["Sanderson Park"])  # 261C
+
+        # Next match: what we wrote last time is recognised too.
+        app.memory.write_kwargs.clear()
+        app.memory.writes.clear()
+        runtime.write_active_stad_name("Old Trafford")
+        first = app.memory.write_kwargs[0]["require_existing_text"]
+        self.assertEqual(first, ["Waldstadion", "_Waldstadion (Fussballstadion)", "Anfield"])
+
+    def test_no_db_name_means_the_chain_write_is_not_name_gated(self) -> None:
+        app = self.make_app(True)
+        app._resolve_stadium_name = lambda injid: None
+        StadiumRuntime(app).write_active_stad_name("Anfield")
+        for kwargs in app.memory.write_kwargs:
+            self.assertIsNone(kwargs["require_existing_text"])
+            self.assertIs(kwargs["proven_room_only"], True)  # still room-limited
+
+    def test_a_rejected_chain_is_skipped_logged_and_not_remembered(self) -> None:
+        app = self.make_app(True)
+        logs: list[str] = []
+        app.log = lambda *args, **kwargs: logs.append(" ".join(str(a) for a in args))
+
+        def refuse(base, offsets, value, **kwargs):
+            raise MemoryError("Safe string write rejected at 0x85892E69: it holds 'Vodafone Park'")
+
+        app.memory.write_string_with_offsets_safe = refuse
+        runtime = StadiumRuntime(app)
+        self.assertFalse(runtime.write_active_stad_name("Anfield"))
+        self.assertTrue(any("write skipped slot 176" in line and "Vodafone Park" in line for line in logs))
+        self.assertEqual(runtime._chain_last_written, {})
 
     def test_module_off_writes_nothing_to_memory(self) -> None:
         app = self.make_app(False)

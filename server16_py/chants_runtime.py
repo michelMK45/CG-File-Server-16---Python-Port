@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import shutil
+import struct
 import sys
 import threading
 import time
@@ -94,10 +95,133 @@ class MciAudioPlayer:
         return self.mode() == "paused"
 
 
+class OpenPlayDetector:
+    """Kick-off signal that does not depend on how fast the match clock runs.
+
+    The older check -- "the clock gained >= 6 units/s on three consecutive
+    ~0.2s ticks" -- reads an integer clock over a window so short that it can
+    only compute 0, ~4.8 or ~9.5 units/s: it really asks for two clock units
+    per tick. A 4-minute half runs at 11.25 units/s and passes at once; a
+    10-minute half runs at 4.5 units/s (one unit per tick) and practically
+    never does, which left Support chants on "Waiting for kick-off"
+    (docs/bugs-entrance.md Parts 14-18).
+
+    This one asks FIFA instead: GAMEPLAYSTATE reads OPEN_PLAY while the ball
+    is in play, and GAMEPERIODSECONDS must have gained REQUIRED_GAIN while it
+    stayed that way. The gain is what keeps a stale "in play" value over a
+    frozen clock (the practice arena after Abandon, see
+    GameMixin._page_is_outside_match) from ever passing, and it is counted in
+    period seconds because GAMERANTIME itself stands still at 2700 during
+    first-half added time. Every tick that is not open play starts over.
+    """
+
+    OPEN_PLAY = 15
+    REQUIRED_GAIN = 2
+
+    def __init__(self) -> None:
+        self._baseline: int | None = None
+
+    def reset(self) -> None:
+        self._baseline = None
+
+    def update(self, play_state: int | None, period_seconds: int | None) -> bool:
+        if play_state != self.OPEN_PLAY or period_seconds is None:
+            self._baseline = None
+            return False
+        if self._baseline is None or period_seconds < self._baseline:
+            self._baseline = period_seconds
+            return False
+        return period_seconds - self._baseline >= self.REQUIRED_GAIN
+
+
+class LiveMatchTracker:
+    """Whether the thing in FIFA's memory is a real match that has kicked off.
+
+    OpenPlayDetector alone cannot tell: the practice arena also reads "ball in
+    play" over a running clock (~7 units/s, confirmed live 2026-10-05), so
+    releasing the pre-match guard on it played chants and goal songs there
+    (docs/bugs-entrance.md Part 20). What the arena never shows is a kick-off.
+
+    A match goes live when GAMEPLAYSTATE read KICKOFF_PENDING (pre-match
+    scene, after a goal, before the second half) and open play followed. It
+    stays live through pauses, stoppages and half-time, and is forgotten when
+    the match leaves memory: the clock goes backwards (FIFA zeroes it on the
+    way back to the main menu), the state reads LOADING, or it reads
+    NO_LIVE_PLAY while the "started" flag is down -- half-time is the one
+    NO_LIVE_PLAY inside a match and keeps the flag up. Feed it every tick,
+    not only while a match looks running: the kick-off-pending stretch has the
+    flag down and the clock at 0.
+    """
+
+    KICKOFF_PENDING = 2
+    NO_LIVE_PLAY = 1
+    LOADING = 13
+
+    def __init__(self) -> None:
+        self.live = False
+        self._kickoff_pending = False
+        self._last_clock: int | None = None
+        self._open_play = OpenPlayDetector()
+
+    def forget(self) -> None:
+        self.live = False
+        self._kickoff_pending = False
+        self._open_play.reset()
+
+    def update(
+        self, started: int | None, play_state: int | None, clock: int | None, period_seconds: int | None
+    ) -> bool:
+        if clock is not None:
+            if self._last_clock is not None and clock < self._last_clock:
+                self.forget()
+            self._last_clock = clock
+        if play_state == self.LOADING or (play_state == self.NO_LIVE_PLAY and started != 1):
+            self.forget()
+        elif play_state == self.KICKOFF_PENDING:
+            self._kickoff_pending = True
+        if self._kickoff_pending:
+            if started != 1:
+                # Same rule as every other debounced counter here: a tick that
+                # disqualifies (the pause menu drops the flag while the period
+                # clock stays put) must not leave a stale baseline behind.
+                self._open_play.reset()
+            elif self._open_play.update(play_state, period_seconds):
+                self.live = True
+                self._kickoff_pending = False
+        return self.live
+
+
+def read_open_play_inputs(memory: Memory, offsets) -> tuple[int | None, int | None]:
+    """(GAMEPLAYSTATE, GAMEPERIODSECONDS) for OpenPlayDetector.update, None for
+    whatever cannot be read."""
+    values: list[int | None] = []
+    for name in ("GAMEPLAYSTATE", "GAMEPERIODSECONDS"):
+        try:
+            values.append(memory.get_int(offsets.GAMESTATSBASE, getattr(offsets, name)))
+        except Exception:
+            values.append(None)
+    return values[0], values[1]
+
+
 class ChantsRuntime:
+    # Sampling period of the "Chants clock" diagnostic line (see
+    # _log_clock_diagnostic): tighter while the pre-match guard is waiting,
+    # which is the window the open "Waiting for kick-off" reports are about.
+    CLOCK_DIAG_GUARD_INTERVAL = 2.0
+    CLOCK_DIAG_INTERVAL = 5.0
+    # Read-only window of 32-bit values around the fields already used in the
+    # GAMESTATSBASE struct (score +5484/+5488, clock +5500), dumped by the
+    # same diagnostic to look for a "period"/"match state" field.
+    CLOCK_DIAG_STATS_START = 5436
+    CLOCK_DIAG_STATS_COUNT = 32
+
     def __init__(self, app: "Server16App") -> None:
         self.app = app
         self._special_audio_cooldown_until = 0.0
+        self._clock_diag_last: tuple[float, int | None] | None = None
+        self._clock_diag_frozen_key: tuple | None = None
+        self._clock_diag_stats_last: tuple[int, ...] | None = None
+        self._live_match = LiveMatchTracker()
 
     @staticmethod
     def _safe_float(raw: str, default: float = 0.05) -> float:
@@ -214,6 +338,24 @@ class ChantsRuntime:
                 counts["errors"] += 1
         return counts
 
+    def _track_live_match(self, memory: Memory) -> None:
+        """Feed LiveMatchTracker one reading and log when its verdict flips."""
+        app = self.app
+        try:
+            started = memory.get_int(app.offsets.GAMESTARTEDBINARYBASE, app.offsets.GAMESTARTEDBINARY)
+        except Exception:
+            started = None
+        try:
+            clock = memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+        except Exception:
+            clock = None
+        play_state, period_seconds = read_open_play_inputs(memory, app.offsets)
+        was_live = self._live_match.live
+        live = self._live_match.update(started, play_state, clock, period_seconds)
+        if live != was_live:
+            verdict = "kick-off confirmed" if live else "no longer in memory"
+            app.log(f"Chants live match: {verdict} (started={started} state={play_state} clock={clock})")
+
     def _parse_chants_config(self, raw: str) -> list[str]:
         return [part.strip() for part in raw.split(",")] if raw else []
 
@@ -316,6 +458,106 @@ class ChantsRuntime:
         app.log(f"Team entrance armed via match-resumed signal (no further page transition): {page_name!r}")
         app._start_team_entrance()
 
+    def _log_clock_diagnostic(self, memory: Memory, now: float | None = None) -> None:
+        """Log what the match clock (GAMERANTIME) is actually doing, averaged
+        over a few seconds, together with everything the pre-match guard
+        decides on.
+
+        Diagnostic only -- it changes no behaviour. The open "Support chants
+        stuck on Waiting for kick-off" reports (docs/bugs-entrance.md Parts
+        14-18) could never be settled from a log because nothing recorded
+        the clock while the guard waited: not its rate during the walkout,
+        not whether it restarts at kick-off, not its rate in play for each
+        Half Length. The guard's own check samples an integer clock every
+        ~0.2s, where it can only ever compute 0, ~4.8 or ~9.5 units/s, so
+        its "speed" says little; this line uses a 2-5s window instead.
+
+        A clock that stops moving is logged once ("+0") and then stays quiet
+        until something changes, so sitting in a menu does not flood the
+        log. No line is written while a goal song holds the loop -- the
+        next one just covers a longer window.
+
+        Two more read-only candidates for a real kick-off signal ride on the
+        same line: `dash=` is the DASHBOARDMINUTES/DASHBOARDSECONDS pair
+        (inherited offsets nothing else reads, validity on this build
+        unknown), and `stats[...]` is the window of values around the score
+        and clock (see CLOCK_DIAG_STATS_START) -- dumped in full the first
+        time, afterwards only the ones that changed, as `+offset:old>new`.
+        """
+        app = self.app
+        now = time.time() if now is None else now
+        guard = bool(getattr(app, "_entrance_pre_match_guard", False))
+        interval = self.CLOCK_DIAG_GUARD_INTERVAL if guard else self.CLOCK_DIAG_INTERVAL
+        last = self._clock_diag_last
+        if last is not None and now - last[0] < interval:
+            return
+        try:
+            started = memory.get_int(app.offsets.GAMESTARTEDBINARYBASE, app.offsets.GAMESTARTEDBINARY)
+        except Exception:
+            started = None
+        try:
+            clock = memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
+        except Exception:
+            clock = None
+        self._clock_diag_last = (now, clock)
+        entrance = bool(getattr(app, "_entrance_active", False))
+        page_name = getattr(app, "lastpagename", "") or ""
+        if last is None:
+            movement = "first sample"
+            frozen = False
+        elif clock is None or last[1] is None:
+            movement = "no previous reading" if clock is not None else "unreadable"
+            frozen = clock is None and last[1] is None
+        else:
+            elapsed = max(0.001, now - last[0])
+            delta = clock - last[1]
+            movement = f"{delta:+d} in {elapsed:.1f}s = {delta / elapsed:.1f}/s"
+            frozen = delta == 0
+        dash_minutes = self._read_clock_diag_int(memory, "DASHBOARDMINUTESBASE", "DASHBOARDMINUTES")
+        dash_seconds = self._read_clock_diag_int(memory, "DASHBOARDSECONDSBASE", "DASHBOARDSECONDS")
+        stats = self._read_clock_diag_stats(memory)
+        previous_stats = self._clock_diag_stats_last
+        self._clock_diag_stats_last = stats
+        key = (started, clock, guard, entrance, page_name, dash_minutes, dash_seconds, stats)
+        if frozen:
+            if key == self._clock_diag_frozen_key:
+                return
+            self._clock_diag_frozen_key = key
+        else:
+            self._clock_diag_frozen_key = None
+        app.log(
+            f"Chants clock: started={started} clock={clock} ({movement}) "
+            f"guard={guard} entrance={entrance} page={page_name!r} "
+            f"dash={dash_minutes}:{dash_seconds} stats[{self._format_clock_diag_stats(previous_stats, stats)}]"
+        )
+
+    def _read_clock_diag_int(self, memory: Memory, base_attr: str, offsets_attr: str) -> int | None:
+        try:
+            return memory.get_int(getattr(self.app.offsets, base_attr), getattr(self.app.offsets, offsets_attr))
+        except Exception:
+            return None
+
+    def _read_clock_diag_stats(self, memory: Memory) -> tuple[int, ...] | None:
+        try:
+            address = memory.resolve_pointer(self.app.offsets.GAMESTATSBASE, [self.CLOCK_DIAG_STATS_START])
+            raw = memory.read_process_memory(address, self.CLOCK_DIAG_STATS_COUNT * 4)
+            return struct.unpack(f"<{self.CLOCK_DIAG_STATS_COUNT}I", raw)
+        except Exception:
+            return None
+
+    def _format_clock_diag_stats(self, previous: tuple[int, ...] | None, current: tuple[int, ...] | None) -> str:
+        if current is None:
+            return "unreadable"
+        offsets = range(self.CLOCK_DIAG_STATS_START, self.CLOCK_DIAG_STATS_START + len(current) * 4, 4)
+        if previous is None:
+            return " ".join(f"+{offset}={value}" for offset, value in zip(offsets, current))
+        changed = [
+            f"+{offset}:{old}>{new}"
+            for offset, old, new in zip(offsets, previous, current)
+            if old != new
+        ]
+        return " ".join(changed) if changed else "="
+
     def fade_player(self, player: MciAudioPlayer, start: float, end: float, duration_ms: int) -> None:
         steps = 20
         if duration_ms <= 0:
@@ -380,6 +622,9 @@ class ChantsRuntime:
             last_real_time: float | None = None
             started_at = time.time()
             while not app._chants_stop.is_set() and not getattr(app, "_chants_reset_requested", False) and app.module_enabled("Chants"):
+                if chants_memory is not None:
+                    # This loop holds chants_runtime_loop for the whole song.
+                    self._track_live_match(chants_memory)
                 mode_state = player.mode()
                 if mode_state in {"stopped", "closed"} and time.time() >= hold_until:
                     break
@@ -459,6 +704,7 @@ class ChantsRuntime:
         pre_match_last_time: int | None = None
         pre_match_last_real: float | None = None
         pre_match_speed_hits = 0
+        pre_match_open_play = OpenPlayDetector()
         chants_memory = Memory()
         while not app._chants_stop.is_set():
             try:
@@ -484,8 +730,12 @@ class ChantsRuntime:
 
                 if not app.MP or not chants_memory.attack(app.MP) or not chants_memory.is_open():
                     self.reset_chants_state()
+                    self._live_match.forget()
                     time.sleep(0.5)
                     continue
+
+                self._track_live_match(chants_memory)
+                self._log_clock_diagnostic(chants_memory)
 
                 hid = (app.HID or "").split()[0].strip() if app.HID and app.HID.strip() else ""
                 aid = (app.AID or "").split()[0].strip() if app.AID and app.AID.strip() else ""
@@ -497,6 +747,7 @@ class ChantsRuntime:
                     pre_match_last_time = None
                     pre_match_last_real = None
                     pre_match_speed_hits = 0
+                    pre_match_open_play.reset()
                     if non_running_reads >= 3:
                         app.matchstarted = False
                         # Only pause if not already paused by a sub-function
@@ -519,14 +770,24 @@ class ChantsRuntime:
                 # The FIFA "game started" flag becomes true during the 3D
                 # walkout, before actual kick-off.  Do not let a Support track
                 # cover the entrance anthem or the league presentation.  Real
-                # play is confirmed by sustained match-clock movement.
+                # play is confirmed by FIFA's own play state -- the ball in
+                # play (OpenPlayDetector) in a match whose kick-off was seen
+                # (LiveMatchTracker; the practice arena has none) -- or, as
+                # before, by sustained fast match-clock movement, which alone
+                # never fired on a long Half Length.
                 if getattr(app, "_entrance_pre_match_guard", False):
                     now = time.time()
                     try:
                         game_time = chants_memory.get_int(app.offsets.GAMESTATSBASE, app.offsets.GAMERANTIME)
                     except Exception:
                         game_time = None
-                    if game_time is not None and pre_match_last_time is not None and pre_match_last_real is not None:
+                    play_state, period_seconds = read_open_play_inputs(chants_memory, app.offsets)
+                    ball_in_play = pre_match_open_play.update(play_state, period_seconds)
+                    if ball_in_play and self._live_match.live:
+                        app._entrance_pre_match_guard = False
+                        next_chant_after = time.time() + 1.0
+                        app.log(f"Pre-match Support guard released: ball in play (period clock={period_seconds})")
+                    elif game_time is not None and pre_match_last_time is not None and pre_match_last_real is not None:
                         real_delta = max(0.001, now - pre_match_last_real)
                         timer_delta = abs(game_time - pre_match_last_time)
                         speed = timer_delta / real_delta
@@ -545,6 +806,9 @@ class ChantsRuntime:
                         app._set_display_async("audio_next", "Support chants after actual kick-off")
                         time.sleep(0.2)
                         continue
+                # Whoever released the guard (here or the entrance worker), the
+                # next wait must measure its own gain from scratch.
+                pre_match_open_play.reset()
 
                 # The entrance anthem owns the pre-kickoff audio window.  If
                 # FIFA starts its clock while the anthem is fading, hold the

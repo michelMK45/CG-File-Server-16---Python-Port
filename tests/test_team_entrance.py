@@ -136,8 +136,12 @@ class FakeApp:
         self.displays: dict[str, str] = {}
         self.logs: list[str] = []
         self.enabled = True
+        # Off unless a test opts in, so the home-team tests stay team-only.
+        self.tournament_enabled = False
 
     def module_enabled(self, name: str) -> bool:
+        if name == "TournamentEntrance":
+            return self.tournament_enabled
         return name == "TeamEntrance" and self.enabled
 
     def _set_display_async(self, key: str, value: str) -> None:
@@ -145,6 +149,148 @@ class FakeApp:
 
     def log(self, message: str, *_args, **_kwargs) -> None:
         self.logs.append(message)
+
+
+class SourceLabelTests(unittest.TestCase):
+    """The audio-source field is user-facing, so it goes through the locales."""
+
+    def test_labels_come_from_the_app_locale_with_an_english_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            app = FakeApp(Path(temp_dir))
+            runtime = TeamEntranceRuntime(app)
+            self.assertEqual(runtime._source_label("round"), "Round entrance")
+            self.assertEqual(runtime._source_label("nonsense"), "Home team entrance")
+
+            asked: list[str] = []
+
+            def display_value(key: str, fallback: str | None = None) -> str:
+                asked.append(key)
+                return f"<{key}>"
+
+            app.display_value = display_value
+            self.assertEqual(runtime._source_label("tournament"), "<entrance_source_tournament>")
+            self.assertEqual(runtime._source_label("team"), "<entrance_source_team>")
+            self.assertEqual(asked, ["entrance_source_tournament", "entrance_source_team"])
+
+
+class CompetitionEntranceTests(unittest.TestCase):
+    """[roundentrance] > [tournamententrance] > the home team's [chantsid],
+    all behind the TournamentEntrance module."""
+
+    def make_runtime(self, ini_values: dict[tuple[str, str], str], folders=("Team", "Cup", "Final")):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        root = Path(temp.name)
+        for folder in folders:
+            track = root / "FSW" / "Chants" / folder / "Entrance.mp3"
+            track.parent.mkdir(parents=True)
+            track.write_bytes(b"test")
+        values = {("1", "chantsid"): "Team,0,0,0,0,0,0,0,0,0,0.2,3"}
+        values.update(ini_values)
+        app = FakeApp(root, FakeIni(values))
+        app.tournament_enabled = True
+        app.TOURNAME = "5"
+        app.TOURROUNDID = "10"
+        return TeamEntranceRuntime(app), app, root
+
+    def track(self, root: Path, folder: str) -> Path:
+        return root / "FSW" / "Chants" / folder / "Entrance.mp3"
+
+    def test_round_beats_tournament_beats_team(self) -> None:
+        runtime, app, root = self.make_runtime(
+            {("10", "roundentrance"): "Final,0.5,2", ("5", "tournamententrance"): "Cup,0.4,4"}
+        )
+        config = runtime._resolve_config("1")
+        self.assertEqual(config, TeamEntranceConfig(self.track(root, "Final"), 0.5, 2.0))
+        self.assertEqual(config.source, "round")
+
+        app.settings_ini.values.pop(("10", "roundentrance"))
+        config = runtime._resolve_config("1")
+        self.assertEqual(config, TeamEntranceConfig(self.track(root, "Cup"), 0.4, 4.0))
+        self.assertEqual(config.source, "tournament")
+
+        app.settings_ini.values.pop(("5", "tournamententrance"))
+        config = runtime._resolve_config("1")
+        self.assertEqual(config, TeamEntranceConfig(self.track(root, "Team"), 0.2, 3.0))
+        self.assertEqual(config.source, "team")
+
+    def test_module_off_ignores_round_and_tournament_assignments(self) -> None:
+        runtime, app, root = self.make_runtime(
+            {("10", "roundentrance"): "Final", ("5", "tournamententrance"): "Cup"}
+        )
+        app.tournament_enabled = False
+        config = runtime._resolve_config("1")
+        self.assertEqual(config.track, self.track(root, "Team"))
+        self.assertEqual(config.source, "team")
+
+    def test_missing_round_track_falls_through_and_is_logged(self) -> None:
+        runtime, app, root = self.make_runtime(
+            {("10", "roundentrance"): "NoSuchFolder", ("5", "tournamententrance"): "Cup"}
+        )
+        config = runtime._resolve_config("1")
+        self.assertEqual(config.track, self.track(root, "Cup"))
+        self.assertEqual(config.source, "tournament")
+        self.assertTrue(any("round 10" in line and "NoSuchFolder" in line for line in app.logs))
+
+    def test_every_assignment_unusable_ends_on_the_team_track(self) -> None:
+        runtime, _app, root = self.make_runtime(
+            {("10", "roundentrance"): "Nope", ("5", "tournamententrance"): ""}
+        )
+        self.assertEqual(runtime._resolve_config("1").track, self.track(root, "Team"))
+
+    def test_no_competition_context_never_matches_an_entry(self) -> None:
+        # "0" is what a friendly's unread tournament/round can look like; an
+        # entry keyed "0" must not apply to it, and blank means no context.
+        runtime, app, root = self.make_runtime(
+            {("0", "roundentrance"): "Final", ("0", "tournamententrance"): "Cup"}
+        )
+        for value in ("0", ""):
+            with self.subTest(value=value):
+                app.TOURNAME = value
+                app.TOURROUNDID = value
+                self.assertEqual(runtime._resolve_config("1").source, "team")
+
+    def test_tournament_plays_even_when_the_home_team_has_no_entrance(self) -> None:
+        runtime, _app, root = self.make_runtime({("5", "tournamententrance"): "Cup"})
+        config = runtime._resolve_config("99")
+        self.assertEqual(config.track, self.track(root, "Cup"))
+        self.assertEqual(config.source, "tournament")
+
+    def test_another_tournament_or_round_does_not_match(self) -> None:
+        runtime, app, _root = self.make_runtime(
+            {("11", "roundentrance"): "Final", ("6", "tournamententrance"): "Cup"}
+        )
+        self.assertEqual(runtime._resolve_config("1").source, "team")
+
+    def test_start_for_match_arms_the_competition_track_and_logs_the_source(self) -> None:
+        runtime, app, _root = self.make_runtime({("5", "tournamententrance"): "Cup,0.4,4"})
+        with patch("server16_py.entrance_runtime.threading.Thread") as thread_cls:
+            started = runtime.start_for_match()
+        self.assertTrue(started)
+        thread_cls.assert_called_once()
+        self.assertEqual(thread_cls.call_args.kwargs["args"][2].source, "tournament")
+        self.assertTrue(any("source=tournament" in line and "Cup/Entrance.mp3" in line for line in app.logs))
+
+    def test_a_different_round_is_a_different_match_key(self) -> None:
+        # _match_key already carries both ids, so switching competition
+        # re-arms the anthem without any extra counter.
+        runtime, app, _root = self.make_runtime({})
+        first = runtime._match_key("1")
+        app.TOURROUNDID = "11"
+        self.assertNotEqual(first, runtime._match_key("1"))
+        app.TOURROUNDID = "10"
+        app.TOURNAME = "6"
+        self.assertNotEqual(first, runtime._match_key("1"))
+
+    def test_competition_values_parse_and_clamp(self) -> None:
+        parse = TeamEntranceRuntime._parse_competition_values
+        self.assertEqual(parse("Cup"), ("Cup", 0.16, 7.0))
+        self.assertEqual(parse("Tournaments/Cup,0.3,2"), ("Tournaments\\Cup", 0.3, 2.0))
+        self.assertEqual(parse("Cup,9,-3"), ("Cup", 1.0, 0.0))
+        self.assertEqual(parse("Cup,abc,99"), ("Cup", 0.16, 45.0))
+        self.assertEqual(parse("Cup,,"), ("Cup", 0.16, 7.0))
+        self.assertIsNone(parse(""))
+        self.assertIsNone(parse(",0.3,2"))
 
 
 class TeamEntranceRuntimeTests(unittest.TestCase):
@@ -329,6 +475,58 @@ class TeamEntranceRuntimeTests(unittest.TestCase):
             self.assertIn((0, 0.2, 500), app.chants_runtime.fades)
             self.assertIn((0.2, 0, 700), app.chants_runtime.fades)
             self.assertTrue(any("kick-off clock detected" in line for line in app.logs))
+
+    def test_worker_fades_at_kickoff_on_a_slow_match_clock(self) -> None:
+        # A 10-minute half moves the clock ~1 unit per 0.2s tick (4.8/s at
+        # best), under the speed check's 6.0 -- the anthem used to run on over
+        # live play. FIFA's own play state ends it instead. time.sleep is NOT
+        # mocked: with it mocked every +1 reads as an enormous speed.
+        class OpenPlayMemory(FakeMemory):
+            """States are (started, clock, play state); the period clock
+            equals the clock, as in a first half."""
+
+            current = None
+
+            def get_int(self, base, offsets) -> int:
+                if offsets in ("play_state", "period"):
+                    if self.current is None:
+                        raise RuntimeError("match memory unresolvable")
+                    return self.current[2] if offsets == "play_state" else self.current[1]
+                if base == "stats" and offsets == "time":
+                    self.current = self.states[min(self.state_index, len(self.states) - 1)]
+                return super().get_int(base, offsets)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            track = root / "Entrance.mp3"
+            track.write_bytes(b"test")
+            app = FakeApp(root)
+            app.offsets.GAMEPLAYSTATE = "play_state"
+            app.offsets.GAMEPERIODSECONDS = "period"
+            player = FakePlayer()
+            walkout = [(1, 0, 2)] * 4
+            play = [(1, clock, 15) for clock in range(1, 30)]
+            memory = OpenPlayMemory(walkout + play)
+            runtime = TeamEntranceRuntime(
+                app,
+                player_factory=lambda: player,
+                memory_factory=lambda: memory,
+            )
+
+            runtime._run_worker(0, "1", TeamEntranceConfig(track, 0.2, 0.0))
+
+            self.assertTrue(player.played)
+            self.assertTrue(player.closed)
+            self.assertFalse(app._entrance_active)
+            # "Ball in play" also reads true in the practice arena, so this
+            # path stops the anthem but leaves the Support guard to
+            # ChantsRuntime's LiveMatchTracker.
+            self.assertTrue(app._entrance_pre_match_guard)
+            self.assertIn((0.2, 0, 700), app.chants_runtime.fades)
+            self.assertTrue(any("fade-out: ball in play" in line for line in app.logs))
+            self.assertFalse(any("kick-off clock detected" in line for line in app.logs))
+            # Faded within a few ticks of kick-off, not at the end of the list.
+            self.assertLess(memory.state_index, len(walkout) + 8)
 
     def test_worker_never_opens_track_when_match_already_live_before_delay_elapses(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

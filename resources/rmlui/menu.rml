@@ -599,19 +599,26 @@ body {
 /* Loading spinner, shown over the list area in place of the (stale) row
    list while Python's _update_menu_content() is still computing a new one
    (see RmlOverlay_MenuLoading — set around any wizard-step/tab navigation,
-   most usefully for the Stadiums tab's filesystem scan). No conic-gradient/
-   mask support in this renderer (see the codebase's other gradient-decorator
-   comments), so this is the classic pre-conic-gradient technique instead: a
-   full ring plus one differently-colored side, spun with `animation` (a
-   real RCSS feature — RmlUi's own Samples/basic/animation/data/animation.rml
-   uses the identical from/to rotate() keyframe pair for its own spinner). */
+   most usefully for the Stadiums tab's filesystem scan). A ring of 10 small
+   filled circles that shrink and fade (cyan -> blue) behind a bright head dot,
+   the whole container spun with `animation` (a real RCSS feature — RmlUi's own
+   Samples/basic/animation/data/animation.rml uses the identical from/to
+   rotate() keyframe pair). Deliberately made of plain rounded-rect
+   backgrounds only: it used to be a CSS border ring (one differently-colored
+   border-top on a border-radius'd box), which drew as a rounded square here
+   (this renderer has no conic-gradient/mask support, see the codebase's other
+   gradient-decorator comments), and a spinner.png <img> version showed a
+   white square when the texture did not load. No external file to ship.
+   #loading-spinner's own box is sized/positioned by RmlMenu_Sync (44x44); the
+   dots are laid out for a 44x44 box (ring radius 18 around 22,22). */
 #loading-spinner {
     display: none;
     position: absolute;
-    border-radius: 22px;
-    border: 4px #FFFFFF26;
-    border-top-color: #00F2FE;
     animation: 0.9s linear-out infinite spin;
+}
+#loading-spinner .sp-dot {
+    display: block;
+    position: absolute;
 }
 @keyframes spin {
     from { transform: rotate(0deg); }
@@ -962,7 +969,18 @@ body {
 </div>
 <div id="empty-state">No items available</div>
 <img id="row-action-hint"/>
-<div id="loading-spinner"></div>
+<div id="loading-spinner">
+<div class="sp-dot" style="left: 18.5px; top: 0.5px; width: 7px; height: 7px; border-radius: 3.5px; background-color: #00F2FEFF;"></div>
+<div class="sp-dot" style="left: 7.9px; top: 3.9px; width: 7px; height: 7px; border-radius: 3.5px; background-color: #09EAFEDC;"></div>
+<div class="sp-dot" style="left: 1.9px; top: 13.4px; width: 6px; height: 6px; border-radius: 3px; background-color: #12E2FEBB;"></div>
+<div class="sp-dot" style="left: 1.9px; top: 24.6px; width: 6px; height: 6px; border-radius: 3px; background-color: #1ADBFE9B;"></div>
+<div class="sp-dot" style="left: 8.9px; top: 34.1px; width: 5px; height: 5px; border-radius: 2.5px; background-color: #23D3FE7D;"></div>
+<div class="sp-dot" style="left: 19.5px; top: 37.5px; width: 5px; height: 5px; border-radius: 2.5px; background-color: #2CCBFE61;"></div>
+<div class="sp-dot" style="left: 30.6px; top: 34.6px; width: 4px; height: 4px; border-radius: 2px; background-color: #35C3FE47;"></div>
+<div class="sp-dot" style="left: 37.1px; top: 25.6px; width: 4px; height: 4px; border-radius: 2px; background-color: #3DBCFE2F;"></div>
+<div class="sp-dot" style="left: 37.6px; top: 14.9px; width: 3px; height: 3px; border-radius: 1.5px; background-color: #46B4FE1B;"></div>
+<div class="sp-dot" style="left: 31.1px; top: 5.9px; width: 3px; height: 3px; border-radius: 1.5px; background-color: #4FACFE0A;"></div>
+</div>
 <div id="scrollbar-track"><div id="scrollbar-thumb"></div></div>
 <div id="split-preview">
 <div id="hero-img-wrap"><img id="preview-img"/><div id="hero-fade"></div></div>

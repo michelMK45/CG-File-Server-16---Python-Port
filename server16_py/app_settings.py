@@ -12,7 +12,7 @@ from .dialogs import FifaLocationWarningDialog, ImportModeDialog, SectionPickerD
 from .fifa_db import FifaDatabase
 from .ini_file import SessionIniFile, export_sections, import_sections
 from .module_catalog import INI_MODULE_NAMES
-from .settings_editor import SettingsAreaEditor, asset_specs, audio_specs, stadium_specs
+from .settings_editor import SettingsAreaEditor, asset_tab_groups, audio_specs, stadium_tab_groups
 
 
 class SettingsMixin:
@@ -163,7 +163,7 @@ class SettingsMixin:
         return False
 
     def _load_module_states(self) -> None:
-        for late_module in ("TeamEntrance", "EntranceCam", "Goalposts", "StadiumName"):
+        for late_module in ("TeamEntrance", "TournamentEntrance", "EntranceCam", "Goalposts", "StadiumName"):
             if self.settings_ini.read(late_module, "Modules") not in {"0", "1"}:
                 # Existing installations predate these modules (StadiumName: the switch only
                 # started controlling anything after the stadium-name patch was built, so an
@@ -224,10 +224,10 @@ class SettingsMixin:
         editor.bind("<Destroy>", lambda _event, key=editor_key: self._settings_editors.pop(key, None))
 
     def open_stadium_settings_editor(self) -> None:
-        self._open_settings_editor("stadium", "dialog.editor.section.stadium_settings", stadium_specs())
+        self._open_settings_editor("stadium", "dialog.editor.section.stadium_settings", stadium_tab_groups())
 
     def open_assets_settings_editor(self) -> None:
-        self._open_settings_editor("assets", "dialog.editor.section.asset_settings", asset_specs())
+        self._open_settings_editor("assets", "dialog.editor.section.asset_settings", asset_tab_groups())
 
     def open_audio_settings_editor(self) -> None:
         self._open_settings_editor("audio", "dialog.editor.section.chants_settings", audio_specs())

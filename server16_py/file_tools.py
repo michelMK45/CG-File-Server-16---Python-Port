@@ -11,7 +11,7 @@ import sys
 import time
 import unicodedata
 import zipfile
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 
 try:
@@ -254,6 +254,19 @@ def resolve_goalpost_texture_rx3_path(goalpost_color_dir: str | Path, name: str)
     return candidates[0] if candidates else None
 
 
+def match_asset_rx3_files(pack_dir: str | Path) -> list[Path]:
+    """Every .rx3 of a Match Asset pack (FSW/balls|referee|wipe|adboards/<name>/),
+    sorted by relative path. Searched recursively and case-insensitively because
+    that is exactly what the runtimes install (install_tracked_files walks the
+    whole pack with rglob), so the preview shows what would really be copied --
+    unlike the goalpost packs, which hold a single file. [] for a missing folder."""
+    folder = Path(pack_dir)
+    if not folder.is_dir():
+        return []
+    files = [item for item in folder.rglob("*") if item.is_file() and item.suffix.lower() == ".rx3"]
+    return sorted(files, key=lambda path: path.relative_to(folder).as_posix().lower())
+
+
 def discover_stadium_names(stadium_gbd: str | Path) -> list[str]:
     root = Path(stadium_gbd)
     names: dict[str, str] = {}
@@ -485,24 +498,46 @@ def _save_tracked_manifest(backup_dir: Path, files: dict[str, bool]) -> None:
             pass
 
 
-def install_tracked_files(src_dir: Path, dst_dir: Path, backup_dir: Path) -> list[str]:
-    """Copy src_dir's files (same filters as copy(): no .png, desktop.ini or
-    Thumbs.db) into dst_dir, backing up what they overwrite. Anything a PREVIOUS
-    install put in dst_dir that src_dir no longer has is restored first, so only
-    the current pack is ever active. A file that fails to back up or copy is
-    left alone and reported at the end; the rest still go through. Returns the
-    relative names installed."""
-    # Manifest keys are lower-cased: Windows treats SpecificWipe_... and specificwipe_...
-    # as one file, so a pack that spells it differently must still find its own entry
-    # (otherwise its already-installed copy would be backed up as the "original").
-    wanted: dict[str, tuple[str, Path]] = {}
+def list_pack_files(src_dir: Path) -> list[str]:
+    """Pack-relative POSIX names install_tracked_files would copy from src_dir
+    (same filters as copy(): no .png, desktop.ini or Thumbs.db)."""
+    names: list[str] = []
     for item in sorted(src_dir.rglob("*")):
         if not item.is_file() or item.suffix.lower() == ".png":
             continue
         if item.name.lower() in {"desktop.ini", "thumbs.db"}:
             continue
-        rel = item.relative_to(src_dir).as_posix()
-        wanted[rel.lower()] = (rel, item)
+        names.append(item.relative_to(src_dir).as_posix())
+    return names
+
+
+def install_tracked_files(
+    src_dir: Path,
+    dst_dir: Path,
+    backup_dir: Path,
+    rename: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Copy src_dir's files (see list_pack_files) into dst_dir, backing up what
+    they overwrite. Anything a PREVIOUS install put in dst_dir that src_dir no
+    longer has is restored first, so only the current pack is ever active. A
+    file that fails to back up or copy is left alone and reported at the end; the
+    rest still go through. `rename` maps a pack-relative name to the name it is
+    installed under (see match_asset_ids). Returns the relative names installed."""
+    selection: dict[str, Path] = {}
+    for rel in list_pack_files(src_dir):
+        selection[(rename or {}).get(rel, rel)] = src_dir / rel
+    return install_tracked_selection(selection, dst_dir, backup_dir)
+
+
+def install_tracked_selection(selection: Mapping[str, Path], dst_dir: Path, backup_dir: Path) -> list[str]:
+    """install_tracked_files for an explicit {installed relative name: source file}
+    selection -- for callers that pick files from several places or split one
+    folder between two destinations (Adboard + cornerflags). An empty selection
+    restores everything a previous install put in dst_dir."""
+    # Manifest keys are lower-cased: Windows treats SpecificWipe_... and specificwipe_...
+    # as one file, so a pack that spells it differently must still find its own entry
+    # (otherwise its already-installed copy would be backed up as the "original").
+    wanted: dict[str, tuple[str, Path]] = {rel.lower(): (rel, item) for rel, item in selection.items()}
     restore_tracked_files(dst_dir, backup_dir, keep=wanted)
     manifest = _load_tracked_manifest(backup_dir)
     installed: list[str] = []

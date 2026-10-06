@@ -365,5 +365,104 @@ class LeavingMatchTests(unittest.TestCase):
             self.assertEqual(game.clears, 0, page)
 
 
+class SkillGamePagesGame(FastWatchGame, LeavingMatchGame):
+    """FastWatchGame (name-patch call sites) + LeavingMatchGame (the state the
+    "skillGames/" pages reset), counting every way the name reaches FIFA."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.name_writes = 0
+        self.name_patch_requests = 0
+        self.match_string_requests = 0
+
+        def _count(attr):
+            def inner(*_args) -> bool:
+                setattr(self, attr, getattr(self, attr) + 1)
+                return True
+            return inner
+
+        self.stadium_runtime = types.SimpleNamespace(
+            stadium_name_enabled=lambda: True,
+            resolve_scoreboard_display_name=lambda name: name,
+            write_active_stad_name=_count("name_writes"),
+            request_db_name_patch=_count("name_patch_requests"),
+        )
+        self.match_string_patcher = types.SimpleNamespace(request=_count("match_string_requests"))
+
+    def counts(self) -> tuple[int, int, int, int, int]:
+        return (
+            self.fast_watch_starts, self.progress_starts, self.name_writes,
+            self.name_patch_requests, self.match_string_requests,
+        )
+
+
+class StadiumNamePatchNotRetriggeredByResultsTests(unittest.TestCase):
+    """Found live 2026-10-04 (bugs-scoreboardstdname.md Part 23): the TV/bumper
+    handler matches "skillGames/SkillGa", which also matches SkillGameResults --
+    the END of the match. It re-ran the whole stadium-name patch (write, request,
+    fast watch, 60s retry chain), and that chain kept scanning through FluxHub
+    and SelectTeam until FIFA died on the next Kick-Off."""
+
+    PAUSE = "game/screens/skillGames/SkillGamePause"
+    RESULTS = "game/screens/skillGames/SkillGameResults"
+
+    def test_the_intro_page_still_starts_the_name_patch(self) -> None:
+        game = SkillGamePagesGame()
+        game.curstad = "Anfield"
+        game._handle_page_transition(self.PAUSE)
+        self.assertEqual(game.counts(), (1, 1, 1, 1, 1))
+
+    def test_the_results_page_does_not_start_it(self) -> None:
+        game = SkillGamePagesGame()
+        game.curstad = "Anfield"
+        game._handle_page_transition(self.RESULTS)
+        self.assertEqual(game.counts(), (0, 0, 0, 0, 0))
+
+    def test_results_after_the_intro_adds_nothing(self) -> None:
+        game = SkillGamePagesGame()
+        game.curstad = "Anfield"
+        game._handle_page_transition(self.PAUSE)
+        before = game.counts()
+        game._handle_page_transition("")
+        game._handle_page_transition(self.RESULTS)
+        # The blank page between them is the one allowed extra fast-watch start
+        # (loading); the results page itself must add nothing on top of it.
+        after = game.counts()
+        self.assertEqual(after[1:], before[1:])
+        self.assertLessEqual(after[0] - before[0], 1)
+
+    def test_the_bumper_flags_still_flip_on_the_results_page(self) -> None:
+        # The Team Entrance state machine keys off these -- the fix must not
+        # change them, only what the name patch does.
+        game = SkillGamePagesGame()
+        game.curstad = "Anfield"
+        game._handle_page_transition(self.RESULTS)
+        self.assertTrue(game.bumperpagechange)
+        self.assertTrue(game.skillgamechange)
+        self.assertEqual(game.bumper_calls, 1)
+
+
+class StadiumNamePatchSuspendedPagesTests(unittest.TestCase):
+    def test_post_match_menus_suspend_it_and_loading_pages_do_not(self) -> None:
+        game = FakeGame()
+        for page, suspended in (
+            ("game/screens/fluxHub/FluxHub", True),
+            ("game/screens/playNow/SelectTeam", True),
+            ("game/screens/playNow/SideSelect", True),
+            ("game/screens/skillGames/SkillGameResults", True),
+            ("game/screens/instantReplay/ReplayScreen", True),
+            # The stadium is applied (and the first request made) here, and the
+            # pre-match screen is one of the pages below.
+            ("game/screens/playNow/KickOffHub", False),
+            ("", False),
+            ("  ", False),
+            ("game/screens/TV/bumper", False),
+            ("game/screens/skillGames/SkillGamePause", False),
+        ):
+            game.lastpagename = page
+            self.assertEqual(game._page_suspends_stadium_name_patch(page), suspended, page)
+            self.assertEqual(game.stadium_name_patch_allowed(), not suspended, page)
+
+
 if __name__ == "__main__":
     unittest.main()

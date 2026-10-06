@@ -19,6 +19,20 @@ class Offsets:
     HT2: list[int] = field(default_factory=lambda: [656, 920, 200, 1504, 552, 556])
     S: list[int] = field(default_factory=lambda: [1552, 80, 3448, 3440, 832, 3068])
     T: list[int] = field(default_factory=lambda: [504, 3544, 1712, 80, 40, 44])
+    # League / tournament GRAPHICS id: the number the RM Mod Lua reads as
+    # wvWipe.leagueID and builds its asset paths from (specificball_0_<id>_0,
+    # specificwipe_0_<id>_0, specificadboard_0_<id>_..., kit_600x_5_<id>, ...).
+    # Same struct as T (T[:4] resolves to its base), final leaf 0xD4 -- sits next
+    # to STADID (+0x9C) and HID/AID (+0x114/+0x118). It is NOT the TOUR/ROUND pair
+    # above: in the same match the game asked for 208 while T read 961/967.
+    # Found and confirmed live 2026-10-04 by comparing this value with the
+    # candidate paths the Lua actually built (memory scan of fifa16.exe): 208
+    # (TOUR 961 / ROUND 967), 53 (947/948) and 54 (950/951), each in a fresh
+    # session. A watcher showed it is filled in the same instant as TOUR/ROUND/
+    # STAD/HID/AID (already set on the pre-match pages) and reads 0xFFFFFFFF when
+    # there is no competition. Read-only; only used to rename the ids inside
+    # Ball/Referee/Wipe/Adboard packs (match_asset_ids.py).
+    TLEAGUE: list[int] = field(default_factory=lambda: [504, 3544, 1712, 80, 0xD4])
     NTDP: list[int] = field(default_factory=lambda: [648])
     NTCP: list[int] = field(default_factory=lambda: [644])
     NTRI: list[int] = field(default_factory=lambda: [632])
@@ -155,6 +169,23 @@ class Offsets:
     GAMERANTIME: list[int] = field(default_factory=lambda: [5500])
     GAMEHOMEGOALSCORE: list[int] = field(default_factory=lambda: [5484])
     GAMEAWAYGOALSCORE: list[int] = field(default_factory=lambda: [5488])
+    # Two more fields of the same GAMESTATSBASE struct, found 2026-10-05 with the
+    # read-only "Chants clock" diagnostic (ChantsRuntime._log_clock_diagnostic;
+    # docs/bugs-entrance.md Part 18) on the fip build, one Kick-Off match with
+    # goals, a pause and half-time. READ ONLY -- never written.
+    # GAMEPERIODSECONDS: seconds of the current period. Equals GAMERANTIME in the
+    # first half, restarts to count added time (GAMERANTIME itself stays capped at
+    # 2700 there) and restarts at 0 for the second half.
+    # GAMEPLAYSTATE: 15 = ball in play, 2 = kick-off pending (pre-match scene,
+    # after a goal, before the second half), 1 = no live play (menus, TV/bumper,
+    # half-time), 4/6/14 = stoppages inside a half, 13 = loading. The practice
+    # arena ALSO reads 15 over a running clock (~7 units/s, live log 2026-10-05)
+    # but was never seen at 2, so "ball in play" only counts as a kick-off after a
+    # 2 (LiveMatchTracker, chants_runtime.py; docs/bugs-entrance.md Part 20).
+    # Not yet seen: its value while the pause menu is open, or through a long
+    # unskipped walkout.
+    GAMEPERIODSECONDS: list[int] = field(default_factory=lambda: [5504])
+    GAMEPLAYSTATE: list[int] = field(default_factory=lambda: [5544])
     DASHBOARDSECONDSBASE: int = 57966104
     DASHBOARDMINUTESBASE: int = 57964464
     DASHBOARDHOMEIDBASE: int = 56705008
@@ -209,6 +240,7 @@ class Offsets:
             self.HT2,
             self.S,
             self.T,
+            self.TLEAGUE,
             self.NTDP,
             self.NTCP,
             self.NTRI,
@@ -224,6 +256,8 @@ class Offsets:
             self.GAMERANTIME,
             self.GAMEHOMEGOALSCORE,
             self.GAMEAWAYGOALSCORE,
+            self.GAMEPERIODSECONDS,
+            self.GAMEPLAYSTATE,
             self.DASHBOARDSECONDS,
             self.DASHBOARDMINUTES,
             self.DASHBOARDHOMEID,

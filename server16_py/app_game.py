@@ -42,6 +42,17 @@ DB_NAME_PATCH_KICKOFF_HITS_REQUIRED = 3
 # representative clock jitter right after the bumper starts.
 DB_NAME_PATCH_KICKOFF_PROTECTION_SECONDS = 6.0
 
+# Pages on which the stadium-name patch must stay idle: the menus reached AFTER
+# a match (and the results screen itself), where the name buffer it targets is
+# long gone. Reported live 2026-10-04 (bugs-scoreboardstdname.md Part 23): the
+# results screen re-triggered the patch, whose scans then ran through FluxHub
+# and SelectTeam and wrote into an unconfirmed "Waldstadion" copy ~3s before
+# FIFA died on the next Kick-Off. KickOffHub is deliberately NOT listed: the
+# stadium is applied (and the first request made) there, before loading starts.
+STADIUM_NAME_PATCH_SUSPENDED_PAGE_TOKENS = (
+    "fluxhub", "selectteam", "sideselect", "skillgameresults", "instantreplay",
+)
+
 
 class GameMixin:
     """Game process polling, live context reading, and stats loop — part of Server16App via multiple inheritance."""
@@ -281,8 +292,15 @@ class GameMixin:
                 # new match). This re-arms the same background coordinator;
                 # it no-ops instantly if the earlier request already patched
                 # this exact match's string. Skipped entirely (patch, fast watch
-                # and loading bar) while the StadiumName module is off.
-                if self.curstad and self.stadium_runtime.stadium_name_enabled():
+                # and loading bar) while the StadiumName module is off, and on
+                # the results screen: "skillGames/SkillGa" also matches
+                # SkillGameResults, which is the END of the match, not its intro
+                # (Part 23) -- the flags above still behave as before.
+                if (
+                    self.curstad
+                    and not self._page_suspends_stadium_name_patch(page_name)
+                    and self.stadium_runtime.stadium_name_enabled()
+                ):
                     std_name = self.stadium_runtime.resolve_scoreboard_display_name(self.curstad)
                     self.stadium_runtime.write_active_stad_name(std_name)
                     self.match_string_patcher.request(std_name)
@@ -296,6 +314,18 @@ class GameMixin:
         self.pagechange = False
         self.bumperpagechange = False
         self.skillgamechange = False
+
+    @staticmethod
+    def _page_suspends_stadium_name_patch(page_name: str) -> bool:
+        """True on the post-match menus / results screen where the stadium-name
+        patch must neither scan nor write (see STADIUM_NAME_PATCH_SUSPENDED_PAGE_TOKENS)."""
+        lowered = (page_name or "").lower()
+        return any(token in lowered for token in STADIUM_NAME_PATCH_SUSPENDED_PAGE_TOKENS)
+
+    def stadium_name_patch_allowed(self) -> bool:
+        """Consulted by StadiumDbNamePatchCoordinator._is_current from its worker
+        threads, so it only reads one str attribute -- never Tk."""
+        return not self._page_suspends_stadium_name_patch(getattr(self, "lastpagename", ""))
 
     @staticmethod
     def _page_is_outside_match(page_name: str) -> bool:
@@ -615,6 +645,30 @@ class GameMixin:
         if current is not None and (current == std_name or current != baseline_name):
             self._finish_scoreboard_name_progress(std_name, current)
             return
+        # All of the coordinator's scan attempts for this slot are used up and no
+        # copy of the name is known: it will never scan again this FIFA session, so
+        # waiting out the rest of the 60s window only keeps the bar on screen
+        # (reported 2026-10-04: on a build whose DB name differs from the on-disk
+        # one the bar never found anything and stayed up the whole time).
+        budget_spent = getattr(self.stadium_db_name_patcher, "scan_budget_exhausted", None)
+        if budget_spent is not None and budget_spent(injid):
+            self.log(
+                f"Stadium DB name patch retry stopped: all scan attempts for slot {injid} "
+                f"are used up and no copy of the name was found"
+            )
+            self._finish_scoreboard_name_progress(std_name, None)
+            return
+        # The match is over / we are back in the menus: nothing left to patch,
+        # and every further request would scan (and possibly write into) a
+        # heap that FIFA is busy reloading for the next Kick-Off (Part 23).
+        page = getattr(self, "lastpagename", "")
+        if self._page_suspends_stadium_name_patch(page):
+            self.log(
+                f"Stadium DB name patch retry stopped: back in the menus ({page!r}) "
+                f"before a patch was confirmed for slot {injid}"
+            )
+            self._finish_scoreboard_name_progress(std_name, None)
+            return
         # Stop showing the loading bar once real gameplay is confirmed
         # running, whether or not a patch ever landed -- the pre-match
         # presentation screen this patch targets is no longer even visible
@@ -659,6 +713,7 @@ class GameMixin:
         self.STADID = ""
         self.TOURNAME = ""
         self.TOURROUNDID = ""
+        self.LEAGUEID = ""
         self.derby = ""
         self.StadName = ""
         self._last_runtime_signature = None
@@ -844,6 +899,11 @@ class GameMixin:
                 self.Stadiumtype = "alter"
         tour = self._try_read_context_int("T-TOUR", self.offsets.ORITOURIDBASE, self.offsets.T[:5], page_name)
         round_id = self._try_read_context_int("T-ROUND", self.offsets.ORITOURIDBASE, self.offsets.T[:4] + [self.offsets.T[5]], page_name)
+        # The league graphics id the Lua builds its asset paths from (see
+        # Offsets.TLEAGUE). Kept apart from TOUR/ROUND, which are only the keys of
+        # the settings.ini assignments. 0 / 0xFFFFFFFF mean "no competition".
+        league = self._try_read_context_int("T-LEAGUE", self.offsets.ORITOURIDBASE, self.offsets.TLEAGUE, page_name)
+        self.LEAGUEID = league if league not in {None, "0", "4294967295"} else ""
         if hid not in {None, "0"}:
             self.HID = hid
         if aid not in {None, "0"}:
@@ -879,7 +939,8 @@ class GameMixin:
             self._last_runtime_signature = signature
             self.log(
                 f"Live context updated page={page_name} HID={self.HID or '-'} AID={self.AID or '-'} "
-                f"TOUR={self.TOURNAME or '-'} ROUND={self.TOURROUNDID or '-'} STAD={self.STADID or '-'}"
+                f"TOUR={self.TOURNAME or '-'} ROUND={self.TOURROUNDID or '-'} STAD={self.STADID or '-'} "
+                f"LEAGUE={self.LEAGUEID or '-'}"
             )
             if self._should_auto_apply_runtime(page_name):
                 self.apply_all_runtime()

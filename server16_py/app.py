@@ -113,6 +113,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.STADID = ""
         self.TOURNAME = ""
         self.TOURROUNDID = ""
+        self.LEAGUEID = ""
         self.derby = ""
         self.tvlogoscoreboardtype = "default"
         self._tvlogo_assignment_type = ""
@@ -136,6 +137,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._kickoff_retry_job = None
         self._overlay_job = None
         self._gamepad_tab_job = None
+        self._gamepad_activity_job = None
         self._kickoff_retry_remaining = 0
         self._attached_once = False
         self._logs_visible = False
@@ -627,6 +629,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # "Disconnected"). Cheap no-op whenever the Gamepads tab isn't the
         # one currently selected -- see _gamepad_tab_tick.
         self._gamepad_tab_job = self.after(1000, self._gamepad_tab_tick)
+        # The tab's round activity lights need a much faster look than that
+        # 1Hz status refresh -- its own loop, idle unless the tab is on screen.
+        self._gamepad_activity_job = self.after(1000, self._gamepad_activity_tick)
         self.setuppaths()
         if not self._check_fifa_location():
             return
@@ -775,7 +780,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         return bool(self._stadium_picker_pending and not self._stadium_picker_resolved)
 
     def apply_all_runtime(self) -> None:
-        self.log(f"Applying runtime HID={self.HID} AID={self.AID} TOUR={self.TOURNAME} ROUND={self.TOURROUNDID} STAD={self.STADID}")
+        self.log(f"Applying runtime HID={self.HID} AID={self.AID} TOUR={self.TOURNAME} ROUND={self.TOURROUNDID} STAD={self.STADID} LEAGUE={self.LEAGUEID or '-'}")
         self._set_progress(5, "Applying runtime")
         # Ball is small and timing-sensitive: applied before Stadium/Scoreboard so it
         # doesn't lose the race against the (slower) stadium/scoreboard copy jobs.
@@ -807,9 +812,6 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self.apply_movie_runtime()
         except Exception as exc:
             self.log("Movie runtime error", exc, exc_info=sys.exc_info())
-        # Adboard depends on curstad (stadium priority), so it must run after
-        # Stadium is applied -- it waits out the stadium copy job itself if
-        # that job is still running in the background (see AssetRuntime.apply_adboard_runtime).
         try:
             self.apply_adboard_runtime()
         except Exception as exc:
@@ -1035,6 +1037,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         try:
             if self._gamepad_tab_job is not None:
                 self.after_cancel(self._gamepad_tab_job)
+        except Exception:
+            pass
+        try:
+            if self._gamepad_activity_job is not None:
+                self.after_cancel(self._gamepad_activity_job)
         except Exception:
             pass
         try:

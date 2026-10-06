@@ -72,6 +72,36 @@ class XINPUT_STATE(ctypes.Structure):
     ]
 
 
+class XINPUT_VIBRATION(ctypes.Structure):
+    _fields_ = [
+        ("wLeftMotorSpeed", ctypes.c_ushort),
+        ("wRightMotorSpeed", ctypes.c_ushort),
+    ]
+
+
+class XINPUT_CAPABILITIES(ctypes.Structure):
+    _fields_ = [
+        ("Type", ctypes.c_ubyte),
+        ("SubType", ctypes.c_ubyte),
+        ("Flags", ctypes.c_ushort),
+        ("Gamepad", XINPUT_GAMEPAD),
+        ("Vibration", XINPUT_VIBRATION),
+    ]
+
+
+# Filled by xinput1_4.dll's undocumented XInputGetCapabilitiesEx (export
+# ordinal 108) -- see xinput_players.py.
+class XINPUT_CAPABILITIES_EX(ctypes.Structure):
+    _fields_ = [
+        ("Capabilities", XINPUT_CAPABILITIES),
+        ("VendorId", ctypes.c_ushort),
+        ("ProductId", ctypes.c_ushort),
+        ("ProductVersion", ctypes.c_ushort),
+        ("unk1", ctypes.c_ushort),
+        ("unk2", wintypes.DWORD),
+    ]
+
+
 class MSG(ctypes.Structure):
     _fields_ = [
         ("hwnd", wintypes.HWND),

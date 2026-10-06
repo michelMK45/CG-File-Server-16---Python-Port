@@ -3,11 +3,11 @@ from __future__ import annotations
 import sys
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from .chants_runtime import MciAudioPlayer
+from .chants_runtime import MciAudioPlayer, OpenPlayDetector, read_open_play_inputs
 from .memory_access import Memory
 
 if TYPE_CHECKING:
@@ -19,6 +19,10 @@ class TeamEntranceConfig:
     track: Path
     volume: float
     delay_seconds: float
+    # Which assignment supplied the track ("round" / "tournament" / "team"):
+    # only for the log and the audio status display, so it is not part of
+    # equality.
+    source: str = field(default="team", compare=False)
 
 
 class TeamEntranceRuntime:
@@ -40,6 +44,20 @@ class TeamEntranceRuntime:
     # How long the anthem may stay paused before this worker gives up and
     # closes for good instead of waiting for a resume that may never come.
     PAUSE_GIVEUP_SECONDS = 20.0
+    # [TournamentEntrance] assignments, most specific first -- the same
+    # round > tournament > home team precedence TVLogo/Scoreboard/Movies use.
+    # (source label, settings.ini section keyed by the id, live-context
+    # attribute holding that id)
+    COMPETITION_SCOPES = (
+        ("round", "roundentrance", "TOURROUNDID"),
+        ("tournament", "tournamententrance", "TOURNAME"),
+    )
+    # source -> (display.* locale key, English fallback)
+    SOURCE_DISPLAY = {
+        "round": ("entrance_source_round", "Round entrance"),
+        "tournament": ("entrance_source_tournament", "Tournament entrance"),
+        "team": ("entrance_source_team", "Home team entrance"),
+    }
 
     def __init__(
         self,
@@ -66,18 +84,42 @@ class TeamEntranceRuntime:
             return default
 
     @classmethod
+    def _normalise_values(cls, folder: str, volume_raw: str, delay_raw: str) -> tuple[str, float, float]:
+        folder = folder.replace("/", "\\").strip("\\")
+        volume = max(0.01, min(1.0, cls._safe_float(volume_raw, cls.DEFAULT_VOLUME)))
+        delay = max(0.0, min(cls.MAX_DELAY_SECONDS, cls._safe_float(delay_raw, cls.DEFAULT_DELAY_SECONDS)))
+        return folder, volume, delay
+
+    @classmethod
     def _parse_values(cls, raw: str) -> tuple[str, float, float] | None:
+        """A team's `[chantsid]` line: folder is field 0, entrance volume and
+        delay are the trailing fields 10 and 11 (absent on the pre-entrance
+        7/10-field formats)."""
         parts = [part.strip() for part in raw.split(",")] if raw else []
         if not parts or not parts[0]:
             return None
-        folder = parts[0].replace("/", "\\").strip("\\")
-        volume = cls._safe_float(parts[10], cls.DEFAULT_VOLUME) if len(parts) > 10 else cls.DEFAULT_VOLUME
-        delay = cls._safe_float(parts[11], cls.DEFAULT_DELAY_SECONDS) if len(parts) > 11 else cls.DEFAULT_DELAY_SECONDS
-        volume = max(0.01, min(1.0, volume))
-        delay = max(0.0, min(cls.MAX_DELAY_SECONDS, delay))
-        return folder, volume, delay
+        return cls._normalise_values(
+            parts[0],
+            parts[10] if len(parts) > 10 else "",
+            parts[11] if len(parts) > 11 else "",
+        )
 
-    def _resolve_config(self, team_id: str) -> TeamEntranceConfig | None:
+    @classmethod
+    def _parse_competition_values(cls, raw: str) -> tuple[str, float, float] | None:
+        """A `[tournamententrance]`/`[roundentrance]` line: `folder[,volume[,delay]]`."""
+        parts = [part.strip() for part in raw.split(",")] if raw else []
+        if not parts or not parts[0]:
+            return None
+        return cls._normalise_values(
+            parts[0],
+            parts[1] if len(parts) > 1 else "",
+            parts[2] if len(parts) > 2 else "",
+        )
+
+    def _track_for(self, folder: str) -> Path:
+        return self.app.exedir / "FSW" / "Chants" / folder / "Entrance.mp3"
+
+    def _resolve_team_config(self, team_id: str) -> TeamEntranceConfig | None:
         app = self.app
         if not team_id or not app.settings_ini.key_exists(team_id, "chantsid"):
             return None
@@ -85,10 +127,41 @@ class TeamEntranceRuntime:
         if parsed is None:
             return None
         folder, volume, delay = parsed
-        track = app.exedir / "FSW" / "Chants" / folder / "Entrance.mp3"
+        track = self._track_for(folder)
         if not track.is_file():
             return None
-        return TeamEntranceConfig(track=track, volume=volume, delay_seconds=delay)
+        return TeamEntranceConfig(track=track, volume=volume, delay_seconds=delay, source="team")
+
+    def _resolve_competition_config(self) -> TeamEntranceConfig | None:
+        """The current round's, else the current tournament's, entrance track.
+
+        Only while the TournamentEntrance module is on. An assignment whose
+        `Entrance.mp3` is missing is logged and skipped, so the next, less
+        specific one (and finally the home team's own) still gets its turn
+        rather than the match going silent.
+        """
+        app = self.app
+        if not app.module_enabled("TournamentEntrance"):
+            return None
+        for source, section, context_attr in self.COMPETITION_SCOPES:
+            key = (getattr(app, context_attr, "") or "").strip()
+            # "0" is the unread/friendly value some callers still pass through.
+            if not key or key == "0" or not app.settings_ini.key_exists(key, section):
+                continue
+            parsed = self._parse_competition_values(app.settings_ini.read(key, section))
+            if parsed is None:
+                continue
+            folder, volume, delay = parsed
+            track = self._track_for(folder)
+            if not track.is_file():
+                app.log(f"Team entrance: {source} {key} is assigned folder {folder!r} but its Entrance.mp3 is missing")
+                continue
+            return TeamEntranceConfig(track=track, volume=volume, delay_seconds=delay, source=source)
+        return None
+
+    def _resolve_config(self, team_id: str) -> TeamEntranceConfig | None:
+        """Round > tournament > home team (see `_resolve_competition_config`)."""
+        return self._resolve_competition_config() or self._resolve_team_config(team_id)
 
     def _match_key(self, home_team_id: str) -> tuple[object, ...]:
         # Deliberately excludes `_entrance_sequence`: that counter bumps on
@@ -125,7 +198,7 @@ class TeamEntranceRuntime:
         config = self._resolve_config(home_team_id)
         if config is None:
             if home_team_id:
-                app.log(f"Team entrance skipped for {home_team_id}: Entrance.mp3 or chantsid mapping missing")
+                app.log(f"Team entrance skipped for {home_team_id}: no round/tournament/team Entrance.mp3 assigned")
             return False
 
         match_key = self._match_key(home_team_id)
@@ -180,10 +253,15 @@ class TeamEntranceRuntime:
             name=f"TeamEntrance-{home_team_id}",
         ).start()
         app.log(
-            f"Team entrance armed: HID={home_team_id} track={config.track.name} "
+            f"Team entrance armed: HID={home_team_id} source={config.source} track={config.track.parent.name}/{config.track.name} "
             f"delay={config.delay_seconds:.1f}s volume={config.volume:.2f}"
         )
         return True
+
+    def _source_label(self, source: str) -> str:
+        key, fallback = self.SOURCE_DISPLAY.get(source, self.SOURCE_DISPLAY["team"])
+        display_value = getattr(self.app, "display_value", None)
+        return display_value(key, fallback) if display_value else fallback
 
     def reset(self, *, clear_match: bool = True) -> None:
         """Cancel pending/playing entrance audio and optionally allow a new match."""
@@ -234,6 +312,7 @@ class TeamEntranceRuntime:
         app = self.app
         deadline = time.time() + max(0.0, seconds)
         kickoff_hits = 0
+        open_play = OpenPlayDetector()
         last_game_time: int | None = None
         last_real_time: float | None = None
         while True:
@@ -243,6 +322,9 @@ class TeamEntranceRuntime:
             if not self._is_current(generation) or not app.module_enabled("TeamEntrance"):
                 return False
             state = self._read_match_state(memory)
+            if self._open_play_confirmed(open_play, memory, state):
+                app.log("Team entrance skipped: match already live before playback started (ball in play)")
+                return False
             if state is not None:
                 game_time = state[1]
                 if last_game_time is not None and last_real_time is not None:
@@ -271,6 +353,21 @@ class TeamEntranceRuntime:
             return started, game_time
         except Exception:
             return None
+
+    def _open_play_confirmed(
+        self, detector: OpenPlayDetector, memory: Memory, state: tuple[int, int] | None
+    ) -> bool:
+        """Second, clock-rate-independent kick-off check next to the
+        `speed >= 6.0` one (see OpenPlayDetector): on a long Half Length the
+        match clock is too slow for that one to ever fire, so the anthem ran
+        to the end of its track over live play and kept holding the crowd
+        loop back. True in the practice arena as well, so it only ever stops
+        or skips the anthem. Must be called on every tick that reads match
+        state."""
+        if state is None or state[0] != 1:
+            detector.reset()
+            return False
+        return detector.update(*read_open_play_inputs(memory, self.app.offsets))
 
     def _wait_for_presentation(self, memory: Memory, generation: int) -> bool:
         """Wait until FIFA's match memory is readable.
@@ -326,7 +423,7 @@ class TeamEntranceRuntime:
             app._set_display_async("audio_clubsong", team_id)
             app._set_display_async("audio_crowd_mode", "Entrance anthem")
             app._set_display_async("audio_crowd_volume", f"{config.volume:.2f}")
-            app._set_display_async("audio_source", "Home team entrance")
+            app._set_display_async("audio_source", self._source_label(config.source))
             app._set_display_async("audio_next", "Fade at kick-off")
             app._set_display_async("audio_last_action", f"Entrance anthem {team_id}")
             app.log(f"Team entrance started: HID={team_id} track={config.track}")
@@ -334,6 +431,7 @@ class TeamEntranceRuntime:
             duration_seconds = duration_ms / 1000 if duration_ms > 0 else self.MAX_PLAY_SECONDS
             hard_deadline = time.time() + min(self.MAX_PLAY_SECONDS, max(5.0, duration_seconds + 2.0))
             kickoff_hits = 0
+            open_play = OpenPlayDetector()
             last_game_time: int | None = None
             last_real_time: float | None = None
             non_paused_count = 0
@@ -373,6 +471,7 @@ class TeamEntranceRuntime:
                 # gone for good, so stop instead of pausing forever.
                 now = time.time()
                 state = self._read_match_state(memory)
+                ball_in_play = self._open_play_confirmed(open_play, memory, state)
                 if state is None:
                     unresolved_state_count += 1
                     if unresolved_state_count >= 3:
@@ -434,6 +533,7 @@ class TeamEntranceRuntime:
                     last_game_time = None
                     last_real_time = None
                     kickoff_hits = 0
+                    open_play.reset()
                     resume_pending_count = 0
                     if non_paused_count >= 3 and not player_paused and player.is_playing():
                         app.chants_runtime.fade_player(player, config.volume, 0, 400)
@@ -465,6 +565,7 @@ class TeamEntranceRuntime:
                     # this. See CLAUDE.md §7 before changing this again.
                     resume_pending_count += 1
                     if resume_pending_count < 3:
+                        open_play.reset()
                         time.sleep(0.2)
                         continue
                     player.resume()
@@ -487,6 +588,14 @@ class TeamEntranceRuntime:
                         app._entrance_pre_match_guard = False
                         app.log(f"Team entrance fade-out: actual kick-off clock detected for HID={team_id}")
                         break
+                if ball_in_play:
+                    # Not a kick-off confirmation on its own: the practice
+                    # arena reads "ball in play" too. The anthem must stop
+                    # either way, but the guard is ChantsRuntime's to release
+                    # (LiveMatchTracker), which it does at the same moment
+                    # when this is a real kick-off.
+                    app.log(f"Team entrance fade-out: ball in play for HID={team_id}")
+                    break
                 last_game_time = game_time
                 last_real_time = now
                 time.sleep(0.2)

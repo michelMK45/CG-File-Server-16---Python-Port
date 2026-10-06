@@ -330,6 +330,7 @@ class ReadRawStateTests(unittest.TestCase):
         runtime._raw_states = {}
         runtime._raw_watch = {}
         runtime._watch_targets = {}
+        runtime._input_seen = {}
         runtime._busy_guids = set()
         return runtime
 
@@ -396,6 +397,7 @@ class IdenticalPadsWatchTests(unittest.TestCase):
         runtime._raw_states = {}
         runtime._raw_watch = {}
         runtime._watch_targets = {}
+        runtime._input_seen = {}
         runtime._busy_guids = set()
         runtime._controllers = {}
         return runtime

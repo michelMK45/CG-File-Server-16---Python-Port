@@ -1382,6 +1382,7 @@ static Rml::Element         *g_stadiumTitle = nullptr;
 static Rml::Element         *g_stadiumName = nullptr;
 static Rml::Element         *g_stadiumDetail = nullptr;
 static Rml::Element         *g_stadiumImg = nullptr;
+static Rml::Element         *g_stadiumImgBox = nullptr;
 static Rml::Element         *g_stadiumFill = nullptr;
 static wchar_t                g_stadiumImgPathLoaded[MAX_IMG] = {};
 
@@ -1936,6 +1937,7 @@ static bool EnsureInit(ID3D11Device *dev, int vpW, int vpH) {
     g_stadiumName = g_stadiumDoc->GetElementById("name");
     g_stadiumDetail = g_stadiumDoc->GetElementById("detail");
     g_stadiumImg = g_stadiumDoc->GetElementById("preview-img");
+    g_stadiumImgBox = g_stadiumDoc->GetElementById("imgbox");
     g_stadiumFill = g_stadiumDoc->GetElementById("progress-fill");
 
     g_kcTitle  = g_kitCarouselDoc->GetElementById("title");
@@ -2109,6 +2111,16 @@ static void SyncStadiumPanel(int vpW, int topPx, bool visible) {
     const wchar_t *imgPath = RmlOverlay_ImagePath();
     if (wcscmp(imgPath, g_stadiumImgPathLoaded) != 0) {
         wcscpy_s(g_stadiumImgPathLoaded, imgPath);
+        // The bundled stadium/kit placeholders (file_tools.asset_placeholder_path
+        // / kit_ui_placeholder_path: "<kind>-placeholder.png") are 256x256
+        // squares — give them a square #imgbox instead of the landscape one
+        // real previews use (see #imgbox.square in stadium_panel.rml).
+        if (g_stadiumImgBox) {
+            static const wchar_t kPlaceholderSuffix[] = L"-placeholder.png";
+            size_t len = wcslen(imgPath), sufLen = _countof(kPlaceholderSuffix) - 1;
+            bool isPlaceholder = len >= sufLen && _wcsicmp(imgPath + len - sufLen, kPlaceholderSuffix) == 0;
+            g_stadiumImgBox->SetClass("square", isPlaceholder);
+        }
         if (g_stadiumImg) {
             if (imgPath[0]) {
                 Rml::String utf8Path = WideToUtf8(imgPath);

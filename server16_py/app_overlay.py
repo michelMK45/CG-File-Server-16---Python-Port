@@ -28,6 +28,7 @@ from .win32_types import (
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
 )
+from .xinput_players import bind_capabilities_ex
 from .file_tools import (
     asset_placeholder_path,
     discover_stadium_names,
@@ -786,11 +787,16 @@ class OverlayMixin:
             self._uninstall_gamepad_poll_thread()
 
     def _load_xinput_dll(self):
+        # Only xinput1_4 can say which pad a player is (Gamepads tab, see
+        # xinput_players.py); stays None on the older DLLs.
+        self._xinput_capabilities_ex = None
         for dll_name in ("xinput1_4", "xinput1_3", "xinput9_1_0"):
             try:
                 dll = ctypes.WinDLL(dll_name, use_last_error=True)
                 dll.XInputGetState.argtypes = [wintypes.DWORD, ctypes.POINTER(XINPUT_STATE)]
                 dll.XInputGetState.restype = wintypes.DWORD
+                if dll_name == "xinput1_4":
+                    self._xinput_capabilities_ex = bind_capabilities_ex(dll)
                 self.log(f"XInput initialized from {dll_name}.dll")
                 return dll
             except Exception:

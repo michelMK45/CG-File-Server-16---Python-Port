@@ -129,7 +129,7 @@ Build a custom kit per team and kit type (home / away / keeper / third) without 
 
 ### New Asset Modules: Ball, Referee, Wipe, Adboard
 
-Four additional per-round/tournament asset assignments, editable from the Settings Editor exactly like Scoreboard/TV Logo/Movies: match **Ball**, **Referee** kits, **Wipe** transition animations, and **Adboard** pitch-side advertising (with per-stadium priority over the round assignment). Each has its own Setup tab toggle. See [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) for folder layout.
+Four additional per-round/tournament asset assignments, editable from the Settings Editor exactly like Scoreboard/TV Logo/Movies: match **Ball**, **Referee** kits, **Wipe** transition animations, and **Adboard** pitch-side advertising. Each has its own Setup tab toggle. See [Ball, Referee, Wipe & Adboard Folders](#ball-referee-wipe--adboard-folders) for folder layout.
 
 ### Assets Extractor
 
@@ -350,12 +350,41 @@ independent audio player so it never fights with the regular chants loop. The se
    configured volume.
 3. Regular `Support` chants are held back during this whole window — a static "match started" flag
    during the walkout must not be mistaken for real play.
-4. Sustained match-clock movement (the actual kickoff) fades the entrance track out and releases
-   normal crowd audio.
+4. The actual kickoff fades the entrance track out and releases normal crowd audio. Kickoff is
+   recognised from FIFA's own play state (the ball is in play after a kick-off was seen) or from
+   fast match-clock movement, whichever comes first.
+
+**Support chants wait for kickoff on every match**, with or without an anthem: they stay silent
+through the bumper, the walkout, a pause menu and the practice arena, and start about a second
+after the ball is in play. This works at any *Half Length* setting. Earlier versions judged
+kickoff only by how fast the match clock runs, which never fired on long halves (about 10 minutes
+and up) and left the Chants tab on "Waiting for kick-off" for the whole match.
 
 If a team has no `Entrance.mp3` or no `[chantsid]` mapping, the feature silently skips that team
 without affecting anything else. Enable/disable it from the Modules card (`TeamEntrance`), and
 tune volume/delay from the same chants settings editor used for the rest of `[chantsid]`.
+
+#### Tournament / round entrance
+
+A competition can have its own entrance anthem that plays **instead of** the home team's. Priority,
+most specific first: **round > tournament > home team**. Two extra sections in `FSW/settings.ini`,
+keyed by the competition ids the dashboard shows (the editor's *Use Current Tournament ID* / *Use
+Current Round ID* buttons fill the key):
+
+```ini
+[tournamententrance]
+78=Cups/Champions,0.18,7.0
+
+[roundentrance]
+103=Cups/Final
+```
+
+The value is `folder[,volume[,delay_seconds]]`, with the same defaults as a team entrance (`0.16`,
+`7.0`s). The track is `FSW/Chants/<folder>/Entrance.mp3`. If the assigned folder has no
+`Entrance.mp3`, that level is logged and skipped and the next one is tried, so a typo never silences
+the match. Edit both from **Edit Chants Settings** (the *Tournament Entrance* and *Round Entrance*
+tabs). It needs both the `TeamEntrance` and `TournamentEntrance` modules on (Modules card, *Sound*
+group); with `TournamentEntrance` off, only the home team's anthem is used.
 
 **MP3 compatibility — check this before adding new packs.** Playback goes through Windows' legacy
 MCI (`mciSendStringW`, opened as `type mpegvideo`), not a modern MP3 decoder, and it is far less
@@ -521,7 +550,7 @@ data/bcdata/camera/bcgameplay_176.dat
 data/bcdata/camera/bcgameplay_261.dat
 ```
 
-No manual action is needed. If the stadium folder does not contain `GameplayCamGBD/`, the files in `data/bcdata/camera/` are left unchanged.
+No manual action is needed. If the stadium folder does not contain `GameplayCamGBD/`, the files in `data/bcdata/camera/` are **not** left unchanged: so a previous stadium's camera never carries over, each slot's file is replaced by the vanilla backup in `FSW/bcdata/camera/`, or **deleted** if there is none. Cameras copied into `data/bcdata/camera/` by hand are therefore removed on the next stadium change.
 
 ### Entrance Camera Packs
 
@@ -620,9 +649,22 @@ FSW/wipe/<folder>/*.rx3           -> data/sceneassets/wipe3d
 FSW/adboards/<folder>/            -> data/sceneassets/adboard (+ corner-flag routing)
 ```
 
-Wipe pack files are installed under their own names, so a file named like one the game already ships (e.g. `specificwipe_0_996_0.rx3`) **replaces** it. The replaced original is backed up to `FSW/.wipe_backup/` the first time and put back automatically on the next apply that no longer wants it — a round with no wipe assigned, a different pack, a missing pack folder, or the Wipe module switched off. Files copied by earlier versions have no backup.
+Pack files are installed with their own names, so a file named like one the game already ships (e.g. `specificwipe_0_996_0.rx3`) **replaces** it. The replaced original is backed up to `FSW/.wipe_backup/`, `FSW/.ball_backup/`, `FSW/.referee_backup/`, `FSW/.adboard_backup/` or `FSW/.cornerflag_backup/` the first time and put back automatically on the next apply that no longer wants it — a round with nothing assigned, a different pack, a missing pack folder, or the module switched off. Only files the pack itself installed are ever restored or deleted (Referee shares `data/sceneassets/kit` with team kits, which are left alone). Files copied by earlier versions have no backup.
 
-Adboard additionally supports a per-stadium override — `FSW/adboards/<stadium name>/` takes priority over the round/tournament assignment whenever it exists. Each module warns in the Setup tab if assets are assigned while its module toggle is switched off.
+**Pack ids are matched to the match.** Packs are addressed by an id inside their file names (`specificball_0_<id>_0.rx3`, `specificwipe_0_<id>_0.rx3`, `specificadboard_0_<id>_0_0.rx3`, `cornerflag_0_<id>_0.rx3`, `kit_600x_5_<id>.rx3`), and the game only loads the files that carry the id of the match it is playing — its league graphics id, read live from memory — **not** the round the pack is assigned to. When a pack carries exactly one id and it differs from the match's, that id is renamed on install, so assigning a pack to a round simply works (log: `Ball runtime: pack id 967 -> 208 (match league 208), 2 file(s) renamed on install`). The id is worked out the way the game's own Lua does it: the `swapTournamentID` pairs and, for referee kits, the `copyTournamentRefereeKitAssets` table of your install's `data/fifarna/lua/assignments/*.lua` are applied. Packs that carry several ids and files with id `0` are installed untouched, and with no league id (no competition) everything installs as before.
+
+**How to prepare a pack.** Put the `.rx3` files straight into `FSW/<module>/<pack name>/` using the game's own file names; the `<id>` is the part the game matches:
+
+| Module | File names (`<id>` = league graphics id) | Notes |
+|---|---|---|
+| Ball | `specificball_0_<id>_0.rx3` + `specificball_0_<id>_0_textures.rx3` | `_4` instead of the last `_0` is the final-match ball; a leading team id (`specificball_<team>_<id>_0`) limits it to that home team |
+| Referee | `kit_6004_5_<id>.rx3` … `kit_6009_5_<id>.rx3` | one file per referee kit number the game may pick (include all you want to see; a missing number falls back to `6004`); `_105_` instead of `_5_` is the female-referee kit; `specifickit_600x_5_<id>_<home>_<away>.rx3` is a per-fixture kit |
+| Wipe | `specificwipe_0_<id>_0.rx3` (+ `_textures.rx3`) | |
+| Adboard | `specificadboard_0_<id>_0_0.rx3` (older packs: `specificadboard_0_0_0_<id>.rx3`) | files must sit **directly** in the pack folder, not in sub-folders; `cornerflag_0_<id>_0.rx3` files in the same folder are also installed into `data/sceneassets/flag` |
+
+The simplest pack uses **one id** for all its files — it can be any number — and then works for whichever round you assign it to. A pack that deliberately carries files for **several** competitions (one set per id) is left as it is, so its ids must be the real ones the game asks for. In Ball, Referee and Wipe packs `.png` previews, `desktop.ini` and `Thumbs.db` are never installed; an Adboard pack installs only its `.rx3` files and the files with `cornerflag` in their name.
+
+All four modules are assigned per competition only (no per-stadium folders). Each module warns in the Setup tab if assets are assigned while its module toggle is switched off.
 
 ### Settings Export & Import
 

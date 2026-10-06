@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
+from collections.abc import Sequence
 from ctypes import wintypes
 from pathlib import Path
 
@@ -285,8 +286,27 @@ class Memory:
         validation_size: int = 256,
         require_printable_existing: bool = True,
         max_extra_capacity: int = 512,
+        proven_room_only: bool = False,
+        require_existing_text: Sequence[str] | None = None,
     ) -> tuple[str, int]:
         """Validate, bound, write and verify a NUL-terminated UTF-8 string.
+
+        ``require_existing_text`` (added 2026-10-04, Part 25): when given and
+        non-empty, the write is refused unless the string currently at
+        ``address`` contains one of these names (case-insensitive). The error
+        names what was actually there. This is what makes a pointer-chain write
+        self-validating on a build whose chain no longer lands on the name it
+        was calibrated for.
+
+        ``proven_room_only=True`` (added 2026-10-04, bugs-scoreboardstdname.md
+        Part 24) drops the ``max_bytes`` floor described next: the write is then
+        limited to the old string's own footprint plus the zero bytes measured
+        right after it, i.e. only memory this call has actually *proven* to
+        belong to that string or to be unused. A truncated name is the price.
+        The floor lets up to ``max_bytes`` + NUL be written even where the old
+        string was shorter and non-zero data follows it -- harmless on the build
+        the constant was tuned on, but an overrun of a neighbouring entry on a
+        build whose pointer chain lands in a packed string table.
 
         Returns ``(written_text, address)``. ``max_bytes`` is a FLOOR, not a
         hard ceiling: after confirming the existing string's own NUL
@@ -336,6 +356,14 @@ class Memory:
                 f"no NUL terminator within {read_size} bytes"
             )
         existing_text = existing[:null_index]
+        if require_existing_text:
+            shown = existing_text.decode("utf-8", errors="replace")
+            lowered = shown.casefold()
+            if not any(name and name.casefold() in lowered for name in require_existing_text):
+                raise MemoryAccessError(
+                    f"Safe string write rejected at 0x{address:X}: it holds {shown[:60]!r}, "
+                    f"not one of the expected names {[n for n in require_existing_text if n]!r}"
+                )
         if require_printable_existing and existing_text and not all(
             0x20 <= byte < 0x7F or byte in (0x09, 0x0A, 0x0D)
             for byte in existing_text
@@ -356,7 +384,15 @@ class Memory:
                 if byte != 0:
                     break
                 zero_run += 1
-        effective_max_bytes = max(max_bytes, null_index + zero_run)
+        if proven_room_only:
+            effective_max_bytes = null_index + zero_run
+            if effective_max_bytes <= 0:
+                raise MemoryAccessError(
+                    f"Safe string write rejected at 0x{address:X}: "
+                    "no proven room (empty string, no zero padding after it)"
+                )
+        else:
+            effective_max_bytes = max(max_bytes, null_index + zero_run)
 
         encoded = self._truncate_utf8(value, effective_max_bytes)
         payload = encoded + b"\x00"
@@ -385,6 +421,8 @@ class Memory:
         validation_size: int = 256,
         require_printable_existing: bool = True,
         max_extra_capacity: int = 512,
+        proven_room_only: bool = False,
+        require_existing_text: Sequence[str] | None = None,
     ) -> tuple[str, int]:
         address = self.resolve_pointer(static_ptr, offsets)
         return self.write_string_safe(
@@ -394,4 +432,6 @@ class Memory:
             validation_size=validation_size,
             require_printable_existing=require_printable_existing,
             max_extra_capacity=max_extra_capacity,
+            proven_room_only=proven_room_only,
+            require_existing_text=require_existing_text,
         )

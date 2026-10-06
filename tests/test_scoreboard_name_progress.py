@@ -19,9 +19,13 @@ from server16_py.app_game import GameMixin
 class FakeCoordinator:
     def __init__(self) -> None:
         self.confirmed_name: str | None = None
+        self.budget_exhausted = False
 
     def get_current_name(self, injid: str) -> str | None:
         return self.confirmed_name
+
+    def scan_budget_exhausted(self, injid: str) -> bool:
+        return self.budget_exhausted
 
 
 class FakeStadiumRuntime:
@@ -311,6 +315,92 @@ class KickoffStopsLoadingBarTests(unittest.TestCase):
             )
         self.assertEqual(game.update_calls[-1], (100, "Scoreboard name applied: Anfield"))
         self.assertFalse(any("kick-off detected" in log for log in game.logs))
+
+
+class MenuPageStopsRetryChainTests(unittest.TestCase):
+    """bugs-scoreboardstdname.md Part 23: a retry chain that outlived the
+    pre-match screen kept re-requesting (and so scanning/patching) while the
+    player sat in FluxHub / SelectTeam for the next Kick-Off."""
+
+    def tick(self, game: FakeGame) -> None:
+        with patch("server16_py.app_game.time.monotonic", return_value=1010.0):
+            game._db_name_patch_retry_tick(
+                "176", "Anfield", baseline_name=None, generation=1, started_at=1000.0, deadline=1060.0
+            )
+
+    def test_stops_without_requesting_once_back_in_a_post_match_menu(self) -> None:
+        for page in (
+            "game/screens/fluxHub/FluxHub",
+            "game/screens/playNow/SelectTeam",
+            "game/screens/skillGames/SkillGameResults",
+        ):
+            game = FakeGame()
+            game.lastpagename = page
+            self.tick(game)
+            self.assertEqual(game.stadium_runtime.request_calls, [], page)
+            self.assertEqual(game.after_calls, [], page)
+            self.assertEqual(game.update_calls[-1], (100, "Scoreboard name not confirmed"), page)
+            self.assertTrue(any("back in the menus" in log for log in game.logs), page)
+
+    def test_keeps_going_on_the_pre_match_pages(self) -> None:
+        for page in ("", "game/screens/TV/bumper", "game/screens/playNow/KickOffHub"):
+            game = FakeGame()
+            game.lastpagename = page
+            self.tick(game)
+            self.assertEqual(game.stadium_runtime.request_calls, [("176", "Anfield")], page)
+            self.assertEqual(len(game.after_calls), 1, page)
+
+    def test_a_confirmed_success_still_wins_on_a_menu_page(self) -> None:
+        game = FakeGame()
+        game.lastpagename = "game/screens/fluxHub/FluxHub"
+        game.stadium_db_name_patcher.confirmed_name = "Anfield"
+        self.tick(game)
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name applied: Anfield"))
+        self.assertFalse(any("back in the menus" in log for log in game.logs))
+
+
+class ScanBudgetEndsRetryChainTests(unittest.TestCase):
+    """Part 25: once the coordinator has used all its scan attempts for the slot
+    without finding a copy, the bar stops instead of waiting out the 60s window."""
+
+    def tick(self, game: FakeGame) -> None:
+        with patch("server16_py.app_game.time.monotonic", return_value=1010.0):
+            game._db_name_patch_retry_tick(
+                "176", "Anfield", baseline_name=None, generation=1, started_at=1000.0, deadline=1060.0
+            )
+
+    def test_stops_and_reports_not_confirmed_without_another_request(self) -> None:
+        game = FakeGame()
+        game.stadium_db_name_patcher.budget_exhausted = True
+        self.tick(game)
+        self.assertEqual(game.stadium_runtime.request_calls, [])
+        self.assertEqual(game.after_calls, [])
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name not confirmed"))
+        self.assertTrue(any("scan attempts" in log and "slot 176" in log for log in game.logs))
+
+    def test_keeps_going_while_attempts_remain(self) -> None:
+        game = FakeGame()
+        self.tick(game)
+        self.assertEqual(game.stadium_runtime.request_calls, [("176", "Anfield")])
+        self.assertEqual(len(game.after_calls), 1)
+
+    def test_a_confirmed_success_still_wins(self) -> None:
+        game = FakeGame()
+        game.stadium_db_name_patcher.budget_exhausted = True
+        game.stadium_db_name_patcher.confirmed_name = "Anfield"
+        self.tick(game)
+        self.assertEqual(game.update_calls[-1], (100, "Scoreboard name applied: Anfield"))
+        self.assertFalse(any("scan attempts" in log for log in game.logs))
+
+    def test_a_coordinator_without_the_method_is_unaffected(self) -> None:
+        class OlderCoordinator:
+            def get_current_name(self, injid: str) -> str | None:
+                return None
+
+        game = FakeGame()
+        game.stadium_db_name_patcher = OlderCoordinator()
+        self.tick(game)
+        self.assertEqual(game.stadium_runtime.request_calls, [("176", "Anfield")])
 
 
 class HideForStadiumSceneTests(unittest.TestCase):

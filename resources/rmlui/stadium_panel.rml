@@ -38,12 +38,14 @@ body {
     width: 110px;
     height: 88px;
     background-color: #0C1420;
-    border-radius: 8px;
+    border-radius: 20px;
     overflow: hidden;
     text-align: center;
     vertical-align: middle;
 }
 #imgbox img { max-width: 110px; max-height: 88px; }
+#imgbox.square { top: 13px; height: 110px; }
+#imgbox.square img { max-height: 110px; }
 #textcol { display: block; position: absolute; left: 136px; top: 14px; width: 312px; }
 #title { display: block; font-size: 17px; color: #4FACFE; margin-bottom: 8px; }
 #name { display: block; font-size: 16px; font-weight: bold; color: #FFFFFF; margin-bottom: 6px; }

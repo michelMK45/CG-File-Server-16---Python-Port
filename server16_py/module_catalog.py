@@ -7,7 +7,7 @@ from __future__ import annotations
 MODULE_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("stadium", ("Stadium", "EntranceCam", "Goalposts", "StadiumNet")),
     ("ui", ("TvLogo", "ScoreBoard", "StadiumName", "Movies")),
-    ("sound", ("Chants", "AwayChants", "AwayClubSong", "TeamEntrance")),
+    ("sound", ("Chants", "AwayChants", "AwayClubSong", "TeamEntrance", "TournamentEntrance")),
     ("game", ("Ball", "Adboard", "Referee", "Wipe")),
     ("other", ("Autorun", "DiscordRPC")),
 )
@@ -27,6 +27,7 @@ MODULE_SLUGS: dict[str, str] = {
     "AwayChants": "away_chants",
     "AwayClubSong": "away_club_song",
     "TeamEntrance": "team_entrance",
+    "TournamentEntrance": "tournament_entrance",
     "Ball": "ball",
     "Adboard": "adboard",
     "Referee": "referee",

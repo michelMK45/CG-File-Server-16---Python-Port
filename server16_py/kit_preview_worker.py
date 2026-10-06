@@ -6,20 +6,24 @@ RX3 parsing. Also reused (role="rx3_texture") by StadiumRuntime.
 render_goalpost_texture_preview to preview an arbitrary single-purpose .rx3
 (e.g. a goalpost net/post color pack) that has no kit-specific jersey/shorts/
 crest roles to classify — just its first embedded bitmap, as-is.
+role="rx3_all_textures" (AssetRuntime.render_rx3_textures, the Match Assets
+preview of a ball/referee/wipe/adboard pack) instead writes EVERY embedded
+bitmap, one PNG each, because those packs ship several textures per .rx3.
 Must be run with a 32-bit Python interpreter — the DLL is x86-only.
 
 Usage: python kit_preview_worker.py <dll_path> <config_json_path>
 
 config_json_path points to a JSON file:
 {
-  "source": "<path to a kit .rx3, a specifickitnumbers_*.rx3, a j0_*.dds, or any other single-texture .rx3>",
-  "role": "jersey" | "shorts" | "crest" | "jersey_numbers" | "shorts_numbers" | "kitui" | "rx3_texture",
-  "output": "<destination .png path>",
+  "source": "<path to a kit .rx3, a specifickitnumbers_*.rx3, a j0_*.dds, or any other .rx3>",
+  "role": "jersey" | "shorts" | "crest" | "jersey_numbers" | "shorts_numbers" | "kitui" | "rx3_texture" | "rx3_all_textures",
+  "output": "<destination .png path>",            (every role except rx3_all_textures)
+  "output_dir": "<destination folder>",           (rx3_all_textures only; written as 0.png, 1.png, ...)
   "max_size": 256
 }
 
 Stdout: single JSON object
-  {"ok": true, "output": "..."}
+  {"ok": true, "output": "..."}                   (rx3_all_textures: {"ok": true, "outputs": ["...0.png", ...]})
   or {"ok": false, "error": "message"} on failure
 """
 
@@ -76,8 +80,16 @@ def main() -> None:
 
     source_path = Path(config["source"])
     role = config["role"]
-    output_path = Path(config["output"])
+    # rx3_all_textures writes into output_dir instead of a single output file.
+    output_path = Path(config["output"]) if "output" in config else None
     max_size = int(config.get("max_size", 256))
+    if role == "rx3_all_textures":
+        if "output_dir" not in config:
+            print(json.dumps({"ok": False, "error": "rx3_all_textures needs an output_dir"}))
+            sys.exit(1)
+    elif output_path is None:
+        print(json.dumps({"ok": False, "error": f"Role {role!r} needs an output path"}))
+        sys.exit(1)
 
     if not source_path.exists():
         print(json.dumps({"ok": False, "error": f"Source not found: {source_path}"}))
@@ -126,6 +138,26 @@ def main() -> None:
             print(json.dumps({"ok": False, "error": "Source has no textures"}))
             sys.exit(1)
 
+        if role == "rx3_all_textures":
+            # Every embedded bitmap, in file order: the caller steps through
+            # them (a wipe pack carries about eight). Names are the bitmap's
+            # index so the order survives; a bitmap that fails to save is
+            # skipped rather than failing the whole file.
+            output_dir = Path(config["output_dir"])
+            output_dir.mkdir(parents=True, exist_ok=True)
+            outputs = []
+            for index, bitmap in enumerate(bitmaps):
+                target = output_dir / f"{index}.png"
+                try:
+                    _thumbnail(bitmap, max_size).Save(str(target), ImageFormat.Png)
+                except Exception:
+                    continue
+                outputs.append(str(target))
+            if not outputs:
+                print(json.dumps({"ok": False, "error": "No texture could be rendered"}))
+                sys.exit(1)
+            print(json.dumps({"ok": True, "outputs": outputs}))
+            return
         if role == "rx3_texture":
             # No kit-specific role to classify -- just the first embedded
             # bitmap, as-is (see the module docstring).

@@ -144,6 +144,19 @@ RAW_WATCH_TIMEOUT_SECONDS = 2.0
 # to start the thread itself (the Gamepads tab is built before app.py calls
 # start()).
 FIRST_SCAN_TIMEOUT_SECONDS = 2.0
+# How long the Gamepads tab's activity light stays lit after the last input
+# the SDL thread saw. The tab only looks ~20 times a second; the SDL thread
+# samples at ~125Hz and latches, so a quick tap between two looks still shows.
+INPUT_ACTIVITY_HOLD_SECONDS = 0.15
+# What counts as "being used" for that light -- well past normal stick drift
+# and a trigger resting slightly off zero, so an idle pad stays dark.
+ACTIVITY_STICK_DEADZONE = 0.35
+ACTIVITY_TRIGGER_THRESHOLD = 0.2
+XINPUT_USER_COUNT = 4
+_XINPUT_THUMB_MAX = 32767.0
+_XINPUT_TRIGGER_MAX = 255.0
+_VIGEM_CLIENT_MODULE = "vgamepad.win.vigem_client"
+_VIGEM_ERROR_NONE = 0x20000000
 
 # ViGEm's virtual Xbox 360 pad reports the real wired Xbox 360 controller's
 # identity (confirmed live: VID 045E, PID 028E, named "Xbox 360 Controller").
@@ -310,6 +323,68 @@ def apply_mapped_state(pad, state: dict) -> None:
     pad.right_trigger_float(value_float=state["right_trigger"])
 
 
+def state_has_input(state: dict) -> bool:
+    """True when a read_raw_state()-shaped snapshot shows the pad being used
+    (any button or D-pad direction held, a stick pushed, a trigger pulled) --
+    what lights a slot's activity indicator in the Gamepads tab.
+
+    Uses the translated Xbox state when SDL recognizes the pad. Otherwise only
+    raw axes 0-3 count (the two sticks, _apply_sticks' own assumption): on
+    many pads the axes past those are analog triggers that REST at -1.0, which
+    would keep the light on with nothing touched."""
+    mapped = state.get("mapped")
+    if mapped is not None:
+        if any(mapped["buttons"].values()):
+            return True
+        if any(abs(v) > ACTIVITY_STICK_DEADZONE for v in (*mapped["left_stick"], *mapped["right_stick"])):
+            return True
+        return max(mapped["left_trigger"], mapped["right_trigger"]) > ACTIVITY_TRIGGER_THRESHOLD
+    if any(state.get("buttons", ())):
+        return True
+    if any(x or y for x, y in state.get("hats", ())):
+        return True
+    return any(abs(v) > ACTIVITY_STICK_DEADZONE for v in list(state.get("axes", ()))[:4])
+
+
+def xinput_gamepad_has_input(gamepad) -> bool:
+    """Same test as state_has_input(), for an XINPUT_GAMEPAD (win32_types) --
+    the Xbox pads listed in the Gamepads tab, which never go through SDL."""
+    if gamepad.wButtons:
+        return True
+    sticks = (gamepad.sThumbLX, gamepad.sThumbLY, gamepad.sThumbRX, gamepad.sThumbRY)
+    if any(abs(v) / _XINPUT_THUMB_MAX > ACTIVITY_STICK_DEADZONE for v in sticks):
+        return True
+    return max(gamepad.bLeftTrigger, gamepad.bRightTrigger) / _XINPUT_TRIGGER_MAX > ACTIVITY_TRIGGER_THRESHOLD
+
+
+def _virtual_pad_driver_index(pad) -> int | None:
+    """The index (0-3) ViGEmBus reports for one of this app's virtual pads,
+    or None while it hasn't got one yet.
+
+    NOT the XInput player, despite ViGEm calling it the "user index": it is
+    the LED number the Xbox 360 driver gave the pad, counted among Xbox
+    360-class devices only -- an Xbox One/Series pad isn't one, so with one
+    connected this says 0 for a pad XInput has as player 2 (reported live
+    2026-10-05). Only good for ranking this app's own virtual pads against
+    each other; xinput_players.py is what finds the real player.
+
+    vgamepad binds ViGEmClient's vigem_target_x360_get_user_index but never
+    wraps it on VX360Gamepad, so this calls the binding with the pad's own
+    bus/target handles. Anything unexpected just means "unknown"."""
+    client = sys.modules.get(_VIGEM_CLIENT_MODULE)
+    get_user_index = getattr(client, "vigem_target_x360_get_user_index", None)
+    if get_user_index is None:
+        return None
+    index = ctypes.c_ulong(XINPUT_USER_COUNT)
+    try:
+        error = int(get_user_index(pad._busp, pad._devicep, ctypes.byref(index)))
+    except Exception:
+        return None
+    if error != _VIGEM_ERROR_NONE or index.value >= XINPUT_USER_COUNT:
+        return None
+    return int(index.value)
+
+
 @dataclass
 class DeviceInfo:
     """One physical pad as of the SDL thread's last scan. `index` is only
@@ -348,6 +423,10 @@ class SlotState:
     busy_logged: bool = False
     was_connected: bool = False
     bound_guid: str = ""
+    # ViGEmBus's own index for this slot's virtual pad -- see
+    # _virtual_pad_driver_index for why it is not the XInput player (written
+    # by the SDL thread under the runtime lock, _refresh_virtual_driver_indices).
+    driver_index: int | None = None
 
 
 def _guid_signature(guid: str) -> int:
@@ -486,6 +565,12 @@ class GamepadBridgeRuntime:
         # the last _sync_devices() pass, so _publish_raw_states() samples
         # exactly the device that pass opened.
         self._watch_targets: dict[WatchKey, int] = {}
+        # Monotonic time the SDL thread last saw any input on a watched
+        # device (see state_has_input / slot_input_active).
+        self._input_seen: dict[WatchKey, float] = {}
+        # Buttons last sent to each slot's virtual pad, None for a slot
+        # without one (see virtual_pads).
+        self._virtual_sent: list[int | None] = [None] * SLOT_COUNT
         self._busy_guids: set[str] = set()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -786,6 +871,39 @@ class GamepadBridgeRuntime:
             self._raw_watch[key] = time.monotonic()
             state = self._raw_states.get(key)
         return dict(state) if state is not None else None
+
+    def slot_input_active(self, index: int) -> bool:
+        """Whether the pad picked for this slot had any input pressed within
+        the last INPUT_ACTIVITY_HOLD_SECONDS -- the slot's activity light.
+        Works for a slot whose bridge is off too, so the light can tell which
+        physical pad a slot means BEFORE enabling it: like read_raw_state(),
+        each call asks the SDL thread to keep that pad open and sampled for
+        RAW_WATCH_TIMEOUT_SECONDS, so the caller must only poll while the
+        light is actually on screen."""
+        if not (0 <= index < SLOT_COUNT):
+            return False
+        with self._lock:
+            guid = self._slots[index].device_guid
+        if not guid or not self._ensure_thread():
+            return False
+        key: WatchKey = (guid, index)
+        now = time.monotonic()
+        with self._lock:
+            self._raw_watch[key] = now
+            seen = self._input_seen.get(key)
+        return seen is not None and now - seen < INPUT_ACTIVITY_HOLD_SECONDS
+
+    def virtual_pads(self) -> dict[int, tuple[int | None, int]]:
+        """{slot index: (driver index, buttons last sent)} for every slot
+        that has a virtual pad right now -- what xinput_players.py needs to
+        find which XInput player each one is. The buttons are the XUSB
+        wButtons word, the same bits XInputGetState reports."""
+        with self._lock:
+            return {
+                index: (slot.driver_index, sent)
+                for index, (slot, sent) in enumerate(zip(self._slots, self._virtual_sent))
+                if sent is not None
+            }
 
     def is_device_busy(self, device_guid: str) -> bool:
         """True while the device is present but opening it keeps failing --
@@ -1112,8 +1230,10 @@ class GamepadBridgeRuntime:
                         next_rescan = now + RESCAN_INTERVAL_SECONDS
                         first_scan_done.set()
                         self._drop_departed_devices(present, opened)
+                        self._refresh_virtual_driver_indices()
                     self._sync_devices(present, opened, now)
                     self._drive_slots(opened)
+                    self._publish_virtual_pads()
                     self._publish_raw_states(opened, now)
                 except Exception as exc:
                     # One bad tick (e.g. a device vanishing mid-read) must
@@ -1464,6 +1584,7 @@ class GamepadBridgeRuntime:
             if joystick is None:
                 with self._lock:
                     self._raw_states.pop(key, None)
+                    self._input_seen.pop(key, None)
                 continue
             try:
                 state = {
@@ -1477,10 +1598,33 @@ class GamepadBridgeRuntime:
                     # test dialog shows it instead of re-deriving it from
                     # the raw indices.
                     state["mapped"] = read_controller_state(controller)
+                used = state_has_input(state)
             except Exception:
                 continue
             with self._lock:
                 self._raw_states[key] = state
+                if used:
+                    self._input_seen[key] = now
+
+    def _refresh_virtual_driver_indices(self) -> None:
+        """Re-reads each virtual pad's driver index, on the device rescan
+        cadence rather than once at creation: the driver only assigns it a
+        moment after the pad is plugged in."""
+        for slot in self._slots:
+            index = _virtual_pad_driver_index(slot.pad) if slot.pad is not None else None
+            with self._lock:
+                slot.driver_index = index
+
+    def _publish_virtual_pads(self) -> None:
+        """Publishes what each virtual pad is showing after this tick's
+        _drive_slots() (all zeros for one kept alive while its physical pad
+        is unplugged, see _neutralize_pad)."""
+        sent = [
+            None if slot.pad is None else int(getattr(getattr(slot.pad, "report", None), "wButtons", 0))
+            for slot in self._slots
+        ]
+        with self._lock:
+            self._virtual_sent = sent
 
     @staticmethod
     def _neutralize_pad(slot: SlotState) -> None:
@@ -1506,6 +1650,7 @@ class GamepadBridgeRuntime:
         slot.busy_logged = False
         with self._lock:
             slot.status = "disconnected"
+            slot.driver_index = None
         self.app.log(f"Gamepad slot {index + 1}: bridge stopped")
 
     def _shutdown_sdl_thread(self, opened: dict[int, object]) -> None:
@@ -1524,6 +1669,8 @@ class GamepadBridgeRuntime:
         with self._lock:
             self._devices = []
             self._raw_states = {}
+            self._input_seen = {}
+            self._virtual_sent = [None] * SLOT_COUNT
             self._watch_targets = {}
             self._busy_guids = set()
 

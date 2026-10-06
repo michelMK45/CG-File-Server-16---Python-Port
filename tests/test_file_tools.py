@@ -13,6 +13,9 @@ from server16_py.file_tools import (
     copy_first_or_clear,
     copy_goalpost_sources,
     install_tracked_files,
+    install_tracked_selection,
+    list_pack_files,
+    match_asset_rx3_files,
     resolve_goalpost_model_preview_path,
     resolve_goalpost_texture_rx3_path,
     restore_tracked_files,
@@ -156,6 +159,59 @@ class TrackedInstallTests(unittest.TestCase):
         self.write(self.dst / "w.rx3", b"vanilla")
         self.assertEqual(restore_tracked_files(self.dst, self.backup), (0, []))
         self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
+
+    def test_rename_installs_under_the_new_name_and_backs_up_that_file(self) -> None:
+        # The pack says _993_, the game asks for _208_: the file that gets overwritten is the
+        # _208_ one, and restoring must bring that one back (and drop nothing else).
+        self.write(self.dst / "specificwipe_0_208_0.rx3", b"vanilla 208")
+        self.write(self.dst / "specificwipe_0_993_0.rx3", b"vanilla 993")
+        self.write(self.pack_a / "specificwipe_0_993_0.rx3", b"custom")
+        installed = install_tracked_files(
+            self.pack_a, self.dst, self.backup, rename={"specificwipe_0_993_0.rx3": "specificwipe_0_208_0.rx3"}
+        )
+        self.assertEqual(installed, ["specificwipe_0_208_0.rx3"])
+        self.assertEqual((self.dst / "specificwipe_0_208_0.rx3").read_bytes(), b"custom")
+        self.assertEqual((self.dst / "specificwipe_0_993_0.rx3").read_bytes(), b"vanilla 993")
+        restore_tracked_files(self.dst, self.backup)
+        self.assertEqual((self.dst / "specificwipe_0_208_0.rx3").read_bytes(), b"vanilla 208")
+        self.assertEqual((self.dst / "specificwipe_0_993_0.rx3").read_bytes(), b"vanilla 993")
+
+    def test_changing_the_rename_between_installs_puts_the_old_target_back(self) -> None:
+        self.write(self.dst / "w_208.rx3", b"vanilla 208")
+        self.write(self.dst / "w_53.rx3", b"vanilla 53")
+        self.write(self.pack_a / "w_967.rx3", b"custom")
+        install_tracked_files(self.pack_a, self.dst, self.backup, rename={"w_967.rx3": "w_208.rx3"})
+        install_tracked_files(self.pack_a, self.dst, self.backup, rename={"w_967.rx3": "w_53.rx3"})
+        self.assertEqual((self.dst / "w_208.rx3").read_bytes(), b"vanilla 208")
+        self.assertEqual((self.dst / "w_53.rx3").read_bytes(), b"custom")
+
+    def test_rename_only_changes_the_base_name_of_nested_files(self) -> None:
+        self.write(self.pack_a / "sub" / "a_1.rx3", b"custom")
+        self.assertEqual(
+            install_tracked_files(self.pack_a, self.dst, self.backup, rename={"sub/a_1.rx3": "sub/a_2.rx3"}),
+            ["sub/a_2.rx3"],
+        )
+        self.assertTrue((self.dst / "sub" / "a_2.rx3").is_file())
+
+    def test_list_pack_files_applies_the_install_filters(self) -> None:
+        self.write(self.pack_a / "b.rx3", b"1")
+        self.write(self.pack_a / "a.rx3", b"1")
+        self.write(self.pack_a / "thumb.png", b"1")
+        self.write(self.pack_a / "Thumbs.db", b"1")
+        self.assertEqual(list_pack_files(self.pack_a), ["a.rx3", "b.rx3"])
+
+    def test_selection_installs_files_from_several_places_and_empty_restores_all(self) -> None:
+        self.write(self.dst / "n.rx3", b"vanilla")
+        self.write(self.pack_a / "x.rx3", b"custom x")
+        self.write(self.pack_b / "y.rx3", b"custom y")
+        install_tracked_selection(
+            {"n.rx3": self.pack_a / "x.rx3", "y.rx3": self.pack_b / "y.rx3"}, self.dst, self.backup
+        )
+        self.assertEqual((self.dst / "n.rx3").read_bytes(), b"custom x")
+        self.assertEqual((self.dst / "y.rx3").read_bytes(), b"custom y")
+        install_tracked_selection({}, self.dst, self.backup)
+        self.assertEqual((self.dst / "n.rx3").read_bytes(), b"vanilla")
+        self.assertFalse((self.dst / "y.rx3").exists())
 
 
 class CopyFirstOrClearTests(unittest.TestCase):
@@ -417,6 +473,44 @@ class ResolveGoalpostTextureRx3PathTests(unittest.TestCase):
         pack.mkdir()
         (pack / "goalpost_cm.png").write_bytes(b"img")
         self.assertIsNone(resolve_goalpost_texture_rx3_path(self.color_root, "Empty"))
+
+
+class MatchAssetRx3FilesTests(unittest.TestCase):
+    """The .rx3 files the Match Assets preview shows for a ball/referee/wipe/
+    adboard pack -- the same set install_tracked_files would copy into the game."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.pack = Path(self._tmp.name) / "Pack"
+        self.pack.mkdir()
+
+    def touch(self, rel: str) -> Path:
+        path = self.pack / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x")
+        return path
+
+    def test_lists_every_rx3_sorted_and_ignores_other_files(self) -> None:
+        b = self.touch("specificwipe_0_996_1.rx3")
+        a = self.touch("specificwipe_0_996_0.rx3")
+        self.touch("preview.png")
+        self.touch("notes.txt")
+        self.assertEqual(match_asset_rx3_files(self.pack), [a, b])
+
+    def test_finds_rx3_in_subfolders_and_whatever_the_extension_case(self) -> None:
+        # install_tracked_files walks the pack with rglob, so a nested file is installed too.
+        top = self.touch("a.rx3")
+        nested = self.touch("sub/b.RX3")
+        self.assertEqual(match_asset_rx3_files(self.pack), [top, nested])
+
+    def test_a_directory_named_like_an_rx3_is_not_a_file(self) -> None:
+        (self.pack / "folder.rx3").mkdir()
+        self.assertEqual(match_asset_rx3_files(self.pack), [])
+
+    def test_missing_folder_or_a_file_instead_of_a_folder_gives_nothing(self) -> None:
+        self.assertEqual(match_asset_rx3_files(self.pack / "absent"), [])
+        self.assertEqual(match_asset_rx3_files(self.touch("plain.rx3")), [])
 
 
 class ClearGeneratedCacheTests(unittest.TestCase):
