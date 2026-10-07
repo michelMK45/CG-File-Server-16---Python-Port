@@ -723,6 +723,32 @@ class LiveContextKeyButtonTests(unittest.TestCase):
                 frame._use_current_tournament_key()
                 self.assertEqual(frame.key_var.get(), "78")
 
+    def test_competition_keyed_sections_get_the_competition_picker_button(self) -> None:
+        for section in self.COMPETITION_KEYED:
+            with self.subTest(section=section):
+                self.assertIn("button.pick_competition", self.button_texts(self.make_frame(section)))
+        for section in ("HomeTeamScoreBoard", "TeamMovies", "DerbyMatch", "stadiumnetid"):
+            with self.subTest(section=section):
+                self.assertNotIn("button.pick_competition", self.button_texts(self.make_frame(section)))
+
+    def test_competition_picker_is_limited_to_what_the_section_accepts(self) -> None:
+        for section, (round_ok, tournament_ok) in {"Scoreboard": (True, True), "ball": (True, False)}.items():
+            with self.subTest(section=section):
+                frame = self.make_frame(section)
+                with mock.patch("server16_py.settings_editor.CompetitionPickerDialog") as picker:
+                    picker.return_value.result = "103"
+                    frame._pick_competition_key()
+                self.assertEqual(picker.call_args.kwargs, {"allow_round": round_ok, "allow_tournament": tournament_ok})
+                self.assertEqual(frame.key_var.get(), "103")
+
+    def test_cancelling_the_competition_picker_keeps_the_key(self) -> None:
+        frame = self.make_frame("Scoreboard")
+        frame.key_var.set("old")
+        with mock.patch("server16_py.settings_editor.CompetitionPickerDialog") as picker:
+            picker.return_value.result = None
+            frame._pick_competition_key()
+        self.assertEqual(frame.key_var.get(), "old")
+
     def test_team_keyed_sections_keep_their_team_buttons_only(self) -> None:
         for section in ("HomeTeamScoreBoard", "TeamMovies", "stadium"):
             with self.subTest(section=section):

@@ -21,6 +21,7 @@ from .asset_grid_items import (
 )
 from .asset_grid_picker_dialog import AssetGridPickerDialog
 from .chants_runtime import MciAudioPlayer, numbered_tracks
+from .competition_picker_dialog import CompetitionPickerDialog
 from .file_tools import (
     discover_stadium_names,
     resolve_goalpost_model_preview_path,
@@ -421,6 +422,8 @@ class SettingsSectionFrame(tk.Frame):
             buttons.append(("button.use_current_round_id", self._use_current_round_key))
         if spec.key_is_tournament_id:
             buttons.append(("button.use_current_tournament_id", self._use_current_tournament_key))
+        if spec.key_is_round_id or spec.key_is_tournament_id:
+            buttons.append(("button.pick_competition", self._pick_competition_key))
         if spec.key_is_derby:
             buttons.append(("button.use_current_derby", self._use_current_derby_key))
         if spec.key_is_stadium_id:
@@ -453,6 +456,20 @@ class SettingsSectionFrame(tk.Frame):
 
     def _pick_team_key(self) -> None:
         dialog = TeamPickerDialog(self.app)
+        self.app.wait_window(dialog)
+        if dialog.result:
+            self.key_var.set(dialog.result)
+
+    def _pick_competition_key(self) -> None:
+        exedir = getattr(self.app, "exedir", None)
+        if not exedir:
+            return
+        dialog = CompetitionPickerDialog(
+            self.app,
+            exedir,
+            allow_round=self.spec.key_is_round_id,
+            allow_tournament=self.spec.key_is_tournament_id,
+        )
         self.app.wait_window(dialog)
         if dialog.result:
             self.key_var.set(dialog.result)
