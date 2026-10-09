@@ -112,6 +112,39 @@ def enable_dpi_awareness() -> None:
         pass
 
 
+APP_USER_MODEL_ID = "CGFS16.Server16"
+
+
+def set_app_user_model_id() -> None:
+    """Gives the process its own taskbar identity. Without it Windows groups
+    the window under the host executable (python.exe when run from source) and
+    draws that exe's icon on the taskbar button instead of server16.ico. Must
+    run before the first window exists; the main window shares the process, so
+    it inherits the ID and the splash/main buttons stay one group."""
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+    except Exception:
+        pass
+
+
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x00000080
+_WS_EX_APPWINDOW = 0x00040000
+
+
+def _show_in_taskbar(root: tk.Tk) -> None:
+    """Tk's overrideredirect windows get no taskbar button at all, so during
+    startup the app would be invisible there until the main window appears.
+    Flips the real top-level (Tk's wrapper, the parent of winfo_id) to
+    WS_EX_APPWINDOW. Has to be done while the window is still withdrawn: the
+    style is only honoured on the next show."""
+    root.update_idletasks()
+    user32 = ctypes.windll.user32
+    hwnd = user32.GetParent(root.winfo_id()) or root.winfo_id()
+    style = user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+    user32.SetWindowLongW(hwnd, _GWL_EXSTYLE, (style & ~_WS_EX_TOOLWINDOW) | _WS_EX_APPWINDOW)
+
+
 def dpi_scale(window=None) -> float:
     """Display scale to draw the splash at. Delegates to window_fit so the
     scale comes from the monitor the splash will actually appear on rather
@@ -337,7 +370,18 @@ class _SplashWindow:
         self.canvas = canvas
         canvas.create_rectangle(0, 0, layout.width - 1, layout.height - 1, outline=BORDER)
 
-        png = icon_png(find_icon_path(), layout.icon_px)
+        icon_path = find_icon_path()
+        if icon_path is not None:
+            try:
+                root.iconbitmap(str(icon_path))
+            except Exception:
+                pass
+        try:
+            _show_in_taskbar(root)
+        except Exception:
+            pass
+
+        png = icon_png(icon_path, layout.icon_px)
         if png is not None:
             try:
                 self.icon = tk.PhotoImage(master=root, data=base64.b64encode(png).decode("ascii"))

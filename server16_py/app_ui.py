@@ -282,6 +282,13 @@ class UIMixin:
         if self.icon_path is None:
             return
         icon_value = str(self.icon_path)
+        # Per-window icon first (WM_SETICON on the window itself): `default=`
+        # alone only sets the window class's icon, which the taskbar doesn't
+        # pick up consistently -- one monitor's taskbar showed Tk's feather.
+        try:
+            window.iconbitmap(icon_value)
+        except Exception:
+            pass
         try:
             window.iconbitmap(default=icon_value)
         except Exception:

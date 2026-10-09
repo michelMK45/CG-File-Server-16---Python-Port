@@ -2,9 +2,10 @@ def _start_splash():
     # Before anything heavy is imported: the imports below are most of the
     # startup time, so the splash has to be up first to cover them.
     try:
-        from server16_py.splash import SplashScreen, enable_dpi_awareness
+        from server16_py.splash import SplashScreen, enable_dpi_awareness, set_app_user_model_id
 
         enable_dpi_awareness()
+        set_app_user_model_id()
         return SplashScreen()
     except Exception:
         return None
