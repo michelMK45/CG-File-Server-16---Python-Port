@@ -618,9 +618,10 @@ class StadiumDialog(BaseDialog):
         )
         self._build_preview(goalpost_texture_wrap, 0, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(155, 135), row=2)
 
-        # Same two-column grid as goalpost_row so the combo lines up with theirs. No preview
-        # box: camera packs ship no image to show. The right-hand column holds the priority
-        # note (pack vs. the stadium's own camera).
+        # Same two-column grid as goalpost_row so the combo and preview line up with theirs.
+        # The preview is the pack's optional static preview.<ext> (same convention as
+        # GoalpostModel); the right-hand column holds the priority note (pack vs. the
+        # stadium's own camera).
         entrance_cam_row = tk.Frame(preview_bottom, bg=self.card)
         entrance_cam_row.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
         entrance_cam_row.grid_columnconfigure(0, weight=1)
@@ -634,8 +635,10 @@ class StadiumDialog(BaseDialog):
             self.tr("dialog.stadium.entrance_cam"),
             self._folder_names(self.entrance_cam_source),
             self.selectedentrancecam,
+            self._on_entrance_cam_changed,
             picker=lambda: self._pick_asset("entrancecam"),
         )
+        self._build_preview(entrance_cam_wrap, 0, self.tr("dialog.stadium.preview.entrance_cam"), "entrance_cam", image_size=(155, 135), row=2)
         self._dark_label(
             entrance_cam_row,
             self.tr("dialog.stadium.entrance_cam_hint"),
@@ -668,6 +671,7 @@ class StadiumDialog(BaseDialog):
         self._on_police_changed()
         self._on_goalpost_model_changed()
         self._on_goalpost_texture_changed()
+        self._on_entrance_cam_changed()
 
     def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None, picker=None) -> None:
         """`picker`, when given, puts the small grid-picker button right of the
@@ -701,8 +705,7 @@ class StadiumDialog(BaseDialog):
         locations those combos and their preview boxes already use. The refresh
         callback is what <<ComboboxSelected>> would have run: setting a
         StringVar programmatically doesn't fire that event, so a pick made in
-        the grid has to invoke it by hand to update the preview box. It is None for
-        the entrance camera, which has no preview box to update."""
+        the grid has to invoke it by hand to update the preview box."""
         if field == "police":
             items = png_items(self.POLICE_VALUES, self.police_source)
             return self.selectedpolice, "dialog.stadium.police_pattern", items, self._on_police_changed
@@ -723,7 +726,7 @@ class StadiumDialog(BaseDialog):
         if field == "entrancecam":
             # Same preview.<ext>-inside-the-pack convention as GoalpostModel.
             items = goalpost_model_items(self.entrance_cam_source, self._folder_names(self.entrance_cam_source))
-            return self.selectedentrancecam, "dialog.stadium.entrance_cam", items, None
+            return self.selectedentrancecam, "dialog.stadium.entrance_cam", items, self._on_entrance_cam_changed
         raise ValueError(f"no asset picker for stadium field {field!r}")
 
     def _pick_asset(self, field: str) -> None:
@@ -962,6 +965,7 @@ class StadiumDialog(BaseDialog):
         if getattr(self, "_ui_ready", False):
             self._on_goalpost_model_changed()
             self._on_goalpost_texture_changed()
+            self._on_entrance_cam_changed()
         self._update_stadium_preview()
 
     def _refresh_selection(self) -> None:
@@ -1083,6 +1087,12 @@ class StadiumDialog(BaseDialog):
         name = self.selectedgoalpost.get().strip()
         image_path = resolve_goalpost_model_preview_path(self.goalpost_model_source, name) if name and name != "None" else None
         self._update_preview("goalpost_model", image_path, self.tr("placeholder.no_preview"))
+
+    def _on_entrance_cam_changed(self, _event=None) -> None:
+        # Same static preview.<ext>-inside-the-pack convention as the goalpost model.
+        name = self.selectedentrancecam.get().strip()
+        image_path = resolve_goalpost_model_preview_path(self.entrance_cam_source, name) if name and name != "None" else None
+        self._update_preview("entrance_cam", image_path, self.tr("placeholder.no_preview"))
 
     def _on_goalpost_texture_changed(self, _event=None) -> None:
         # Unlike every other preview in this dialog (all plain image files),

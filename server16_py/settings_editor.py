@@ -369,6 +369,8 @@ class SettingsSectionFrame(tk.Frame):
             self._build_stadium_preview_panel(scroll_content)
         elif self.spec.rx3_preview:
             self._build_rx3_preview_panel(scroll_content)
+        elif self.spec.section in self.PACK_PREVIEW_SECTIONS:
+            self._build_pack_preview_panel(scroll_content)
         elif self.spec.directory == "MoviesGBD":
             self._build_movie_preview_panel(scroll_content)
         elif self.spec.directory in ("ScoreBoardGBD", "TVLogoGBD"):
@@ -1177,9 +1179,13 @@ class SettingsSectionFrame(tk.Frame):
         # selection superseding a still-running render (same pattern
         # app_ui.py's Kit Mixer preview uses, and dialogs.py's StadiumDialog
         # goalpost texture preview).
+        self._show_goalpost_texture_preview(self.goalpost_texture_var.get().strip())
+
+    def _show_goalpost_texture_preview(self, name: str) -> None:
+        """Shared by the Stadium Settings editor and the plain "Goalpost Textures By
+        Stadium Name" tab (_build_pack_preview_panel)."""
         if "goalpost_texture" not in self._preview_labels:
             return
-        name = self.goalpost_texture_var.get().strip()
         self._goalpost_texture_preview_generation = getattr(self, "_goalpost_texture_preview_generation", 0) + 1
         generation = self._goalpost_texture_preview_generation
         if not name or name == "None":
@@ -1608,6 +1614,39 @@ class SettingsSectionFrame(tk.Frame):
                             break
         fallback = value if value else self.tr("placeholder.no_preview")
         self._set_preview_image(key, image_path, fallback)
+
+    # "By Stadium Name" tabs whose value is a shared pack folder: section -> (preview key,
+    # title locale key). Same previews the Stadium Settings editor shows for these packs.
+    PACK_PREVIEW_SECTIONS = {
+        "stadiumgoalpost": ("goalpost_model", "dialog.stadium.preview.goalpost_model"),
+        "stadiumgoalposttexture": ("goalpost_texture", "dialog.stadium.preview.goalpost_texture"),
+        "stadiumentrancecam": ("entrance_cam", "dialog.stadium.preview.entrance_cam"),
+    }
+
+    def _build_pack_preview_panel(self, scroll_content: tk.Misc) -> None:
+        # Same slot as the other preview panels (row 1 of the scrollable content). Goalpost
+        # model / entrance camera show the pack's static preview.<ext>; the goalpost texture
+        # has no image convention, so it is rendered from its .rx3 (async, see
+        # _show_goalpost_texture_preview).
+        container = tk.Frame(scroll_content, bg=self.app.card)
+        container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
+        container.grid_columnconfigure(0, weight=1)
+        key, title_key = self.PACK_PREVIEW_SECTIONS[self.spec.section]
+        self._build_stadium_preview_box(container, 0, self.tr(title_key), key, image_size=(240, 200))
+        # Typed or picked from the combo, the value goes through the same StringVar.
+        self.value_var.trace_add("write", lambda *_: self._refresh_pack_preview())
+        self._refresh_pack_preview()
+
+    def _refresh_pack_preview(self) -> None:
+        key, _title = self.PACK_PREVIEW_SECTIONS[self.spec.section]
+        name = self.value_var.get().strip()
+        if key == "goalpost_texture":
+            self._show_goalpost_texture_preview(name)
+            return
+        image_path = None
+        if name and name != "None" and self.spec.directory:
+            image_path = resolve_goalpost_model_preview_path(self.app.exedir / self.spec.directory, name)
+        self._set_preview_image(key, image_path, self.tr("placeholder.no_preview"))
 
     def _build_rx3_preview_panel(self, scroll_content: tk.Misc) -> None:
         # Same slot as the other preview panels (row 1 of the scrollable

@@ -8,6 +8,8 @@ from tkinter import ttk
 from types import SimpleNamespace
 from unittest import mock
 
+from PIL import Image
+
 from server16_py.ini_file import SessionIniFile
 from server16_py.settings_editor import (
     SectionSpec,
@@ -672,6 +674,53 @@ class EntranceCamPriorityHintTests(unittest.TestCase):
     def test_other_simple_tabs_do_not_show_it(self) -> None:
         spec = SectionSpec("stadiumgoalpost", "Goalpost Models By Stadium Name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True)
         self.assertEqual(self.hint_labels(spec), [])
+
+
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class PackByStadiumNamePreviewTests(unittest.TestCase):
+    """The "Goalpost Models / Entrance Cameras By Stadium Name" tabs show the selected pack's
+    static preview image, like the Stadium Settings editor does."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        for rel in ("FSW/Camera/EntranceScene/Aerial/preview.png", "FSW/Goalpost/GoalpostModel/1/preview.png"):
+            path = exedir / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            Image.new("RGBA", (40, 30), "red").save(path)
+        (exedir / "FSW" / "Camera" / "EntranceScene" / "Bare").mkdir()
+        self.app = FakeApp(exedir, SessionIniFile(exedir / "FSW" / "settings.ini"))
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+
+    def make_frame(self, section: str, directory: str) -> SettingsSectionFrame:
+        spec = SectionSpec(section, section, kind="simple", directory=directory, key_stadium_picker=True)
+        return SettingsSectionFrame(self.root, self.app, spec)
+
+    def assert_preview_follows_value(self, frame: SettingsSectionFrame, key: str, value: str) -> None:
+        label = frame._preview_labels[key]
+        self.assertEqual(str(label.cget("image")), "")
+        frame.value_var.set(value)
+        self.assertNotEqual(str(label.cget("image")), "")
+        frame.value_var.set("Bare")
+        self.assertEqual(str(label.cget("image")), "")
+
+    def test_entrance_camera_tab_shows_the_packs_preview(self) -> None:
+        frame = self.make_frame("stadiumentrancecam", "FSW\\Camera\\EntranceScene")
+        self.assert_preview_follows_value(frame, "entrance_cam", "Aerial")
+
+    def test_goalpost_model_tab_shows_the_packs_preview(self) -> None:
+        frame = self.make_frame("stadiumgoalpost", "FSW\\Goalpost\\GoalpostModel")
+        self.assert_preview_follows_value(frame, "goalpost_model", "1")
+
+    def test_goalpost_texture_tab_renders_through_the_shared_texture_preview(self) -> None:
+        frame = self.make_frame("stadiumgoalposttexture", "FSW\\Goalpost\\GoalpostColor")
+        self.assertIn("goalpost_texture", frame._preview_labels)
+        with mock.patch.object(frame, "_show_goalpost_texture_preview") as show:
+            frame.value_var.set("Azul")
+        show.assert_called_with("Azul")
 
 
 @unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")

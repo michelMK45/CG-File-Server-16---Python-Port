@@ -143,7 +143,7 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             "net": (d.selectednet, d._on_net_changed),
             "goalpost": (d.selectedgoalpost, d._on_goalpost_model_changed),
             "goalposttexture": (d.selectedgoalposttexture, d._on_goalpost_texture_changed),
-            "entrancecam": (d.selectedentrancecam, None),  # no preview box to refresh
+            "entrancecam": (d.selectedentrancecam, d._on_entrance_cam_changed),
         }
         for field, (variable, refresh) in expected.items():
             got_variable, _label, _items, got_refresh = d._asset_picker_setup(field)
@@ -187,10 +187,19 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
         self.dialog._submit()
         self.assertEqual(self.dialog.result["selectedentrancecam"], "Aerial")
 
-    def test_the_entrance_camera_has_no_preview_box(self) -> None:
-        # Camera packs ship no image, so the dialog shows only the combo + hint for it.
-        self.assertNotIn("entrance_cam", self.dialog._preview_labels)
-        self.assertNotIn("entrance_cam", self.dialog._preview_frames)
+    def test_the_entrance_camera_shows_its_packs_preview_png(self) -> None:
+        label = self.dialog._preview_labels["entrance_cam"]
+        self.assertEqual(str(label.cget("image")), "")  # "None" selected: placeholder only
+        self.run_pick("entrancecam", "Aerial")
+        self.assertNotEqual(str(label.cget("image")), "")
+        self.run_pick("entrancecam", "None")
+        self.assertEqual(str(label.cget("image")), "")
+
+    def test_a_pack_without_a_preview_png_falls_back_to_the_placeholder(self) -> None:
+        (self.exedir / "FSW" / "Camera" / "EntranceScene" / "Bare").mkdir()
+        self.dialog.selectedentrancecam.set("Bare")
+        self.dialog._on_entrance_cam_changed()
+        self.assertEqual(str(self.dialog._preview_labels["entrance_cam"].cget("image")), "")
 
     def test_cancelling_leaves_the_field_alone(self) -> None:
         before = self.dialog.selectedpolice.get()
