@@ -1455,7 +1455,7 @@ class AboutDialog(BaseDialog):
         tk.Label(body, text=self.tr("dialog.about.libraries"), bg=self.bg, fg=self.muted,
                  font=("Bahnschrift", 8, "bold")).pack(anchor="w", pady=(14, 0))
 
-        credit_row(body, "dialog.about.libraries_fifalib", "FifaLibrary16 (rzocc)")
+        credit_row(body, "dialog.about.libraries_fifalib", "FifaLibrary16 (Rinaldo)")
         credit_row(body, "dialog.about.libraries_rmlui", "RmlUi (MIT License)")
         credit_row(body, "dialog.about.libraries_freetype", "FreeType (FreeType License)")
         library_link_row(body, "dialog.about.libraries_vigembus", "ViGEmBus (Nefarius)", self._VIGEMBUS_REPO)

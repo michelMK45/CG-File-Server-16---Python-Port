@@ -306,6 +306,14 @@ class CompetitionEntranceEditorTests(unittest.TestCase):
         round_frame._use_current_round_key()
         self.assertEqual(round_frame.key_var.get(), "103")
 
+    def test_team_chants_key_offers_the_team_helpers_and_picker(self) -> None:
+        chants = self.make_frame("chantsid")
+        texts = self.button_texts(chants)
+        for label in ("button.use_home_team", "button.use_away_team", "button.pick_team"):
+            self.assertIn(label, texts)
+        self.assertNotIn("button.use_current_round_id", texts)
+        self.assertNotIn("button.use_current_tournament_id", texts)
+
     def test_no_tournament_read_yet_clears_the_key_instead_of_failing(self) -> None:
         self.app.TOURNAME = ""
         frame = self.make_frame("tournamententrance")

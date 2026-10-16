@@ -2317,7 +2317,7 @@ def asset_specs() -> list[SectionSpec]:
 
 def audio_specs() -> list[SectionSpec]:
     return [
-        SectionSpec("chantsid", "dialog.editor.choice.chants_ids", kind="chants", directory="FSW\\Chants", recursive=True),
+        SectionSpec("chantsid", "dialog.editor.choice.chants_ids", kind="chants", directory="FSW\\Chants", recursive=True, key_is_team_id=True),
         SectionSpec("tournamententrance", "dialog.editor.choice.tournament_entrance", kind="entrance", directory="FSW\\Chants", recursive=True, key_is_tournament_id=True),
         SectionSpec("roundentrance", "dialog.editor.choice.round_entrance", kind="entrance", directory="FSW\\Chants", recursive=True, key_is_round_id=True),
     ]
