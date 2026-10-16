@@ -392,5 +392,5 @@ function GetRMSle(idx,isModel)
 	return sleorder
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

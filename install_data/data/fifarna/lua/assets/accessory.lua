@@ -80,15 +80,38 @@ function AccessoryUpdate(idx)
 	local outplayer = as:GetTable("wvPlayer", outidx)
 	
 	local kitOutfield = as:GetInt(outplayer, "kit") 
-	local kitTypeOutfield = as:GetInt(outplayer, "kitType") 
+	local kitTypeOutfield = as:GetInt(outplayer, "kitType") %20
 	local kitYearOutfield = as:GetInt(outplayer, "kitYear")
 
-	--CLASSIC KIT BOOT DECADE
+	-- -- CLASSIC KIT BOOT DECADE
+	-- db.accessory[idx].kitYearDecade = -1
+	-- if (kitYearOutfield > 0) then
+	-- db.accessory[idx].tournid = kitYearOutfield
+	-- db.accessory[idx].kitYearDecade = math.floor(kitYearOutfield/10)*10
+	-- end
+	
+	
+	
+	
+	
+	--CLASSIC KIT + FUT
 	db.accessory[idx].kitYearDecade = -1
+	if (idx > 7) then
+	-- local outplayer = as:GetTable("wvPlayer", outidx)
+	-- local kitYearOutfield = as:GetInt(outplayer, "kitYear")
 	if (kitYearOutfield > 0) then
 	db.accessory[idx].tournid = kitYearOutfield
 	db.accessory[idx].kitYearDecade = math.floor(kitYearOutfield/10)*10
 	end
+	if (db.accessory[idx].teamid == 130000) then
+	if (not futCustom) then
+	db.accessory[idx].teamid = db.accessory[idx].kit
+	end
+	end
+	end
+	
+	
+	
 	
 	
 	
@@ -107,32 +130,53 @@ function AccessoryUpdate(idx)
 	
 
 
-	if ((isgoalie == 1) and (math.floor(idx/10) > 1)) then
+	if ((isgoalie == 1) and (math.floor(idx/10) > 7)) then
 	
 	--ALTERNATE GK
 	if ((kitOutfield ~= 7000)) then
 	db.accessory[idx].speckitType = kitTypeOutfield + 30
 	end
 	
+	-- if (db.accessory[idx].kitYear == 0) then
+	-- if (teamside == 0) then
+	-- db.accessory[idx].speckitType = getGKKit(db.accessory[idx].kit,homeKitTypeID,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	-- else
+	-- db.accessory[idx].speckitType = getGKKit(db.accessory[idx].kit,awayKitTypeID,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	-- end
+	-- end
+	
 	if (db.accessory[idx].kitYear == 0) then
 	if (teamside == 0) then
-	db.accessory[idx].speckitType = getGKKit(db.accessory[idx].kit,homeKitTypeID,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	db.accessory[idx].speckitType = homegkkittypechoice
+	
+	--if(homegkkittypechoice < 0) then
+	--db.accessory[idx].speckitType = 99
+	--end
+	
 	else
-	db.accessory[idx].speckitType = getGKKit(db.accessory[idx].kit,awayKitTypeID,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	db.accessory[idx].speckitType = awaygkkittypechoice
 	end
 	end
 	
 	end
-	
 	
 	
 	
 	--NON GK KIT
-	if ((isgoalie == 0) and (math.floor(idx/10) > 1)) then
+	if ((isgoalie == 0) and (math.floor(idx/10) > 8)) then
 	
 	--SPECIFIC MATCH KIT
 	if (db.accessory[idx].kitYear == 0) then
-	db.accessory[idx].speckitType = getGameKit(db.accessory[idx].kit,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	--db.accessory[idx].speckitType = getGameKit(db.accessory[idx].kit,homeKitTeamID,awayKitTeamID,db.accessory[idx].kitType,db.accessory[idx].speckitType)
+	
+	if (teamside == 0) then
+	db.accessory[idx].speckitType = homeoutfieldkittypechoice
+	else
+	db.accessory[idx].speckitType = awayoutfieldkittypechoice
+	end
+	
+
+	
 	end
 	
 	end
@@ -141,12 +185,13 @@ function AccessoryUpdate(idx)
 	
 	
 	
-	if (idx%10 == 0) then
+	--if (idx%10 == 0) then
 	if ((isCreatePlayer ~= 1) or (teamside ~= -1)) then
 	LoadAsync("data/fifarna/lua/assignments/players/player_"..db.accessory[idx].playerid..".lua")
+	LoadAsync("data/fifarna/lua/assignments/playergkgloves/playergkglove_"..db.accessory[idx].playerid..".lua")
 	LoadAsyncWait()
 	end
-	end
+	--end
 	
 	
 	
@@ -172,6 +217,9 @@ function AccessoryUpdate(idx)
 	if (winterAcc) then
 		jerseySleeveLength = seasonal
 	end
+	
+	jerseySleeveLength = getSleeveAndUndershirtType(db.accessory[idx].playerid,weather,climate,jerseySleeveLength)
+	
 
     -- Calculation below is to minimize the amount of textures loaded for accessories. Forces the sharing of 1 colormap for left/right meshes.
     -- This is assuming all accessories that require left and right variations have model = even# for left, odd# for right
@@ -214,15 +262,27 @@ function AccessoryUpdate(idx)
 	db.accessory[idx].isgkglove = 0
 	db.accessory[idx].gender = as:GetInt(accessory, "gender")
 	
+	db.accessory[idx].genderalt = db.accessory[idx].gender
+	if (db.accessory[idx].genderalt == 0) then
+	db.accessory[idx].genderalt = -1
+	end
+	
 	--ACCESSORY COLOUR
 	db.accessory[idx].color = getAccessoryColour(db.accessory[idx].playerid,modelNum2,db.accessory[idx].color)
 	
 	-- special case for gkgloves
 	if ( db.accessory[idx].model == 18 ) then
+		db.accessory[idx].color = getPlayerGKGlove(db.accessory[idx].playerid,db.accessory[idx].color)
 		db.accessory[idx].model = db.accessory[idx].color
 		db.accessory[idx].accessoryname = "gkglove"
 		db.accessory[idx].material = "gkglove"
 		db.accessory[idx].isgkglove = 1
+		
+		if ((db.accessory[idx].model < 12) and repGenGKGlove) then
+		db.accessory[idx].model = (db.accessory[idx].playerid%25)+80
+		db.accessory[idx].color = db.accessory[idx].model
+		end
+		
 	elseif (db.accessory[idx].model > 27 and db.accessory[idx].model < 36) then
 		-- referee cards are 28 and 30, just use diffuse.
 		db.accessory[idx].material = "accessory"
@@ -259,7 +319,7 @@ end
 ---------------------------------------------------------------------------------------------------
 function GetAccessoryMesh(idx)
 	if (db.accessory[idx].isgkglove == 1) then
-		return "data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].color}.rx3"
+		return "${GetRMGKGlove(?,0)}data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].color}.rx3"
 	else
 		return "${GetRMAccessory(?,0)}data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].model}_${db.accessory[?].modelvar}_${db.accessory[?].gender}.rx3"
 	end
@@ -268,7 +328,7 @@ end
 ---------------------------------------------------------------------------------------------------
 function GetAccessoryTexture(idx)
 	if (db.accessory[idx].isgkglove == 1) then
-		return "${GetRMGKGlove(?)}data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].model}_textures.rx3"
+		return "${GetRMGKGlove(?,1)}data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].model}_textures.rx3"
 	else
 		return "${GetRMAccessory(?,1)}data/sceneassets/${db.accessory[?].accessoryname}/${db.accessory[?].accessoryname}_${db.accessory[?].model}_${db.accessory[?].color}_textures.rx3"
 	end
@@ -314,6 +374,8 @@ end
 accessoryModel = {}
 accessoryColour = {}
 
+accessoryModelGlobal = {}
+
 function swapAccessory(player,old,new,colour)
 
 if (accessoryModel[player] == nil) then
@@ -327,6 +389,15 @@ end
 accessoryModel[player][old] = new
 accessoryColour[player][old] = colour
 end
+
+
+function swapAccessoryGlobal(old,new)
+
+accessoryModelGlobal[old] = new
+
+end
+
+
 
 function getAccessoryModel(player,old,year)
 
@@ -347,6 +418,10 @@ if (accessoryModel[player] ~= nil) then
 if (accessoryModel[player][old] ~= nil) then
 return accessoryModel[player][old]
 end
+end
+
+if (accessoryModelGlobal[old] ~= nil) then
+return accessoryModelGlobal[old]
 end
 
 return old
@@ -375,6 +450,7 @@ function GetRMAccessory(idx,isModel)
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_0_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_0_"..db.accessory[idx].teamid.."_"..(db.accessory[idx].genderalt*100).."_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
 	pct = pct.."data/sceneassets/"..db.accessory[idx].accessoryname.."/specific"..db.accessory[idx].accessoryname.."_0_"..db.accessory[idx].teamid.."_0_"..(db.accessory[idx].model+db.accessory[idx].modelvar)..""..fileType..".rx3;"
@@ -389,28 +465,34 @@ function GetRMAccessory(idx,isModel)
 end
 
 
-function GetRMGKGlove(idx)
+function GetRMGKGlove(idx,isModel)
 	local pct = ""
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_0_"..db.accessory[idx].tournid.."_textures.rx3;"
+	local fileType = ""
 	
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_0_"..db.accessory[idx].tournid.."_textures.rx3;"
+	if (isModel == 1) then
+	fileType = "_textures"
+	end
 	
-	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid.."_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_0_"..db.accessory[idx].tournid.."_textures.rx3;"
-	--pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_0_0_textures.rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_0_"..db.accessory[idx].tournid..""..fileType..".rx3;"
 	
-	pct = pct.."data/sceneassets/gkglove/playergkglove_0_0_0_"..db.accessory[idx].kitYearDecade.."_textures.rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_0_"..db.accessory[idx].tournid..""..fileType..".rx3;"
 	
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_0_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_0_textures.rx3;"
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_0_0_textures.rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_0_"..db.accessory[idx].tournid..""..fileType..".rx3;"
+	--pct = pct.."data/sceneassets/gkglove/playergkglove_0_"..db.accessory[idx].teamid.."_0_0"..fileType..".rx3;"
 	
-	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_0_0_textures.rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_0_0_0_"..db.accessory[idx].kitYearDecade..""..fileType..".rx3;"
+	
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].speckitType.."_0"..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_"..db.accessory[idx].kitType.."_0"..fileType..".rx3;"
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_"..db.accessory[idx].teamid.."_0_0"..fileType..".rx3;"
+	
+	pct = pct.."data/sceneassets/gkglove/playergkglove_"..db.accessory[idx].playerid.."_0_0_0"..fileType..".rx3;"
 	return pct
 end
 
@@ -427,7 +509,31 @@ function removeClassicKitAccessories(year)
 classicKitAccessoriesYear = year
 end
 
+repGenGKGlove = false
+
+function replaceGenericGKGloves()
+repGenGKGlove = true
+end
 
 
---Revolution Mod 16 V1.0
+playergkglove = {}
+
+function assignPlayerGKGlove(player,glove)
+
+playergkglove[player] = glove
+
+end
+
+function getPlayerGKGlove(player,glove)
+
+if (playergkglove[player] ~= nil) then
+return playergkglove[player]
+end
+
+return glove
+end
+
+
+
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

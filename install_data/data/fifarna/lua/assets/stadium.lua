@@ -84,9 +84,11 @@ function StadiumUpdate(idx)
 	db.stadium[idx].homeTeamID = db.stadium[idx].homeKitTeamID
 	db.stadium[idx].awayTeamID = db.stadium[idx].awayKitTeamID
 	db.stadium[idx].kitYearDecade = -1
+	--local kitYearOutfield = -1
 	if (idx > 0) then
 	local player = as:GetTable("wvPlayer", 9)
-	local kitYearOutfield = as:GetInt(player, "kitYear")
+	local  kitYearOutfield = as:GetInt(player, "kitYear")
+	db.stadium[idx].classictournid = (kitYearOutfield*10000) + db.stadium[idx].tournID
 	if (kitYearOutfield > 0) then
 	db.stadium[idx].tournID = kitYearOutfield
 	db.stadium[idx].kitYearDecade = math.floor(kitYearOutfield/10)*10
@@ -114,9 +116,16 @@ function StadiumUpdate(idx)
 	
 	db.stadium[idx].envLighting = as:GetInt(state, "wvAttribEnvLighting")
 	
-	-- if (db.stadium[idx].crowdDistribution == 1) then
-	-- db.stadium[idx].tournID = 223
-	-- end
+	db.stadium[idx].homeTeamIDasset = db.stadium[idx].homeTeamID
+	if (db.stadium[idx].crowdDistribution == 1) then
+	db.stadium[idx].homeTeamIDasset = -1
+	end
+	
+	db.stadium[idx].stadiumIDrad = getRadFile(db.stadium[idx].stadiumID)
+	
+	--db.stadium[idx].classictournid = (kitYearOutfield*10000) + db.stadium[idx].tournID
+
+	GoalNetUpdate(idx*2)
 	
 end
 
@@ -129,7 +138,7 @@ function GetHomeCrestAssetSrc(idx)
 		end
 	else
 		if ( db.stadium[idx].crowdDistribution == 0 ) then
-			return "data/ui/imgassets/crest/light/l${db.stadium[?].homeKitTeamID}.dds"
+			return "${GetRMStadiumLogo(?)}data/ui/imgassets/crest/light/l${db.stadium[?].homeKitTeamID}.dds"
 		else
 			return "data/sceneassets/banner/banner_0.rx3" -- transparent texture
 		end
@@ -157,7 +166,7 @@ function StadiumAssetBind(stadium)
 	local stadiumAsset = "${GetRMStadModel(?)}data/sceneassets/stadium/stadium_${db.stadium[?].stadiumID}.rx3;data/sceneassets/stadium/stadium_666.rx3"
 	local stadiumTextureAsset = "${GetRMStadTex(?)}data/sceneassets/stadium/stadium_${db.stadium[?].stadiumID}_${db.stadium[?].lightType}_textures.rx3;data/sceneassets/stadium/stadium_666_1_textures.rx3"
 	
-	local precomputeLocation = "type${db.stadium[?].stadiumType}_data/sceneassets/radiosity/stadium_${db.stadium[?].stadiumID}.rad" -- "typeX_" will be stripped from the beginning of the string
+	local precomputeLocation = "type${db.stadium[?].stadiumType}_data/sceneassets/radiosity/stadium_${db.stadium[?].stadiumIDrad}.rad" -- "typeX_" will be stripped from the beginning of the string
 	
 	-- Load all the stadium assets at a higher priority than the rest, so we can get it loaded early	
     gr:SetPriorityBoost(stadium, lod, 10)
@@ -425,8 +434,10 @@ function GetRMAdboard(idx,ad)
 	
 	if (upperAd) then
 	--adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_6000.rx3;"
-	--adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_6000.rx3;"
+	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_6000.rx3;"
+	if (not getTournamentFinal(db.stadium[idx].tournID,db.stadium[idx].stadiumID,db.stadium[idx].crowdDistribution)) then
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0_6000.rx3;"
+	end
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_0_6000.rx3;"
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID.."_6000.rx3;"
 	--adorder = adorder.."data/sceneassets/adboard/specificadboard_0_0_"..db.stadium[idx].stadiumID.."_60000.rx3;"
@@ -438,16 +449,33 @@ function GetRMAdboard(idx,ad)
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_0_4.rx3;"
 	end
 	
+	
+	
+	
+	
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_0.rx3;"
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_0.rx3;"
+	if (db.stadium[idx].kitYearDecade > 0) then
+	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].classictournid.."_0_0.rx3;"
+	end
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0_0.rx3;"
+	if (db.stadium[idx].kitYearDecade > 0) then
+	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].classictournid.."_0_0.rx3;"
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].kitYearDecade.."_0_0.rx3;"
+	end
+	if (db.stadium[idx].kitYearDecade == -1) then
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_0_"..db.stadium[idx].defaulttournID..".rx3;"
+	end
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_"..db.stadium[idx].tournID.."_0_0.rx3;"
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID.."_0.rx3;"
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_0_"..db.stadium[idx].stadiumID.."_0.rx3;"
+	if (db.stadium[idx].kitYearDecade == -1) then
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_0_0_"..rand..".rx3;"
+	end
 	adorder = adorder.."data/sceneassets/adboard/specificadboard_"..db.stadium[idx].homeTeamID.."_0_0_0.rx3;"
+	if (db.stadium[idx].kitYearDecade == -1) then
+	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_0_0_"..db.stadium[idx].tournID..".rx3;"
+	end
  	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_0_0_"..db.stadium[idx].defaulttournID..".rx3;"
  	adorder = adorder.."data/sceneassets/adboard/specificadboard_0_0_0_0.rx3;"
  	return adorder
@@ -456,9 +484,9 @@ end
 
 function GetRMPitchCT(idx)
 	local pct = ""
-	pct = pct.."data/sceneassets/pitch/specificpitchct_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].stadiumID..".rx3;"
+	pct = pct.."data/sceneassets/pitch/specificpitchct_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].stadiumID..".rx3;"
 	pct = pct.."data/sceneassets/pitch/specificpitchct_0_"..db.stadium[idx].stadiumID..".rx3;"
-	pct = pct.."data/sceneassets/pitch/specificpitchct_"..db.stadium[idx].homeTeamID.."_0.rx3;"
+	pct = pct.."data/sceneassets/pitch/specificpitchct_"..db.stadium[idx].homeTeamIDasset.."_0.rx3;"
 	pct = pct.."data/sceneassets/pitch/specificpitchct_0_0.rx3;"
 	return pct
 end
@@ -466,13 +494,20 @@ end
 
 function GetRMStadDressing(idx)
 	local tex = ""
-	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
+	
+	if (getTournamentFinal(db.stadium[idx].tournID,db.stadium[idx].stadiumID,db.stadium[idx].crowdDistribution)) then
+	tex = tex.."data/sceneassets/tournament/specifictournament_0_"..db.stadium[idx].tournID.."_2000.rx3;"
+	end
+	
+	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
 	tex = tex.."data/sceneassets/tournament/specifictournament_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
-	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0.rx3;"
+	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_0.rx3;"
 	tex = tex.."data/sceneassets/tournament/specifictournament_0_"..db.stadium[idx].tournID.."_0.rx3;"
-	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID..".rx3;"
+	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamIDasset.."_0_"..db.stadium[idx].stadiumID..".rx3;"
 	tex = tex.."data/sceneassets/tournament/specifictournament_0_0_"..db.stadium[idx].stadiumID..".rx3;"
-	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamID.."_0_0.rx3;"
+	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].defaulttournID.."_0.rx3;"
+	tex = tex.."data/sceneassets/tournament/specifictournament_"..db.stadium[idx].homeTeamIDasset.."_0_0.rx3;"
+	tex = tex.."data/sceneassets/tournament/specifictournament_0_"..db.stadium[idx].defaulttournID.."_0.rx3;"
 	tex = tex.."data/sceneassets/tournament/specifictournament_0_0_0.rx3;"
 	return tex
 end
@@ -480,12 +515,12 @@ end
 
 function GetRMStadModel(idx)
 	local stad = ""
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID..".rx3;"
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID..".rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID..".rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID..".rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_0_"..db.stadium[idx].tournID..".rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_0_"..db.stadium[idx].tournID..".rx3;"
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamID.."_0.rx3;"
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_"..db.stadium[idx].homeTeamID.."_0.rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamIDasset.."_0.rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_"..db.stadium[idx].homeTeamIDasset.."_0.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].envLighting.."_0_0.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_0_0.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_0_0_0.rx3;"
@@ -495,9 +530,9 @@ end
 
 function GetRMStadTex(idx)
 	local stad = ""
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_textures.rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_textures.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_0_"..db.stadium[idx].tournID.."_textures.rx3;"
-	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamID.."_0_textures.rx3;"
+	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_"..db.stadium[idx].homeTeamIDasset.."_0_textures.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].envLighting.."_0_0_textures.rx3;"
 	stad = stad.."data/sceneassets/stadium/specificstadium_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].lightType.."_0_0_textures.rx3;"
 	return stad
@@ -523,6 +558,11 @@ function GetRMBanner(idx,ven)
 	team = db.stadium[idx].awayTeamID
 	opp = db.stadium[idx].homeTeamID
 	end
+	
+	if (getAllBannersAsHome(db.stadium[idx].homeTeamID,db.stadium[idx].stadiumID) == 1) then
+	team = db.stadium[idx].homeTeamID
+	end
+	
 	
 
 	
@@ -551,17 +591,17 @@ end
 
 function GetRMStadiumLogo(idx)
 	local logo = ""
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].awayTeamID..".dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].awayTeamID..".dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0_"..db.stadium[idx].awayTeamID..".dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_0_0_"..db.stadium[idx].awayTeamID..".dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].awayTeamID..".dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_0_"..db.stadium[idx].stadiumID.."_"..db.stadium[idx].awayTeamID..".dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_0_"..db.stadium[idx].awayTeamID..".dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_0_0_"..db.stadium[idx].awayTeamID..".dds;"
 	
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_0.dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID.."_0.dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_0.dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_0_"..db.stadium[idx].stadiumID.."_0.dds;"
 	logo = logo.."data/ui/imgassets/crest/stadium/stadium_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID.."_0.dds;"
 	logo = logo.."data/ui/imgassets/crest/stadium/stadium_0_0_"..db.stadium[idx].stadiumID.."_0.dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0_0.dds;"
-	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamID.."_0_0_0.dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_0_0.dds;"
+	logo = logo.."data/ui/imgassets/crest/stadium/stadium_"..db.stadium[idx].homeTeamIDasset.."_0_0_0.dds;"
 	logo = logo.."data/ui/imgassets/crest/stadium/stadium_0_"..db.stadium[idx].tournID.."_0_0.dds;"
 	logo = logo.."data/ui/imgassets/crest/stadium/stadium_0_0_0_0.dds;"
 
@@ -594,12 +634,12 @@ end
 function GetRMGlobalTex(idx)
 	local gtex = ""
 	
-	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
-	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamID.."_0_"..db.stadium[idx].stadiumID..".rx3;"
+	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
+	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamIDasset.."_0_"..db.stadium[idx].stadiumID..".rx3;"
 	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_0_"..db.stadium[idx].tournID.."_"..db.stadium[idx].stadiumID..".rx3;"
 	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_0_0_"..db.stadium[idx].stadiumID..".rx3;"
-	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamID.."_"..db.stadium[idx].tournID.."_0.rx3;"
-	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamID.."_0_0.rx3;"
+	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamIDasset.."_"..db.stadium[idx].tournID.."_0.rx3;"
+	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_"..db.stadium[idx].homeTeamIDasset.."_0_0.rx3;"
 	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_0_"..db.stadium[idx].tournID.."_0.rx3;"
 	gtex = gtex.."data/sceneassets/globaltex/specificglobaltex_0_0_0.rx3;"
 
@@ -630,5 +670,49 @@ end
 return 0
 end
 
---Revolution Mod 16 V1.0
+
+bannerHomeOnly = {}
+
+function setAllBannersAsHome(team,stadium)
+
+if (bannerHomeOnly[team] == nil) then
+bannerHomeOnly[team] = {}
+end
+
+bannerHomeOnly[team][stadium] = 1
+
+end
+
+
+function getAllBannersAsHome(team,stadium)
+
+if (bannerHomeOnly[team] ~= nil) then
+if (bannerHomeOnly[team][stadium] ~= nil) then
+return bannerHomeOnly[team][stadium]
+end
+end
+
+return 0
+end
+
+
+noRadFile = {}
+
+function getRadFile(stadium)
+
+if (noRadFile[stadium] == nil) then
+return stadium
+end
+
+return -1
+
+end
+
+function removeRadiosityFile(stadium)
+
+noRadFile[stadium] = 1
+
+end
+
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

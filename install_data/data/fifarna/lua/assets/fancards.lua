@@ -46,5 +46,5 @@ function GetRMFancards(idx,ven)
 	return ban
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

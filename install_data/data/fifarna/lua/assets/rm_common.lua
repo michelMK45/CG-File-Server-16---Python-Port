@@ -1,6 +1,8 @@
 frTourn = -1
 gloTourn = -1
 
+swapIDTournamentList = {}
+
 function useTournamentGraphicsInFriendly(id)
 frTourn = id
 end
@@ -19,7 +21,17 @@ if (id == -1) then
 return frTourn
 end
 
+if (swapIDTournamentList[id] ~= nil) then
+return swapIDTournamentList[id]
+end
+
 return id
+end
+
+
+function swapTournamentID(ida,idb)
+swapIDTournamentList[ida] = idb
+swapIDTournamentList[idb] = ida
 end
 
 
@@ -65,7 +77,14 @@ end
 winterAccessories = {}
 
 function assignWinterAccessories(player,option)
+
+if (type(option) == "number") then
 winterAccessories[player] = option
+else
+winterAccessories[player] = option[math.random(#option)]
+end
+
+-- winterAccessories[player] = option
 end
 
 function getWinterAccessories(player,option)
@@ -85,7 +104,14 @@ end
 sleeveLength = {}
 
 function setSleeveLength(player,option)
+
+if (type(option) == "number") then
 sleeveLength[player] = option
+else
+sleeveLength[player] = option[math.random(#option)]
+end
+
+-- sleeveLength[player] = option
 end
 
 function getSleeveLength(player,option)
@@ -132,6 +158,89 @@ end
 
 
 
+playersleevedry = {}
+playersleevewet = {}
+playersleevedrywin = {}
+playersleevewetwin = {}
+playersleevesnow = {}
+
+
+function setSleeveAndUndershirtType(player,dry,wet,drywin,wetwin,snow)
+
+-- playersleevedry[player] = dry
+-- playersleevewet[player] = wet
+-- playersleevedrywin[player] = drywin
+-- playersleevewetwin[player] = wetwin
+-- playersleevesnow[player] = snow
+
+
+if (type(dry) == "number") then
+playersleevedry[player] = dry
+else
+playersleevedry[player] = dry[math.random(#dry)]
+end
+
+if (type(wet) == "number") then
+playersleevewet[player] = wet
+else
+playersleevewet[player] = wet[math.random(#wet)]
+end
+
+if (type(drywin) == "number") then
+playersleevedrywin[player] = drywin
+else
+playersleevedrywin[player] = drywin[math.random(#drywin)]
+end
+
+if (type(wetwin) == "number") then
+playersleevewetwin[player] = wetwin
+else
+playersleevewetwin[player] = wetwin[math.random(#wetwin)]
+end
+
+if (type(snow) == "number") then
+playersleevesnow[player] = snow
+else
+playersleevesnow[player] = snow[math.random(#snow)]
+end
+
+end
+
+function getSleeveAndUndershirtType(player,weather,climate,option)
+
+if (weather == 2) then
+if (playersleevesnow[player] ~= nil) then
+return playersleevesnow[player]
+end
+end
+
+if ((climate == 1) and (weather == 1)) then
+if (playersleevewetwin[player] ~= nil) then
+return playersleevewetwin[player]
+end
+end
+
+if (climate == 1) then
+if (playersleevedrywin[player] ~= nil) then
+return playersleevedrywin[player]
+end
+end
+
+if (weather == 1) then
+if (playersleevewet[player] ~= nil) then
+return playersleevewet[player]
+end
+end
+
+if (playersleevedry[player] ~= nil) then
+return playersleevedry[player]
+end
+
+return option
+end
+
+
+
 finalStad = {}
 isFinal = false
 
@@ -165,6 +274,19 @@ futCustom = false
  
 function useCustomFUTAssets()
 futCustom = true
+end
+
+function getSimpleColourCode(col)
+	
+	local b = col%256
+	local g = (col-b)%65536 / 256
+	local r = (col-(g*256)-b)%16777216 / 65536
+	
+	r = math.floor((r/85) + 0.5)
+	g = math.floor((g/85) + 0.5)
+	b = math.floor((b/85) + 0.5)
+	
+	return "1"..r..g..b
 end
 
 
@@ -207,8 +329,8 @@ function importTeamStatements(home,away)
 	homeCrowdTournamentGame = {}
 	awayCrowdTournamentGame = {}
 	
-	homeCrowdTournamentFinal = {}
-	awayCrowdTournamentFinal = {}
+	-- homeCrowdTournamentFinal = {}
+	-- awayCrowdTournamentFinal = {}
 	homeCrowdLeagueVersusLeague = {}
 	awayCrowdLeagueVersusLeague = {}
 	homeCrowdTournamentLeagueVersusLeague = {}
@@ -222,6 +344,9 @@ function importTeamStatements(home,away)
 	
 	
 	gkPants = {}
+	gkPantsTraining = {}
+	gkPantsWinter = {}
+	gkPantsSnow = {}
 
 	jerseyTuck = {}
 
@@ -245,6 +370,7 @@ function importTeamStatements(home,away)
 	sleeveLength = {}
 	
 	undershortsPlayer = {}
+	undershortsTeam = {}
 	
 	playerBoot = {}
 	playerBootFallback = {}
@@ -258,6 +384,49 @@ function importTeamStatements(home,away)
 	genBootsPlayer = {}
 	
 	indivKitsTeam = {}
+	
+	altShorts = {}
+	altSocks = {}
+	altShortsSocks = {}
+	
+	
+	swapKitTourn = {}
+
+	teamKitColoursShirt1 = {}
+	teamKitColoursShirt2 = {}
+	teamKitColoursShort = {}
+	teamKitColoursSock = {}
+
+	teamKitColoursTournamentShirt1 = {}
+	teamKitColoursTournamentShirt2 = {}
+	teamKitColoursTournamentShort = {}
+	teamKitColoursTournamentSock = {}
+	
+	
+	customArmband = {}
+	altKitFile = {}
+	altKitFileTourn = {}
+	altKitParts = {}
+	altKitPartsOption = {}
+	altKitPartsTourn = {}
+	altKitPartsOptionTourn = {}
+	gkKitOrder = {}
+	gkKitOrderRand = {}
+	gkKitOrderTourn = {}
+	gkKitOrderRandTourn = {}
+	playersleevedry = {}
+	playersleevewet = {}
+	playersleevedrywin = {}
+	playersleevewetwin = {}
+	playersleevesnow = {}
+	bannerHomeOnly = {}
+	matchKitTourn = {}
+	
+	genPlayerHairColour = {}
+	overlayOffsetTeam = {}
+	
+	playergkglove = {}
+	playerBootTeam = {}
 
 	
 	LoadAsync("data/fifarna/lua/assignments/teams/team_"..home..".lua")
@@ -266,5 +435,5 @@ function importTeamStatements(home,away)
 end
 
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

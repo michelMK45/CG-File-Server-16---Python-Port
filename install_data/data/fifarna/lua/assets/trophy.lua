@@ -20,6 +20,9 @@ function TrophyUpdate(idx)
         db.wipeTrophy.ColorPri = as:GetInt(trophy, "ColorPri")
         db.wipeTrophy.ColorSec = as:GetInt(trophy, "ColorSec")
         db.wipeTrophy.ColorTer = as:GetInt(trophy, "ColorTer")
+		
+		db.wipeTrophy.model = getTournamentGraphics(db.wipeTrophy.model)
+		
 	else
 		db.trophy[idx].type = as:GetInt(trophy, "trophyType")
 		db.trophy[idx].model = as:GetInt(trophy, "trophyModel") 
@@ -35,7 +38,12 @@ function TrophyUpdate(idx)
         db.trophy[idx].ColorPri = as:GetInt(trophy, "ColorPri")
         db.trophy[idx].ColorSec = as:GetInt(trophy, "ColorSec")
         db.trophy[idx].ColorTer = as:GetInt(trophy, "ColorTer")
+		
+		db.trophy[idx].model = getTournamentGraphics(db.trophy[idx].model)
+		
 	end
+	
+	
 end
 
 function CommonTrophyAssetBind(trophy, dbobj, basePath, defaultId, materialPrefix)
@@ -145,8 +153,8 @@ function TrophyAssetBind(trophy)
 	local gr = gRenderables
    	local lod = 0
 
-	local pedestalMeshFile = "data/sceneassets/pedestal/pedestal_${db.trophy[?].pedestalmodel}.rx3";
-	local pedestalTextureFile = "data/sceneassets/pedestal/pedestal_${db.trophy[?].pedestalmodel}_textures.rx3";
+	local pedestalMeshFile = "data/sceneassets/pedestal/specificpedestal_${db.trophy[?].model}.rx3;data/sceneassets/pedestal/pedestal_${db.trophy[?].pedestalmodel}.rx3";
+	local pedestalTextureFile = "data/sceneassets/pedestal/specificpedestal_${db.trophy[?].model}_textures.rx3;data/sceneassets/pedestal/pedestal_${db.trophy[?].pedestalmodel}_textures.rx3";
 	
 	gr:AddAsset(trophy, lod, "pedestal_painted", pedestalMeshFile)
 	gr:AddAsset(trophy, lod, "pedestal_plexiglass", pedestalMeshFile)
@@ -219,7 +227,7 @@ function LeagueLogoAssetBind(trophy)
 
 	--gSportsRNA:Print("LeagueLogoAssetBind");
 
-	if (wipeItem == 2) then
+	if (wipeItem == 1) then
 	CommonTrophyAssetBind(trophy, "db.wipeTrophy", "trophy", "0", "wipe_");
 	else
 	CommonLeagueLogoAssetBind(trophy, "db.wipeTrophy", "leaguelogo", "666");
@@ -234,7 +242,7 @@ function WipeTrophyAssetBind(trophy)
 
 	--gSportsRNA:Print("WipeTrophyAssetBind");
 	
-	if (wipeItem == 1) then
+	if (wipeItem == 2) then
 	CommonLeagueLogoAssetBind(trophy, "db.wipeTrophy", "leaguelogo", "666");
 	else
 	CommonTrophyAssetBind(trophy, "db.wipeTrophy", "trophy", "0", "wipe_");
@@ -250,5 +258,5 @@ function setWipeGraphicType(option)
 wipeItem = option
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

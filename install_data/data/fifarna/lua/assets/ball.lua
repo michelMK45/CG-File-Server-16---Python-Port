@@ -37,6 +37,7 @@ function BallUpdate(idx)
 	if (idx > 0) then
 	local player = as:GetTable("wvPlayer", 9)
 	local kitYearOutfield = as:GetInt(player, "kitYear")
+	db.ball[idx].classictournid = (kitYearOutfield*10000) + db.ball[idx].ballTournID
 	if (kitYearOutfield > 0) then
 	db.ball[idx].ballTournID = kitYearOutfield
 	db.ball[idx].kitYearDecade = math.floor(kitYearOutfield/10)*10
@@ -64,6 +65,7 @@ function BallUpdate(idx)
 	db.ball[idx].ballSnow = -1
 	if (weather == 2) then
 	db.ball[idx].ballSnow = 2
+	db.ball[idx].ballWinter = 1
 	end
 	
 	db.ball[idx].ballTournGenID = -1
@@ -82,8 +84,8 @@ function BallAssetBind(ball)
 
 	gr:AddCallback(ball, lod, "BallUpdate(?)")
 	gr:AddAsset(ball, lod, "shader", "data/fifarna/shader.big")
-	gr:AddAsset(ball, lod, "ballmesh", "${GetRMBall(?,0)}data/sceneassets/ball/ball_${db.ball[?].model}.rx3;data/sceneassets/ball/ball_23.rx3")
-	gr:AddAsset(ball, lod, "balltex", "${GetRMBall(?,1)}data/sceneassets/ball/ball_${db.ball[?].model}_textures.rx3;data/sceneassets/ball/ball_23_textures.rx3")
+	gr:AddAsset(ball, lod, "ballmesh", "${GetRMBall(?,0)}data/sceneassets/ball/ball_${db.ball[?].model}.rx3;data/sceneassets/ball/ball_110.rx3")
+	gr:AddAsset(ball, lod, "balltex", "${GetRMBall(?,1)}data/sceneassets/ball/ball_${db.ball[?].model}_textures.rx3;data/sceneassets/ball/ball_110_textures.rx3")
 	gr:AddAsset(ball, lod, "charcmn", "data/sceneassets/charactercmn/charactercmn_${db.ball[?].envLighting}.rx3")	
 	gr:CreateMaterialFromAttribulator(ball, lod, "ballmesh", "ball", "${AttribMaterial('ball')}" )
 	gr:SetTexture(ball, lod, "ballmesh", "textures", "diffuseTexture", "balltex", "ball_cm")
@@ -115,11 +117,18 @@ function GetRMBall(idx,isModel)
 	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].ballTournID.."_4"..fileType..".rx3;"
 	end
 	
+	if (db.ball[idx].kitYearDecade == -1) then
+	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].ballTournID.."_0_"..db.ball[idx].stadiumID..""..fileType..".rx3;"
+	end
+	
 	ballorder = ballorder.."data/sceneassets/ball/specificball_"..db.ball[idx].ballTeamID.."_"..db.ball[idx].ballTournID.."_"..db.ball[idx].ballSnow..""..fileType..".rx3;"
-	ballorder = ballorder.."data/sceneassets/ball/specificball_"..db.ball[idx].ballTeamID.."_"..db.ball[idx].ballTournID.."_"..db.ball[idx].ballWinter..""..fileType..".rx3;"
+	ballorder = ballorder.."data/sceneassets/ball/specificball_"..db.ball[idx].ballTeamID.."_"..db.ball[idx].ballTournID.."_"..db.ball[idx].ballWinter..""..fileType..".rx3;"	
 	ballorder = ballorder.."data/sceneassets/ball/specificball_"..db.ball[idx].ballTeamID.."_"..db.ball[idx].ballTournID.."_0"..fileType..".rx3;"
 	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].ballTournID.."_"..db.ball[idx].ballSnow..""..fileType..".rx3;"
 	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].ballTournID.."_"..db.ball[idx].ballWinter..""..fileType..".rx3;"
+	if (db.ball[idx].kitYearDecade > 0) then
+	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].classictournid.."_0"..fileType..".rx3;"
+	end
 	ballorder = ballorder.."data/sceneassets/ball/specificball_0_"..db.ball[idx].ballTournID.."_0"..fileType..".rx3;"
 	
 	if (db.ball[idx].arenatr == -1) then
@@ -145,5 +154,5 @@ function useWinterBalls()
 --isWinter = true
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

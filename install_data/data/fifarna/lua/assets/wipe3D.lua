@@ -57,6 +57,20 @@ function Wipe3dUpdate(idx)
 	db.wipe3d[idx].homeSecondary = FixBlackColorARGB(db.wipe3d[idx].homeSecondary)
 	db.wipe3d[idx].awayPrimary = FixBlackColorARGB(db.wipe3d[idx].awayPrimary)
 	db.wipe3d[idx].awaySecondary = FixBlackColorARGB(db.wipe3d[idx].awaySecondary)
+	
+	db.wipe3d[idx].defaulttournid = -1
+	if (teamTournament[db.wipe3d[idx].homeTeamAssetID] ~= nil) then
+	db.wipe3d[idx].defaulttournid = teamTournament[db.wipe3d[idx].homeTeamAssetID]
+	end
+	
+	if (db.wipe3d[idx].leagueID == -1) then
+	if (teamTournament[db.wipe3d[idx].awayTeamAssetID] ~= nil) then
+	if (db.wipe3d[idx].defaulttournid == teamTournament[db.wipe3d[idx].awayTeamAssetID]) then
+	db.wipe3d[idx].leagueID = db.wipe3d[idx].defaulttournid
+	end
+	end
+	end
+	
 end
 
 
@@ -64,8 +78,13 @@ end
 function Wipe3dAssetBind(wipe)
 	local gr = gRenderables
    	local lod = 0
-	local wipeAsset = "data/sceneassets/wipe3d/specificwipe_${db.wipe3d[?].wipeid}_${db.wipe3d[?].leagueID}.rx3;data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}.rx3"
-	local wipeTexturesAsset = "data/sceneassets/wipe3d/specificwipe_${db.wipe3d[?].wipeid}_${db.wipe3d[?].leagueID}_textures.rx3;data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}_textures.rx3"
+	local wipeAsset = "${GetRMWipe(?,0)}data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}.rx3"
+	local wipeTexturesAsset = "${GetRMWipe(?,1)}data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}_textures.rx3"
+	--local wipeAsset = "data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}.rx3"
+	--local wipeTexturesAsset = "data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}_textures.rx3"
+	
+	--local wipeAsset = "data/sceneassets/wipe3d/specificwipe_${db.wipe3d[?].wipeid}_${db.wipe3d[?].leagueID}.rx3;data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}.rx3"
+	--local wipeTexturesAsset = "data/sceneassets/wipe3d/specificwipe_${db.wipe3d[?].wipeid}_${db.wipe3d[?].leagueID}_textures.rx3;data/sceneassets/wipe3d/wipe_${db.wipe3d[?].wipeVersionID}_${db.wipe3d[?].wipeid}_textures.rx3"
 
 	gr:AddCallback(wipe, lod, "Wipe3dUpdate(?)")
 	-- 3d wipes
@@ -154,5 +173,34 @@ function Wipe3dAssetBind(wipe)
 	return wipe
 end
 
---Revolution Mod 16 V1.0
+
+function GetRMWipe(idx,isModel)
+	local chair = ""
+	local fileType = ""
+	
+	if (isModel == 1) then
+	fileType = "_textures"
+	end
+	
+	--chair = chair.."data/sceneassets/wipe3d/specificwipe_"..db.wipe3d[idx].homeTeamAssetID.."_"..db.wipe3d[idx].leagueID.."_"..db.wipe3d[idx].defaulttournid..""..fileType..".rx3;"
+	
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_0_"..db.wipe3d[idx].leagueID.."_0"..fileType..".rx3;"
+	
+	if (db.wipe3d[idx].leagueID == -1) then
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_1_0_"..db.wipe3d[idx].homeTeamAssetID..""..fileType..".rx3;"
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_1_"..db.wipe3d[idx].defaulttournid.."_0"..fileType..".rx3;"
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_1_0_0"..fileType..".rx3;"
+	end
+	
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_0_0_0"..fileType..".rx3;"
+	
+	chair = chair.."data/sceneassets/wipe3d/specificwipe_"..db.wipe3d[idx].wipeid.."_"..db.wipe3d[idx].leagueID..""..fileType..".rx3;"
+	--chair = chair.."data/sceneassets/wipe3d/specificwipe_"..db.wipe3d[idx].wipeid.."_0"..fileType..".rx3;"
+	--chair = chair.."data/sceneassets/wipe3d/specificwipe_0_0"..fileType..".rx3;"
+
+
+	return chair
+end
+
+--Revolution Mod 16 V1.3.6
 --Edited by scouser09

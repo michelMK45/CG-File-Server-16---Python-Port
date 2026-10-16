@@ -519,6 +519,7 @@ end
 InitializeDB()
 LoadAsyncWait() -- ensure all files are loaded
 LoadAsync("data/fifarna/lua/assignments/general.lua")
+LoadAsync("data/fifarna/lua/assignments/patch.lua")
 LoadAsyncWait()
 InitializeRenderables()
 collectgarbage('collect')

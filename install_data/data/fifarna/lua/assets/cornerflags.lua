@@ -18,6 +18,15 @@ function CornerFlagsUpdate(idx)
 	local wipe3d = as:GetTable("wvWipe", 1)
 	db.cornerflags[idx].tournamentID = as:GetInt(wipe3d, "leagueID")
 	db.cornerflags[idx].tournamentID = getTournamentGraphics(db.cornerflags[idx].tournamentID)
+	
+	if (idx > 0) then
+	local crowd = as:GetTable("wvCrowd", idx)
+	local crowdDistribution = as:GetInt(crowd, "crowdDistribution")
+	if (crowdDistribution == 1) then
+	db.cornerflags[idx].teamID = -1
+	end
+	end
+	
 end
 
 function CornerFlagsAssetBind(cornerflag)
@@ -74,5 +83,5 @@ function GetRMCornerFlagPole(idx)
 	return corner
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09

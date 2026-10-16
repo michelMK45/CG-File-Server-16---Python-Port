@@ -26,7 +26,7 @@ function GrassUpdate(idx)
 	db.grass[idx].kitYearDecade = -1
 	--db.grass[idx].awayTeamID = db.grass[idx].awayKitTeamID
 	if (idx > 0) then
-	local player = as:GetTable("wvPlayer", 3)
+	local player = as:GetTable("wvPlayer", 9)
 	local kitYearOutfield = as:GetInt(player, "kitYear")
 	if (kitYearOutfield > 0) then
 	db.grass[idx].tournID = kitYearOutfield
@@ -63,6 +63,14 @@ function GrassUpdate(idx)
 	db.grass[idx].wet = 1
 	end
 	
+	if (idx > 0) then
+	local crowd = as:GetTable("wvCrowd", idx)
+	local crowdDistribution = as:GetInt(crowd, "crowdDistribution")
+	if (crowdDistribution == 1) then
+	db.grass[idx].homeTeamID = -1
+	end
+	end
+	
 	
 end
 
@@ -97,6 +105,7 @@ function GetRMPitchMowPatturn(idx)
 	pmp = pmp.."data/sceneassets/pitch/specificpitchmowpattern_"..db.grass[idx].homeTeamID.."_0_"..db.grass[idx].stadiumID.."_textures.rx3;"
 	pmp = pmp.."data/sceneassets/pitch/specificpitchmowpattern_0_0_"..db.grass[idx].stadiumID.."_textures.rx3;"
 	pmp = pmp.."data/sceneassets/pitch/specificpitchmowpattern_"..db.grass[idx].homeTeamID.."_0_0_textures.rx3;"
+	pmp = pmp.."data/sceneassets/pitch/specificpitchmowpattern_0_"..db.grass[idx].defaulttournID.."_0_textures.rx3;"
 	pmp = pmp.."data/sceneassets/pitch/specificpitchmowpattern_0_0_0_textures.rx3;"
 	return pmp
 end
@@ -164,5 +173,5 @@ function GetRMPitchWearPatturn(idx)
 	return pwp
 end
 
---Revolution Mod 16 V1.0
+--Revolution Mod 16 V1.3.5
 --Edited by scouser09
