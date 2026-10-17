@@ -5,6 +5,7 @@ import queue
 import random
 import sys
 import threading
+import time
 import tkinter as tk
 from time import perf_counter
 from ctypes import wintypes
@@ -23,6 +24,7 @@ from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .gamepad_bridge_runtime import VGAMEPAD_IMPORT_ERROR, GamepadBridgeRuntime
 from .hidhide_runtime import HidHideRuntime
+from .kit_classic import KitClassicRuntime
 from .kit_mixer import KitMixRuntime
 from .match_string_patcher import MatchStringPatchCoordinator, StadiumDbNamePatchCoordinator
 from .memory_access import Memory
@@ -86,6 +88,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
+        self.auto_clean_cache_var = tk.BooleanVar(value=self.settings.auto_clean_cache_on_startup)
         self.overlay_performance_mode_var = tk.BooleanVar(value=self.settings.overlay_performance_mode)
         self.random_stadium_selection_var = tk.BooleanVar(value=self.settings.random_stadium_selection)
         self.localization = LocalizationManager(self.resource_dir / "server16_py" / "locales", self.settings.language)
@@ -93,6 +96,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
             self._launch_splash.set_message(self.tr("splash.starting"))
         self.log_backup_path = self.log_path.with_suffix(".previous.log")
         self._prepare_runtime_log()
+        # Taken before anything can render a preview: the startup cache cleanup
+        # only deletes files older than this (_start_previous_session_cache_cleanup).
+        self._session_started_at = time.time()
         self.offsets = Offsets.load()
         self.memory = Memory()
         self.pagechange = False
@@ -409,6 +415,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.notification_switch = None
         self.kit_hotkeys_switch = None
         self.keep_open_switch = None
+        self.auto_clean_cache_switch = None
         self.overlay_switch = None
         self.performance_mode_switch = None
         self.random_stadium_switch = None
@@ -423,6 +430,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._kitsimple_canvas = None
         self._kitsimple_canvas_body = None
         self._kits_sub_notebook = None
+        self.kits_classic_subtab = None
+        self.kit_classic_view = None
         self.kits_simple_subtab = None
         self.kits_advanced_subtab = None
         self._setup_status_vars: dict = {}
@@ -529,6 +538,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # the two never matters.
         self.hidhide = HidHideRuntime(self)
         self.kit_mixer = KitMixRuntime(self)
+        self.kit_classic = KitClassicRuntime(self)
         self.substitution_runtime = SubstitutionRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
@@ -604,6 +614,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._build_ui()
         self._install_exception_hook()
         self._build_stadium_loading_modal()
+        # Before the FIFA-location gate below: the caches don't depend on it.
+        self._start_previous_session_cache_cleanup()
         # General Windows input remapping, not a FIFA feature -- started here,
         # before the FIFA-location gate below, so it works even on an
         # unconfigured install with no FIFA path set yet (see

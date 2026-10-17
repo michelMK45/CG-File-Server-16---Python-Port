@@ -1034,12 +1034,25 @@ def set_inj_id(counter: str) -> tuple[str, str]:
 
 
 # Every one of these is a rendered/converted-on-demand cache under
-# <base_dir>/runtime -- safe to delete outright, since the code that fills
-# them (StadiumRuntime.render_goalpost_texture_preview, KitMixRuntime.
-# render_preview/convert_image_to_kitui) always re-renders unconditionally
-# rather than skipping a cache hit. Never includes server16.log,
+# <base_dir>/runtime -- safe to delete outright: the code that fills the first
+# three (StadiumRuntime.render_goalpost_texture_preview, KitMixRuntime.
+# render_preview/convert_image_to_kitui) always re-renders unconditionally,
+# and the last two only reuse a file that is still there -- kit_art_cache
+# (kit_classic_art.IconFactory, the kit drawings of every Kits subtab) by a
+# name made of the kit files' paths and mtimes, match_asset_previews
+# (AssetRuntime.render_rx3_textures) behind a manifest that also checks every
+# PNG -- so a missing one is simply rendered again. Both keep piling up files
+# for kits/packs that changed or went away. Never includes server16.log,
 # server16.previous.log, or settings.json, which also live under runtime/.
-GENERATED_CACHE_SUBDIRS = ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports")
+GENERATED_CACHE_SUBDIRS = (
+    "goalpost_texture_previews", "kitmix_previews", "kitmix_imports", "kit_art_cache", "match_asset_previews",
+)
+
+
+def _generated_cache_targets(runtime_dir: Path) -> list[Path]:
+    targets = [runtime_dir / name for name in GENERATED_CACHE_SUBDIRS]
+    targets.extend(p for p in runtime_dir.glob("server16_stad_*") if p.is_dir())
+    return targets
 
 
 def clear_generated_cache(base_dir: str | Path) -> tuple[int, int]:
@@ -1055,12 +1068,9 @@ def clear_generated_cache(base_dir: str | Path) -> tuple[int, int]:
     if not runtime_dir.is_dir():
         return 0, 0
 
-    targets = [runtime_dir / name for name in GENERATED_CACHE_SUBDIRS]
-    targets.extend(p for p in runtime_dir.glob("server16_stad_*") if p.is_dir())
-
     bytes_freed = 0
     folders_removed = 0
-    for target in targets:
+    for target in _generated_cache_targets(runtime_dir):
         if not target.is_dir():
             continue
         for path in target.rglob("*"):
@@ -1073,3 +1083,39 @@ def clear_generated_cache(base_dir: str | Path) -> tuple[int, int]:
         if not target.exists():
             folders_removed += 1
     return bytes_freed, folders_removed
+
+
+def clear_previous_session_cache(base_dir: str | Path, session_started_at: float) -> tuple[int, int]:
+    """Startup variant of clear_generated_cache (Settings: "clean the previous
+    session's cache on startup"), run on a background thread while the app is
+    already up. Only deletes files last modified before `session_started_at`
+    (time.time() at launch), so anything this session has rendered meanwhile
+    stays; a file another process holds open (a second Server 16) is skipped;
+    folders left empty are removed. Returns (bytes_freed, files_removed)."""
+    runtime_dir = Path(base_dir) / "runtime"
+    if not runtime_dir.is_dir():
+        return 0, 0
+
+    bytes_freed = 0
+    files_removed = 0
+    for target in _generated_cache_targets(runtime_dir):
+        if not target.is_dir():
+            continue
+        # Deepest first, so a folder is only tried once its contents are done.
+        for path in sorted(target.rglob("*"), key=lambda p: len(p.parts), reverse=True):
+            try:
+                if path.is_dir():
+                    path.rmdir()   # only succeeds when it ended up empty
+                    continue
+                stat = path.stat()
+                if stat.st_mtime < session_started_at:
+                    path.unlink()
+                    bytes_freed += stat.st_size
+                    files_removed += 1
+            except OSError:
+                pass
+        try:
+            target.rmdir()
+        except OSError:
+            pass
+    return bytes_freed, files_removed

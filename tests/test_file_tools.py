@@ -7,8 +7,10 @@ import unittest.mock
 from pathlib import Path
 
 from server16_py.file_tools import (
+    GENERATED_CACHE_SUBDIRS,
     clear_entrance_cams,
     clear_generated_cache,
+    clear_previous_session_cache,
     copy_file_atomic,
     copy_first_or_clear,
     copy_goalpost_sources,
@@ -522,16 +524,18 @@ class ClearGeneratedCacheTests(unittest.TestCase):
         self.runtime_dir.mkdir()
 
     def test_removes_known_cache_subdirs_and_reports_freed_bytes(self) -> None:
-        for name in ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports"):
+        names = ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports", "kit_art_cache", "match_asset_previews")
+        self.assertEqual(GENERATED_CACHE_SUBDIRS, names)
+        for name in names:
             d = self.runtime_dir / name
             d.mkdir()
             (d / "a.png").write_bytes(b"x" * 10)
 
         bytes_freed, folders_removed = clear_generated_cache(self.base_dir)
 
-        self.assertEqual(bytes_freed, 30)
-        self.assertEqual(folders_removed, 3)
-        for name in ("goalpost_texture_previews", "kitmix_previews", "kitmix_imports"):
+        self.assertEqual(bytes_freed, 50)
+        self.assertEqual(folders_removed, 5)
+        for name in names:
             self.assertFalse((self.runtime_dir / name).exists())
 
     def test_removes_orphaned_stadium_extraction_temp_folders(self) -> None:
@@ -560,6 +564,56 @@ class ClearGeneratedCacheTests(unittest.TestCase):
 
     def test_no_cache_subdirs_present_is_a_no_op(self) -> None:
         self.assertEqual(clear_generated_cache(self.base_dir), (0, 0))
+
+
+class ClearPreviousSessionCacheTests(unittest.TestCase):
+    SESSION_START = 1_800_000_000.0
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base_dir = Path(self._tmp.name)
+        self.runtime_dir = self.base_dir / "runtime"
+        self.runtime_dir.mkdir()
+
+    def file(self, relative: str, size: int, before_session: bool) -> Path:
+        path = self.runtime_dir / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"x" * size)
+        stamp = self.SESSION_START - 60 if before_session else self.SESSION_START + 60
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_files_from_before_this_session_go_and_empty_folders_with_them(self) -> None:
+        old_art = self.file("kit_art_cache/kit_v3_46_aaaa.png", 10, before_session=True)
+        new_art = self.file("kit_art_cache/kit_v3_46_bbbb.png", 20, before_session=False)
+        old_pack = self.file("match_asset_previews/wipe/OldPack/specificwipe/0.png", 30, before_session=True)
+        self.file("match_asset_previews/wipe/OldPack/specificwipe/manifest.json", 5, before_session=True)
+        old_temp = self.file("server16_stad_ab12cd/model.rx3", 4, before_session=True)
+
+        self.assertEqual(clear_previous_session_cache(self.base_dir, self.SESSION_START), (49, 4))
+
+        self.assertFalse(old_art.exists())
+        self.assertTrue(new_art.exists())
+        self.assertFalse(old_pack.exists())
+        self.assertFalse((self.runtime_dir / "match_asset_previews").exists())
+        self.assertFalse(old_temp.parent.exists())
+
+    def test_a_file_held_open_is_skipped(self) -> None:
+        held = self.file("kitmix_previews/held.png", 7, before_session=True)
+        self.file("kitmix_previews/free.png", 3, before_session=True)
+        with open(held, "rb"):
+            self.assertEqual(clear_previous_session_cache(self.base_dir, self.SESSION_START), (3, 1))
+        self.assertTrue(held.exists())
+
+    def test_never_touches_log_or_settings_files(self) -> None:
+        log = self.file("server16.log", 3, before_session=True)
+        settings = self.file("settings.json", 2, before_session=True)
+        clear_previous_session_cache(self.base_dir, self.SESSION_START)
+        self.assertTrue(log.exists() and settings.exists())
+
+    def test_missing_runtime_dir_is_a_no_op(self) -> None:
+        self.assertEqual(clear_previous_session_cache(self.base_dir / "absent", self.SESSION_START), (0, 0))
 
 
 if __name__ == "__main__":

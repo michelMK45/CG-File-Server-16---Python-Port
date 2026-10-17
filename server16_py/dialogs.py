@@ -1448,8 +1448,8 @@ class AboutDialog(BaseDialog):
 
         credit_row(body, "dialog.about.developer", "igorVin")
         credit_row(body, "dialog.about.developer_continuing", "MichelMK")
-        credit_row(body, "dialog.about.collaborators", "NonoLoko, hoondori34")
-        credit_row(body, "dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, dinei, thelonelyman, FIFA 16 COMUNITY")
+        credit_row(body, "dialog.about.collaborators", "NonoLoko, hoondori34, dinei")
+        credit_row(body, "dialog.about.special_thanks", "Robson Mambrini, RHZhang, Guiiro, thelonelyman, FIFA 16 COMUNITY")
 
         tk.Frame(body, bg="#22314b", height=1).pack(fill="x", pady=(14, 0))
         tk.Label(body, text=self.tr("dialog.about.libraries"), bg=self.bg, fg=self.muted,

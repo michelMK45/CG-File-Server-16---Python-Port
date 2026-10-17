@@ -45,6 +45,10 @@ class SettingsStore:
         "SHOW_OVERLAY": True,
         "KIT_HOTKEYS_ENABLED": True,
         "KEEP_OPEN_ON_GAME_CLOSE": True,
+        # Settings tab, next to Clean Cache: on every launch, delete in the
+        # background the generated caches left by earlier sessions
+        # (file_tools.clear_previous_session_cache).
+        "AUTO_CLEAN_CACHE_ON_STARTUP": False,
         "OVERLAY_PERFORMANCE_MODE": False,
         # Default True preserves today's behavior (random pick) for existing
         # installs; unchecking it makes apply_stadium_runtime() open the
@@ -164,6 +168,15 @@ class SettingsStore:
     @keep_open_on_game_close.setter
     def keep_open_on_game_close(self, value: bool) -> None:
         self.data["KEEP_OPEN_ON_GAME_CLOSE"] = bool(value)
+        self.save()
+
+    @property
+    def auto_clean_cache_on_startup(self) -> bool:
+        return bool(self.data.get("AUTO_CLEAN_CACHE_ON_STARTUP", False))
+
+    @auto_clean_cache_on_startup.setter
+    def auto_clean_cache_on_startup(self, value: bool) -> None:
+        self.data["AUTO_CLEAN_CACHE_ON_STARTUP"] = bool(value)
         self.save()
 
     @property
