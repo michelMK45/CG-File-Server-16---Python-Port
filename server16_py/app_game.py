@@ -53,6 +53,21 @@ STADIUM_NAME_PATCH_SUSPENDED_PAGE_TOKENS = (
     "fluxhub", "selectteam", "sideselect", "skillgameresults", "instantreplay",
 )
 
+KICKOFF_HUB_PAGE = "game/screens/playNow/KickOffHub"
+
+# Pages that end the current match preparation (see _handle_page_transition), so
+# the next KickOffHub is a new match: the match loading/being played or its
+# intro, the menus reached after it (FluxHub is also the main menu), team
+# selection again (always a new match), a mode hub that moves on to another
+# fixture, and the training screens. A blank page ends it too (FIFA starts
+# loading the match there). Any other page -- Team Management, Settings,
+# SideSelect (also reachable from KickOffHub before playing) -- is a side trip
+# that keeps the stadium and runtime already applied for this match.
+MATCH_PREP_END_PAGE_TOKENS = (
+    "tv/bumper", "matchintro", "stadiumpan", "fluxhub", "instantreplay", "skillgame",
+    "selectteam", "tournamentmode", "career", "training/", "arenaplayer",
+)
+
 
 class GameMixin:
     """Game process polling, live context reading, and stats loop — part of Server16App via multiple inheritance."""
@@ -82,6 +97,7 @@ class GameMixin:
                         self.log("Game process ended; keeping server open")
                         self.memory.close()
                         self._attached_once = False
+                        self._end_match_preparation("<process ended>")
                         self._reset_chants_state()
                     else:
                         self.log("Game process ended; closing server automatically")
@@ -151,6 +167,10 @@ class GameMixin:
         # page path did or didn't arm/start Team Entrance (see CLAUDE.md §7,
         # "entrance anthem does not restart when the match is restarted").
         self.log(f"Page transition: {page_name!r} (entrance_armed={self._entrance_armed} matchstarted={self.matchstarted})")
+        # Page names only, not matchstarted: the Chants thread keeps setting it
+        # from FIFA's started flag, which can stay stale after an abandoned match.
+        if self._page_ends_match_prep(page_name):
+            self._end_match_preparation(page_name)
         # Safety net for the manual stadium picker (see _open_stadium_picker
         # in stadium_runtime.py): it only ever opens while sitting at
         # KickOffHub, so the first genuine transition away from it — the
@@ -189,7 +209,12 @@ class GameMixin:
             self.matchstarted = False
         if self._page_is_outside_match(page_name):
             self._reset_for_leaving_match(page_name)
-        if page_name == "game/screens/playNow/KickOffHub":
+        if page_name == KICKOFF_HUB_PAGE:
+            if self._match_prep_applied():
+                self._resume_match_preparation()
+                return
+            self._match_prep_context = None
+            self._kickoff_revisit = False
             self._left_match_reset_done = False
             self._kickoff_generation += 1
             self._last_stadium_applied_signature = None
@@ -343,6 +368,54 @@ class GameMixin:
         """
         lowered = (page_name or "").lower()
         return any(token in lowered for token in ("training/", "skillgames/", "misc/arenaplayer"))
+
+    @staticmethod
+    def _page_ends_match_prep(page_name: str) -> bool:
+        """True for a page after which the next KickOffHub is a new match (see
+        MATCH_PREP_END_PAGE_TOKENS); a blank page is FIFA loading the match."""
+        lowered = (page_name or "").lower()
+        return not lowered.strip() or any(token in lowered for token in MATCH_PREP_END_PAGE_TOKENS)
+
+    def _match_prep_applied(self) -> bool:
+        """True while the current match preparation has its runtime applied: a
+        KickOffHub visit auto-applied it for known teams and no page since has
+        ended it (_end_match_preparation). A KickOffHub reached now is a revisit."""
+        context = self._match_prep_context
+        return context is not None and bool(context[0]) and bool(context[1])
+
+    def _resume_match_preparation(self) -> None:
+        """Back on KickOffHub from Team Management, Settings, ... of the same match.
+
+        A fresh visit bumps _kickoff_generation, clears the live context and
+        re-applies the whole runtime once it is read again, which re-rolled the
+        random stadium (or copied the same one again) every time the player came
+        back, even while the first copy was still running. Nothing about the match
+        changed, so the generation, context, stadium, substitution poll and the
+        stadium-name state of this preparation are all kept as they are;
+        refresh_live_context keeps the context too (_match_prep_locked).
+        """
+        self._kickoff_revisit = True
+        self.pagechange = True
+        self.skillgamechange = False
+        self.bumperpagechange = False
+        hid, aid, tour, round_id = self._match_prep_context
+        stadium = "load still running" if self._stadium_task_running else (self.curstad or "-")
+        self.log(
+            f"KickOffHub revisit for the same match (HID={hid} AID={aid} TOUR={tour or '-'} "
+            f"ROUND={round_id or '-'}): keeping the runtime already applied (stadium: {stadium})"
+        )
+
+    def _end_match_preparation(self, page_name: str) -> None:
+        if self._match_prep_context is None and not self._kickoff_revisit:
+            return
+        self._match_prep_context = None
+        self._kickoff_revisit = False
+        self.log(f"Match preparation ended on {page_name!r}; the next KickOffHub applies the runtime again")
+
+    def _match_prep_locked(self, page_name: str) -> bool:
+        """True once the player left KickOffHub after its runtime was applied:
+        until the preparation ends, the context read must not change it."""
+        return self._match_prep_applied() and (self._kickoff_revisit or page_name != KICKOFF_HUB_PAGE)
 
     def _reset_for_leaving_match(self, page_name: str) -> None:
         """Forget the previous match once, on the first out-of-match page.
@@ -914,6 +987,21 @@ class GameMixin:
             self.TOURNAME = tour
         if round_id not in {None, "0"}:
             self.TOURROUNDID = round_id
+        if self._match_prep_locked(page_name):
+            # Same match as the runtime applied on KickOffHub (team changes or
+            # another fixture go through a page that ends the preparation). Nono's
+            # Server 16 saw a transient ROUND (77 instead of 504) on returning from
+            # Team Management while the stadium was still being copied; keep the
+            # applied context so later steps (bumper, chants) don't pick it up.
+            read = (self.HID, self.AID, self.TOURNAME, self.TOURROUNDID)
+            if read != self._match_prep_context:
+                if read != self._match_prep_ignored_context:
+                    self._match_prep_ignored_context = read
+                    self.log(
+                        f"Match preparation context kept on {page_name!r}: ignoring read "
+                        f"HID={read[0] or '-'} AID={read[1] or '-'} TOUR={read[2] or '-'} ROUND={read[3] or '-'}"
+                    )
+                self.HID, self.AID, self.TOURNAME, self.TOURROUNDID = self._match_prep_context
         if not any(value for value in (self.HID, self.AID, self.STADID, self.TOURNAME, self.TOURROUNDID)):
             return
         self.derby = f"{self.HID}vs{self.AID}"
@@ -942,7 +1030,12 @@ class GameMixin:
                 f"TOUR={self.TOURNAME or '-'} ROUND={self.TOURROUNDID or '-'} STAD={self.STADID or '-'} "
                 f"LEAGUE={self.LEAGUEID or '-'}"
             )
-            if self._should_auto_apply_runtime(page_name):
+            if self._should_auto_apply_runtime(page_name) and not self._kickoff_revisit:
+                # First KickOffHub visit of this match: re-applied while the
+                # context is still resolving (AID a tick after HID); the last
+                # applied context is the one a revisit keeps.
+                self._match_prep_context = signature
+                self._match_prep_ignored_context = None
                 self.apply_all_runtime()
 
     def _try_read_context_int(self, trace_name: str, static_ptr: int, offsets: list[int], page_name: str) -> str | None:

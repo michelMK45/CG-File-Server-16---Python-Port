@@ -27,6 +27,8 @@ class FakeGame(GameMixin):
         self._entrance_pre_match_guard = False
         self._stadium_picker_pending = False
         self._stadium_picker_resolved = False
+        self._match_prep_context = None
+        self._kickoff_revisit = False
         self.curstad = ""
         self.entrance_starts = 0
         self.chants_starts = 0

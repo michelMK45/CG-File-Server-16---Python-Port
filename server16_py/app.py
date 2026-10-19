@@ -142,6 +142,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._attached_once = False
         self._logs_visible = False
         self._kickoff_generation = 0
+        # Match preparation (see GameMixin._handle_page_transition): the
+        # (HID, AID, TOUR, ROUND) the runtime was auto-applied for on
+        # KickOffHub, kept until the match starts loading, so returning to
+        # KickOffHub from Team Management/Settings does not reload the stadium.
+        self._match_prep_context: tuple[str, str, str, str] | None = None
+        self._match_prep_ignored_context: tuple[str, str, str, str] | None = None
+        self._kickoff_revisit = False
         # Tracks whether the scoreboardstdname loading notification
         # (app_game.py's _start_scoreboard_name_progress /
         # _finish_scoreboard_name_progress) is currently showing, so the
