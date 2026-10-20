@@ -51,6 +51,42 @@ class _ToastEntry(ctypes.Structure):
     ]
 
 
+# Kits tab, Team Kits editor (PES-style two-kit screen) — MUST match
+# KitEditorSide/KitEditorShared and the KIT_EDITOR_* constants in
+# cgfs16_overlay.cpp. The cursor is not here: the editor's 12 rows are still
+# published as menu_items and menu_selected_index picks the highlighted one
+# (side = index // _KIT_EDITOR_ROWS, row = index % _KIT_EDITOR_ROWS).
+_KIT_EDITOR_ROWS   = 6   # combination, kit, shirt, shorts, socks, goalkeeper
+_KIT_EDITOR_LAYERS = 3   # socks, shorts, shirt — bottom to top
+_KIT_EDITOR_TEXT   = 96
+_KIT_EDITOR_LABEL  = 32
+
+
+class _KitEditorSide(ctypes.Structure):
+    _fields_ = [
+        ("badge",       ctypes.c_wchar * _KIT_EDITOR_LABEL),
+        ("team_name",   ctypes.c_wchar * _KIT_EDITOR_TEXT),
+        ("crest_path",  ctypes.c_wchar * _MAX_IMG),
+        # One transparent PNG per garment (kit_classic_art.make_kit_layer),
+        # stacked by the DLL; "" = not drawn yet.
+        ("layer_paths", (ctypes.c_wchar * _MAX_IMG) * _KIT_EDITOR_LAYERS),
+        ("gk_path",     ctypes.c_wchar * _MAX_IMG),   # "" = automatic / not drawn yet
+        ("row_values",  (ctypes.c_wchar * _KIT_EDITOR_TEXT) * _KIT_EDITOR_ROWS),
+        ("row_pending", ctypes.c_long * _KIT_EDITOR_ROWS),   # 1 = garment not saved yet
+    ]
+
+
+class _KitEditorShared(ctypes.Structure):
+    _fields_ = [
+        ("active",     ctypes.c_long),   # written LAST by set_kit_editor()
+        ("editable",   ctypes.c_long),
+        ("message",    ctypes.c_wchar * _MAX_STR),   # non-empty = no halves, just this text
+        ("save_label", ctypes.c_wchar * _KIT_EDITOR_LABEL),
+        ("row_names",  (ctypes.c_wchar * _KIT_EDITOR_LABEL) * _KIT_EDITOR_ROWS),
+        ("sides",      _KitEditorSide * 2),   # home, away
+    ]
+
+
 class _OverlayShared(ctypes.Structure):
     _fields_ = [
         ("visible",       ctypes.c_long),           # 0 = hide, 1 = show
@@ -226,6 +262,9 @@ class _OverlayShared(ctypes.Structure):
         # cgfs16_rmlui.cpp and forwarded to Rml::Context::ProcessMouseWheel.
         # Single writer (this process), so a plain += is fine.
         ("stadium_picker_wheel_delta", ctypes.c_long),
+        # Kits tab, Team Kits editor — see _KitEditorShared / set_kit_editor().
+        # Kept as the last field so everything before it keeps its offset.
+        ("kit_editor", _KitEditorShared),
     ]
 
 
@@ -455,6 +494,51 @@ class D3DOverlayInjector:
         safe_scroll = max(0, min(int(scroll), safe_selected))
         self._shared.menu_selected_index = safe_selected
         self._shared.menu_scroll_offset = safe_scroll
+
+    def set_kit_editor(self, state: dict | None) -> None:
+        """Kits tab, Team Kits editor (see _KitEditorShared); None hides it.
+
+        state: editable (bool), message (str, non-empty = no halves), save_label,
+        row_names (6 str), sides (home, away dicts: badge, team_name, crest_path,
+        layer_paths = 3 paths bottom to top, gk_path, row_values = 6 str,
+        row_pending = 6 bools). `active` is written last, so the DLL never picks
+        up a half-written first frame (later updates are eventually consistent,
+        like every other field here)."""
+        if not self._ready or self._shared is None:
+            return
+        editor = self._shared.kit_editor
+        if state is None:
+            editor.active = 0
+            return
+
+        def text(value, limit: int) -> str:
+            return str(value or "")[:limit - 1]
+
+        def item(values, index: int):
+            return values[index] if values is not None and index < len(values) else None
+
+        editor.editable = 1 if state.get("editable") else 0
+        editor.message = text(state.get("message"), _MAX_STR)
+        editor.save_label = text(state.get("save_label"), _KIT_EDITOR_LABEL)
+        names = state.get("row_names")
+        for row in range(_KIT_EDITOR_ROWS):
+            editor.row_names[row].value = text(item(names, row), _KIT_EDITOR_LABEL)
+        sides = state.get("sides") or ()
+        for index in range(2):
+            data = sides[index] if index < len(sides) else {}
+            side = editor.sides[index]
+            side.badge = text(data.get("badge"), _KIT_EDITOR_LABEL)
+            side.team_name = text(data.get("team_name"), _KIT_EDITOR_TEXT)
+            side.crest_path = text(data.get("crest_path"), _MAX_IMG)
+            layers = data.get("layer_paths")
+            for layer in range(_KIT_EDITOR_LAYERS):
+                side.layer_paths[layer].value = text(item(layers, layer), _MAX_IMG)
+            side.gk_path = text(data.get("gk_path"), _MAX_IMG)
+            values, pending = data.get("row_values"), data.get("row_pending")
+            for row in range(_KIT_EDITOR_ROWS):
+                side.row_values[row].value = text(item(values, row), _KIT_EDITOR_TEXT)
+                side.row_pending[row] = 1 if item(pending, row) else 0
+        editor.active = 1
 
     def set_window_info(self, total_count: int, window_base: int) -> None:
         """Write virtual-scroll metadata so the C++ scrollbar reflects the real list size."""

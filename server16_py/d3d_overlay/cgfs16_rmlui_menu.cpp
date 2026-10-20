@@ -62,6 +62,21 @@ bool RmlOverlay_MenuActivateDown();
 bool RmlOverlay_StadiumFilterHintVisible();
 bool RmlOverlay_StadiumFilterPanelOpen();
 bool RmlOverlay_MenuItemChecked(int index);
+// Kits tab, Team Kits editor — see KitEditorShared in cgfs16_overlay.cpp.
+#define KIT_EDITOR_ROWS   6
+#define KIT_EDITOR_LAYERS 3
+bool RmlOverlay_KitEditorActive();
+bool RmlOverlay_KitEditorEditable();
+const wchar_t *RmlOverlay_KitEditorMessage();
+const wchar_t *RmlOverlay_KitEditorSaveLabel();
+const wchar_t *RmlOverlay_KitEditorRowName(int row);
+const wchar_t *RmlOverlay_KitEditorBadge(int side);
+const wchar_t *RmlOverlay_KitEditorTeamName(int side);
+const wchar_t *RmlOverlay_KitEditorCrestPath(int side);
+const wchar_t *RmlOverlay_KitEditorLayerPath(int side, int layer);
+const wchar_t *RmlOverlay_KitEditorGkPath(int side);
+const wchar_t *RmlOverlay_KitEditorRowValue(int side, int row);
+bool RmlOverlay_KitEditorRowPending(int side, int row);
 // Movies tab live video preview — see OverlayVideoShared's header comment in
 // cgfs16_overlay.cpp. RmlOverlay_VideoPlaying() decides whether #hero-fade
 // should be hidden (see below); RmlOverlay_SetVideoHeroRect (defined in
@@ -475,6 +490,37 @@ static void ApplyTabGliderAnim(Rml::Element *el, float height) {
     SetRectPx(el, g_gliderAnimTargetLeft, 0.f, g_gliderAnimTargetWidth, height);
 }
 
+// Kits tab, Team Kits editor (menu.rml's #kit-editor, drawn by SyncKitEditor
+// below in place of the list/scrollbar/hero preview). Optional like
+// g_filterBtn: a menu.rml without it just never shows the editor.
+// Height / width of a kit drawing — kit_classic_art.ART_ASPECT; every garment
+// layer has the whole drawing's size, so one box fits all three.
+static const float KIT_ART_ASPECT = 1.2f;
+struct KitSideUi {
+    Rml::Element *root = nullptr, *crest = nullptr, *badge = nullptr, *team = nullptr;
+    Rml::Element *stage = nullptr, *figure = nullptr, *gk = nullptr;
+    Rml::Element *layer[KIT_EDITOR_LAYERS] = {};
+    Rml::Element *row[KIT_EDITOR_ROWS] = {}, *left[KIT_EDITOR_ROWS] = {}, *right[KIT_EDITOR_ROWS] = {};
+    Rml::Element *name[KIT_EDITOR_ROWS] = {}, *value[KIT_EDITOR_ROWS] = {};
+    Rml::Element *save = nullptr, *saveIcon = nullptr, *saveLabel = nullptr;
+    // Reload-on-change caches (same idea as g_rowTextCache/g_previewPathLoaded):
+    // a text/src/class is only touched when what Python wrote differs.
+    std::wstring badgeText, teamText, crestPath, gkPath, saveText;
+    std::wstring layerPath[KIT_EDITOR_LAYERS];
+    std::wstring nameText[KIT_EDITOR_ROWS], valueText[KIT_EDITOR_ROWS];
+    wchar_t saveIconLoaded[MAX_IMG] = {};
+    int shown = -1, focused = -1, savePressed = -1;
+    int rowFocused[KIT_EDITOR_ROWS] = {-1, -1, -1, -1, -1, -1};
+    int rowPending[KIT_EDITOR_ROWS] = {-1, -1, -1, -1, -1, -1};
+    float figW = -1.f, figH = -1.f;
+};
+static Rml::Element *g_kitEditor = nullptr;
+static Rml::Element *g_kitMessage = nullptr;
+static KitSideUi      g_kitSides[2];
+static bool           g_kitEditorReady = false;
+static int            g_kitEditorShown = -1, g_kitMessageShown = -1, g_kitReadonly = -1;
+static std::wstring   g_kitMessageText;
+
 // Phase 2 Step 4: click/scroll event reporting state.
 // g_rowAbsIndex[k] = the ABSOLUTE index (into the current tab's full item
 // list, not just the visible window) that row pool slot k currently shows —
@@ -726,13 +772,70 @@ bool RmlMenu_Load(Rml::Context *context, const Rml::String &content_dir) {
     if (g_filterBtn) g_filterBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
     if (g_filterClearBtn) g_filterClearBtn->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
 
+    // Kits tab, Team Kits editor — optional (see g_kitEditor). Every element is
+    // looked up by id (kit<side>-<part><row>, see menu.rml); one missing piece
+    // disables the editor as a whole rather than drawing half of it.
+    g_kitEditor = g_menuDoc->GetElementById("kit-editor");
+    g_kitMessage = g_menuDoc->GetElementById("kit-message");
+    g_kitEditorReady = g_kitEditor && g_kitMessage;
+    for (int s = 0; s < 2 && g_kitEditorReady; s++) {
+        KitSideUi &ui = g_kitSides[s];
+        auto byId = [&](const char *part, int index) -> Rml::Element * {
+            char idBuf[40];
+            if (index >= 0) snprintf(idBuf, sizeof(idBuf), "kit%d-%s%d", s, part, index);
+            else snprintf(idBuf, sizeof(idBuf), "kit%d-%s", s, part);
+            Rml::Element *el = g_menuDoc->GetElementById(idBuf);
+            if (!el) g_kitEditorReady = false;
+            return el;
+        };
+        char sideId[16];
+        snprintf(sideId, sizeof(sideId), "kit-side%d", s);
+        ui.root = g_menuDoc->GetElementById(sideId);
+        if (!ui.root) g_kitEditorReady = false;
+        ui.crest = byId("crest", -1);
+        ui.badge = byId("badge", -1);
+        ui.team = byId("team", -1);
+        ui.stage = byId("stage", -1);
+        ui.figure = byId("figure", -1);
+        ui.gk = byId("gk", -1);
+        for (int l = 0; l < KIT_EDITOR_LAYERS; l++) ui.layer[l] = byId("layer", l);
+        for (int r = 0; r < KIT_EDITOR_ROWS; r++) {
+            ui.row[r] = byId("row", r);
+            ui.left[r] = byId("left", r);
+            ui.right[r] = byId("right", r);
+            ui.name[r] = byId("name", r);
+            ui.value[r] = byId("value", r);
+        }
+        ui.save = byId("save", -1);
+        ui.saveIcon = byId("save-icon", -1);
+        ui.saveLabel = byId("save-label", -1);
+    }
+    if (g_kitEditorReady) {
+        for (int s = 0; s < 2; s++) {
+            KitSideUi &ui = g_kitSides[s];
+            for (int r = 0; r < KIT_EDITOR_ROWS; r++) {
+                ui.row[r]->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+                ui.left[r]->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+                ui.right[r]->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+            }
+            ui.save->AddEventListener(Rml::EventId::Click, &g_menuEventListener);
+        }
+    } else {
+        Log("[RmlMenu] Load: Team Kits editor elements missing — editor disabled");
+    }
+
     Log("[RmlMenu] Load ok ('%s')", path.c_str());
     return true;
 }
 
 // menu_event_kind values — must match d3d_injector.py's get_menu_event() /
 // app_overlay.py's _handle_rmlui_menu_event() docstrings exactly.
-enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5, EVK_FILTER_TOGGLE = 6, EVK_FILTER_CLEAR = 7, EVK_MUTE_TOGGLE = 8 };
+// The three EVK_KIT_* are the Team Kits editor's: KIT_ROW index = the row's
+// flat index (side * KIT_EDITOR_ROWS + row, the same numbering as
+// menu_selected_index), KIT_ARROW index = flat index * 2 + (1 for ›, 0 for ‹),
+// KIT_SAVE index = side.
+enum MenuEventKind { EVK_TAB_CLICK = 1, EVK_ITEM_CLICK = 2, EVK_SCROLL_TO = 3, EVK_HERO_ACTIVATE = 4, EVK_CLOSE_CLICK = 5, EVK_FILTER_TOGGLE = 6, EVK_FILTER_CLEAR = 7, EVK_MUTE_TOGGLE = 8,
+                     EVK_KIT_ROW = 9, EVK_KIT_ARROW = 10, EVK_KIT_SAVE = 11 };
 
 // Converts a relative position along the scrollbar track [0, 1] into an
 // absolute scroll target, using the same maxScrollTotal = totalCount -
@@ -765,6 +868,31 @@ void MenuEventListener::ProcessEvent(Rml::Event &event) {
         if (cur == g_filterClearBtn) {
             RmlOverlay_PushMenuEvent(EVK_FILTER_CLEAR, 0);
             return;
+        }
+        if (g_kitEditorReady) {
+            for (int s = 0; s < 2; s++) {
+                const KitSideUi &ui = g_kitSides[s];
+                if (cur == ui.save) {
+                    RmlOverlay_PushMenuEvent(EVK_KIT_SAVE, s);
+                    return;
+                }
+                for (int r = 0; r < KIT_EDITOR_ROWS; r++) {
+                    int flat = s * KIT_EDITOR_ROWS + r;
+                    if (cur == ui.left[r] || cur == ui.right[r]) {
+                        // The arrow sits inside its row, which has a listener
+                        // of its own: without this the click would bubble on
+                        // and the row's EVK_KIT_ROW would overwrite this event
+                        // in the single "last event wins" slot.
+                        event.StopPropagation();
+                        RmlOverlay_PushMenuEvent(EVK_KIT_ARROW, flat * 2 + (cur == ui.right[r] ? 1 : 0));
+                        return;
+                    }
+                    if (cur == ui.row[r]) {
+                        RmlOverlay_PushMenuEvent(EVK_KIT_ROW, flat);
+                        return;
+                    }
+                }
+            }
         }
         if (cur == g_hintCloseKey || cur == g_hintCloseGp) {
             // Guard against a click landing on the currently-hidden hint row
@@ -866,6 +994,110 @@ void MenuEventListener::ProcessEvent(Rml::Event &event) {
     }
 }
 
+// Text handed to SetInnerRML is parsed as RML: a team called "Brighton &
+// Hove Albion" must not be read as markup.
+static Rml::String EscapeRml(const Rml::String &text) {
+    Rml::String out;
+    out.reserve(text.size());
+    for (char c : text) {
+        switch (c) {
+            case '&': out += "&amp;"; break;
+            case '<': out += "&lt;"; break;
+            case '>': out += "&gt;"; break;
+            default: out += c; break;
+        }
+    }
+    return out;
+}
+static void SetTextCached(Rml::Element *el, std::wstring &cache, const wchar_t *text) {
+    if (!el || cache == text) return;
+    cache = text;
+    el->SetInnerRML(EscapeRml(WideToUtf8(text)));
+}
+// "" hides the <img> (its RCSS default is display:none, matching the empty cache).
+static void SetImgCached(Rml::Element *el, std::wstring &cache, const wchar_t *path) {
+    if (!el || cache == path) return;
+    cache = path;
+    if (path[0]) {
+        el->SetAttribute("src", WideToUtf8(path));
+        el->SetProperty("display", "block");
+    } else {
+        el->SetProperty("display", "none");
+    }
+}
+static void SetClassCached(Rml::Element *el, const char *name, bool on, int &cache) {
+    if (!el || cache == (on ? 1 : 0)) return;
+    cache = on ? 1 : 0;
+    el->SetClass(name, on);
+}
+static void SetVisibleCached(Rml::Element *el, bool visible, const char *display, int &cache) {
+    if (!el || cache == (visible ? 1 : 0)) return;
+    cache = visible ? 1 : 0;
+    SetVisible(el, visible, display);
+}
+
+// Kits tab, Team Kits editor: fills #kit-editor from KitEditorShared and puts
+// it at (x, y, w, h), panel-local — the rect the list + scrollbar would use.
+// The highlighted row is the menu's own selection (selIdx: side * ROWS + row),
+// so the list's keyboard/gamepad navigation moves it without anything new on
+// the Python side. Layout inside is RCSS flex, except the drawing's box,
+// sized here from the stage's last laid-out size (a frame behind, settles on
+// the next one).
+static void SyncKitEditor(bool active, float x, float y, float w, float h, long selIdx,
+                          bool gamepadMode, const wchar_t *gpDir, const wchar_t *keyDir) {
+    if (!g_kitEditorReady) return;
+    SetVisibleCached(g_kitEditor, active, "flex", g_kitEditorShown);
+    if (!active) return;
+    SetRectPx(g_kitEditor, x, y, w, h);
+    SetClassCached(g_kitEditor, "readonly", !RmlOverlay_KitEditorEditable(), g_kitReadonly);
+
+    const wchar_t *message = RmlOverlay_KitEditorMessage();
+    bool showMessage = message[0] != L'\0';
+    SetVisibleCached(g_kitMessage, showMessage, "flex", g_kitMessageShown);
+    if (showMessage) SetTextCached(g_kitMessage, g_kitMessageText, message);
+
+    long focusSide = selIdx / KIT_EDITOR_ROWS;
+    long focusRow = selIdx % KIT_EDITOR_ROWS;
+    bool activateDown = RmlOverlay_MenuActivateDown();
+    for (int s = 0; s < 2; s++) {
+        KitSideUi &ui = g_kitSides[s];
+        SetVisibleCached(ui.root, !showMessage, "flex", ui.shown);
+        if (showMessage) continue;
+        bool sideFocused = (s == focusSide);
+        SetClassCached(ui.root, "focused", sideFocused, ui.focused);
+        SetTextCached(ui.badge, ui.badgeText, RmlOverlay_KitEditorBadge(s));
+        SetTextCached(ui.team, ui.teamText, RmlOverlay_KitEditorTeamName(s));
+        SetImgCached(ui.crest, ui.crestPath, RmlOverlay_KitEditorCrestPath(s));
+        for (int l = 0; l < KIT_EDITOR_LAYERS; l++)
+            SetImgCached(ui.layer[l], ui.layerPath[l], RmlOverlay_KitEditorLayerPath(s, l));
+        SetImgCached(ui.gk, ui.gkPath, RmlOverlay_KitEditorGkPath(s));
+
+        // Largest 1 : KIT_ART_ASPECT box that fits the stage, minus a margin.
+        Rml::Vector2f stage = ui.stage->GetBox().GetSize();
+        float figH = floorf((std::max)(0.f, (std::min)(stage.y - 12.f, (stage.x - 12.f) * KIT_ART_ASPECT)));
+        float figW = floorf(figH / KIT_ART_ASPECT);
+        if (figW != ui.figW || figH != ui.figH) {
+            SetPx(ui.figure, "width", figW);
+            SetPx(ui.figure, "height", figH);
+            ui.figW = figW;
+            ui.figH = figH;
+        }
+
+        for (int r = 0; r < KIT_EDITOR_ROWS; r++) {
+            SetTextCached(ui.name[r], ui.nameText[r], RmlOverlay_KitEditorRowName(r));
+            SetTextCached(ui.value[r], ui.valueText[r], RmlOverlay_KitEditorRowValue(s, r));
+            SetClassCached(ui.row[r], "focused", sideFocused && r == focusRow, ui.rowFocused[r]);
+            SetClassCached(ui.row[r], "pending", RmlOverlay_KitEditorRowPending(s, r), ui.rowPending[r]);
+        }
+        SetTextCached(ui.saveLabel, ui.saveText, RmlOverlay_KitEditorSaveLabel());
+        // Same A / Enter glyph as #hero-btn; the focused side's button shrinks
+        // while Enter/A is held, like .hero-pressed.
+        if (gamepadMode) SetIconSrcCached(ui.saveIcon, ui.saveIconLoaded, MAX_IMG, gpDir, kGpIconFiles[GP_A]);
+        else SetIconSrcCached(ui.saveIcon, ui.saveIconLoaded, MAX_IMG, keyDir, kKeyIconFiles[KEY_ENTER]);
+        SetClassCached(ui.save, "pressed", sideFocused && activateDown, ui.savePressed);
+    }
+}
+
 void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     if (!g_menuDoc) return;
 
@@ -920,6 +1152,10 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     // while on that tab, but a stale True lingering across a fast tab-switch
     // frame should never make an unrelated tab's list shrink into a bubble).
     bool filterPanelOpen = (activeTab == TAB_STADIUMS) && RmlOverlay_StadiumFilterPanelOpen();
+    // Kits tab, Team Kits editor (see SyncKitEditor): replaces the list, its
+    // scrollbar and the hero preview. Gated on TAB_KITS for the same reason
+    // as filterPanelOpen just above.
+    bool kitEditor = (activeTab == TAB_KITS) && g_kitEditorReady && RmlOverlay_KitEditorActive();
     // filterPanelOpen must be computed before this: a stadium preview is
     // meaningless while picking country filters, and — more importantly —
     // showSplit also drives listSideW/adjListW below, which the grid's real
@@ -928,7 +1164,7 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     // (the split-preview share) left far less room than a popover this size
     // reasonably wants — full width lets the grid actually use the space.
     bool showSplit = (activeTab == TAB_SCOREBOARDS || activeTab == TAB_STADIUMS || activeTab == TAB_MOVIES ||
-                       activeTab == TAB_TVLOGOS || activeTab == TAB_KITS) && !filterPanelOpen;
+                       activeTab == TAB_TVLOGOS || activeTab == TAB_KITS) && !filterPanelOpen && !kitEditor;
     // Computed once here (not down at the bottom hint bar anymore) since the
     // tab-strip hints, hero-btn icon, and row-action hint all need it too.
     bool gamepadMode = RmlOverlay_InputMode() != 0;
@@ -1243,6 +1479,9 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     }
 
     // ── Item list (fixed ROW_POOL-row pool; pool slot k = real item scrollOffset+k)
+    // Hidden under the Team Kits editor, which takes the list + scrollbar's
+    // rect (showSplit is off there, so that is the full content width).
+    SetVisible(g_listArea, !kitEditor, "flex");
     SetRectPx(g_listArea, lListX, lAdjListY, adjListW, adjScrollH);
     if (filterPanelOpen != g_listAreaBubbleCache) {
         if (g_listArea) g_listArea->SetClass("bubble", filterPanelOpen);
@@ -1267,7 +1506,7 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
         g_rowAbsIndex[k] = windowBase + realIndex;
         // !loading: hide every row while a new list is still being computed
         // rather than showing the previous (stale) one under the spinner.
-        bool inWindow = !loading && (k < visibleRows) && (realIndex < itemCount);
+        bool inWindow = !loading && !kitEditor && (k < visibleRows) && (realIndex < itemCount);
         if (inWindow != g_rowShown[k]) {
             // "flex", not "block": .row lays its optional .row-thumb and
             // .row-text side by side (see menu.rml) — needed for every tab,
@@ -1361,7 +1600,7 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     {
         long targetAbsIndex = (rowHintHoverAbsIndex >= 0) ? rowHintHoverAbsIndex : rowHintSelAbsIndex;
         float targetLocalY = (rowHintHoverAbsIndex >= 0) ? rowHintHoverLocalY : rowHintSelLocalY;
-        bool showRowHint = !showSplit && !filterPanelOpen && targetAbsIndex >= 0;
+        bool showRowHint = !showSplit && !filterPanelOpen && !kitEditor && targetAbsIndex >= 0;
         SetVisible(g_rowActionHint, showRowHint, "block");
         if (showRowHint) {
             const float ROW_HINT_SIZE = 20.f;
@@ -1376,9 +1615,14 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
     }
 
     // ── Empty state (overlays the same rect as the list area)
-    bool empty = !loading && (itemCount == 0);
+    bool empty = !loading && !kitEditor && (itemCount == 0);
     SetVisible(g_emptyState, empty, "flex");
     if (empty) SetRectPx(g_emptyState, lListX, lAdjListY, adjListW, adjScrollH);
+
+    // ── Kits tab, Team Kits editor — same rect as the list + scrollbar;
+    // hidden while a new list is being computed, like the rows above.
+    SyncKitEditor(kitEditor && !loading, lListX, lAdjListY, adjListW + SCROLL_GAP + SCROLL_W, adjScrollH,
+                  selIdx, gamepadMode, gpDir, keyDir);
 
     // ── Loading spinner — replaces the (stale) row list/empty-state while
     // Python computes a new one (see the `loading` comment above). Centered
@@ -1392,10 +1636,11 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
                   SPIN_SIZE, SPIN_SIZE);
     }
 
-    // ── Scrollbar
+    // ── Scrollbar (none under the Team Kits editor: its 12 rows always fit)
+    SetVisible(g_scrollTrack, !kitEditor, "block");
     SetRectPx(g_scrollTrack, lScrollX, lAdjListY, SCROLL_W, adjScrollH);
     long maxScrollTotal = (std::max)(0L, totalCount - (long)visibleRows);
-    if (!loading && maxScrollTotal > 0) {
+    if (!loading && !kitEditor && maxScrollTotal > 0) {
         long realScroll = scrollOffset + windowBase;
         float thumbH = (std::max)(22.f, adjScrollH * ((float)visibleRows / (float)totalCount));
         if (thumbH > adjScrollH) thumbH = adjScrollH;
@@ -1409,6 +1654,10 @@ void RmlMenu_Sync(int vpW, int vpH, void *outputWindow) {
 
     // ── Split preview / hero panel (scoreboards/stadiums/tvlogos/kits tabs)
     SetVisible(g_splitPreview, showSplit && !loading, "flex");
+    // The Movies video quad is only ever positioned from inside the block
+    // below; with no hero panel (Team Kits editor, Stadiums filter bubble)
+    // nothing must be left drawing where it last was.
+    if (!showSplit) RmlOverlay_SetVideoHeroRect(false, 0.f, 0.f, 0.f, 0.f);
     if (showSplit) {
         SetRectPx(g_splitPreview, lPrevX, lPrevY, prevSideW, prevSideH);
         const wchar_t *imgPath = RmlOverlay_ImagePath();

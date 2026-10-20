@@ -15,6 +15,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING
 
+from .kit_classic import replace_generated_blocks, strip_generated_blocks
+
 if TYPE_CHECKING:
     from .app import Server16App
 
@@ -389,6 +391,14 @@ class KitMixRuntime:
             f"No template kit found for team {team_id} (kit type {kittype}). "
             f"Place at least one .rx3 under {self.kits_dir(team_id)}"
         )
+
+    def current_kit_path(self, team_id: str, kittype: str) -> Optional[Path]:
+        """The kit apply_mix would start from (whose parts "keep current" keeps), or
+        None when there is none yet. Used by the Advanced tab's result preview."""
+        try:
+            return self._resolve_template(team_id, kittype)
+        except FileNotFoundError:
+            return None
 
     def _run_worker(self, config: dict, worker_name: str = "kit_worker.py") -> dict:
         return run_fifalibrary_worker(config, worker_name)
@@ -1055,9 +1065,23 @@ class KitMixRuntime:
         Team-level, not per-kit-type, since all kit types' overrides live in
         this one shared file."""
         live_path = self.team_lua_path(team_id)
-        self._restore(live_path)
+        self._restore_team_lua(live_path)
         self.app.log(f"Kit name color restored to original for team {team_id}: {live_path}")
         return {"team_id": team_id, "output": str(live_path)}
+
+    def _restore_team_lua(self, live_path: Path) -> None:
+        """Whole-file restore of team_<id>.lua that keeps the Kits > Classic
+        combinations block (and Dinei's kit-details block) as they are right now.
+        The .original.lua backup is a snapshot from the first name-colour patch:
+        restoring it verbatim would wipe combinations saved since, or bring back a
+        stale copy of them -- see kit_classic.replace_generated_blocks."""
+        current = live_path.read_text(encoding="utf-8") if live_path.exists() else ""
+        self._restore(live_path)
+        restored = live_path.read_text(encoding="utf-8") if live_path.exists() else ""
+        merged = replace_generated_blocks(restored, current)
+        if merged != restored:
+            live_path.parent.mkdir(parents=True, exist_ok=True)
+            live_path.write_text(merged, encoding="utf-8")
 
     def restore_kit_type(self, team_id: str, kittype: str) -> None:
         """Restores jersey/shorts texture, both number slots, and the kit UI
@@ -1116,7 +1140,9 @@ class KitMixRuntime:
         new_call = f"assignKitDetails({team_id},{kittype},{','.join(args)})"
         new_text = live_text[: match.start()] + new_call + live_text[match.end() :]
 
-        fully_reverted = new_text == backup_text or (
+        # Kits > Classic blocks don't count: they're kept across the restore (see
+        # _restore_team_lua) and shouldn't keep this team listed as modified.
+        fully_reverted = strip_generated_blocks(new_text) == strip_generated_blocks(backup_text) or (
             # backup_text is the pristine pre-patch file. When it's the
             # empty-marker case (this file didn't exist before any patch —
             # see _backup_if_needed) there's no non-empty byte string it can
@@ -1130,7 +1156,7 @@ class KitMixRuntime:
             # the whole-file restore so has_backup_name_color's bookkeeping
             # (and list_modified_kits) correctly stop showing this team as
             # modified, instead of leaving a now-redundant backup behind.
-            self._restore(live_path)
+            self._restore_team_lua(live_path)
         else:
             live_path.write_text(new_text, encoding="utf-8")
         self.app.log(f"Kit name color reset to default for team {team_id} ({kittype})")

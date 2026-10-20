@@ -70,6 +70,40 @@ struct ToastEntry {
     wchar_t icon[MAX_ICON];
 };
 
+// Kits tab, Team Kits editor (PES-style two-kit screen) — one half per side
+// of the match, written by Python's set_kit_editor() (d3d_injector.py, MUST
+// match _KitEditorSide/_KitEditorShared there), drawn by cgfs16_rmlui_menu.cpp's
+// SyncKitEditor. Which row has the cursor is NOT here: it is the menu's own
+// menu_selected_index over the 12 rows Python still publishes as menu_items
+// (side = index / KIT_EDITOR_ROWS, row = index % KIT_EDITOR_ROWS), so the
+// list's keyboard/gamepad navigation drives the editor unchanged.
+#define KIT_EDITOR_ROWS   6   // combination, kit, shirt, shorts, socks, goalkeeper
+#define KIT_EDITOR_LAYERS 3   // socks, shorts, shirt — bottom to top
+#define KIT_EDITOR_TEXT   96
+#define KIT_EDITOR_LABEL  32
+
+struct KitEditorSide {
+    wchar_t badge[KIT_EDITOR_LABEL];          // "HOME" / "AWAY", localized
+    wchar_t team_name[KIT_EDITOR_TEXT];
+    wchar_t crest_path[MAX_IMG];              // "" = no crest
+    // One transparent PNG per garment, all the size of the whole drawing, so
+    // stacking them gives the kit (kit_classic_art.make_kit_layer); "" = not
+    // drawn yet (Python renders them in the background).
+    wchar_t layer_paths[KIT_EDITOR_LAYERS][MAX_IMG];
+    wchar_t gk_path[MAX_IMG];                 // forced goalkeeper kit drawing, "" = automatic / not drawn yet
+    wchar_t row_values[KIT_EDITOR_ROWS][KIT_EDITOR_TEXT];
+    volatile LONG row_pending[KIT_EDITOR_ROWS]; // 1 = garment changed, not saved yet
+};
+
+struct KitEditorShared {
+    volatile LONG active;      // 1 = draw the editor instead of the Kits list; written LAST by Python
+    volatile LONG editable;    // 0 = read only (no Rev Mod V1.3.5 player.lua): arrows/save dimmed
+    wchar_t message[MAX_STR];  // non-empty = no halves, just this (no match / no FIFA folder)
+    wchar_t save_label[KIT_EDITOR_LABEL];
+    wchar_t row_names[KIT_EDITOR_ROWS][KIT_EDITOR_LABEL];
+    KitEditorSide sides[2];    // home, away
+};
+
 struct OverlayShared {
     volatile LONG visible;
     volatile LONG progress_x100;
@@ -276,6 +310,9 @@ struct OverlayShared {
     // writer (Python, plain +=), so no InterlockedIncrement is needed on
     // that side, same reasoning as kit_carousel_cycle_seq above.
     volatile LONG stadium_picker_wheel_delta;
+    // Kits tab, Team Kits editor — see KitEditorShared above. Kept as the
+    // last field so the layout of everything before it is untouched.
+    KitEditorShared kit_editor;
 };
 
 static HANDLE        g_hMap  = NULL;
@@ -521,6 +558,50 @@ bool RmlOverlay_StadiumFilterPanelOpen() {
 bool RmlOverlay_MenuItemChecked(int index) {
     if (!g_data || index < 0 || index >= MAX_MENU_ITEMS) return false;
     return InterlockedCompareExchange(&g_data->menu_item_checked[index], 0, 0) != 0;
+}
+// Kits tab, Team Kits editor — see KitEditorShared. side 0 = home, 1 = away;
+// out-of-range indexes read as empty/false.
+static const KitEditorSide *KitEditorSideAt(int side) {
+    return (g_data && side >= 0 && side < 2) ? &g_data->kit_editor.sides[side] : nullptr;
+}
+bool RmlOverlay_KitEditorActive() {
+    return g_data && InterlockedCompareExchange(&g_data->kit_editor.active, 0, 0) != 0;
+}
+bool RmlOverlay_KitEditorEditable() {
+    return g_data && InterlockedCompareExchange(&g_data->kit_editor.editable, 0, 0) != 0;
+}
+const wchar_t *RmlOverlay_KitEditorMessage()   { return g_data ? g_data->kit_editor.message    : L""; }
+const wchar_t *RmlOverlay_KitEditorSaveLabel() { return g_data ? g_data->kit_editor.save_label : L""; }
+const wchar_t *RmlOverlay_KitEditorRowName(int row) {
+    return (g_data && row >= 0 && row < KIT_EDITOR_ROWS) ? g_data->kit_editor.row_names[row] : L"";
+}
+const wchar_t *RmlOverlay_KitEditorBadge(int side) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return s ? s->badge : L"";
+}
+const wchar_t *RmlOverlay_KitEditorTeamName(int side) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return s ? s->team_name : L"";
+}
+const wchar_t *RmlOverlay_KitEditorCrestPath(int side) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return s ? s->crest_path : L"";
+}
+const wchar_t *RmlOverlay_KitEditorLayerPath(int side, int layer) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return (s && layer >= 0 && layer < KIT_EDITOR_LAYERS) ? s->layer_paths[layer] : L"";
+}
+const wchar_t *RmlOverlay_KitEditorGkPath(int side) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return s ? s->gk_path : L"";
+}
+const wchar_t *RmlOverlay_KitEditorRowValue(int side, int row) {
+    const KitEditorSide *s = KitEditorSideAt(side);
+    return (s && row >= 0 && row < KIT_EDITOR_ROWS) ? s->row_values[row] : L"";
+}
+bool RmlOverlay_KitEditorRowPending(int side, int row) {
+    if (!g_data || side < 0 || side >= 2 || row < 0 || row >= KIT_EDITOR_ROWS) return false;
+    return InterlockedCompareExchange(&g_data->kit_editor.sides[side].row_pending[row], 0, 0) != 0;
 }
 static HMODULE       g_selfModule = NULL;
 static volatile LONG g_unloading = 0;

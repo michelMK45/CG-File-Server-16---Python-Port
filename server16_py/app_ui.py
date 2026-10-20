@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ctypes
+import queue
 import sys
 import time
 import threading
@@ -15,6 +16,7 @@ from .dialogs import AboutDialog, ImgbbApiKeyDialog
 from .gamepad_bridge_runtime import GamepadBridgeRuntime, XINPUT_USER_COUNT, xinput_gamepad_has_input
 from .file_tools import (
     clear_generated_cache,
+    clear_previous_session_cache,
     gamepad_button_icon_dir,
     keyboard_button_icon_dir,
     kit_ui_placeholder_path,
@@ -22,6 +24,9 @@ from .file_tools import (
     rmlui_content_dir,
     stadium_preview_fallback_path,
 )
+from .image_zoom_dialog import ImageZoomDialog
+from .kit_art_preview import KitArtPreview, advanced_mix_sources, attach_zoom
+from .kit_classic_tab import KitClassicTab
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
 from .module_catalog import MODULE_CATEGORIES, module_category_key, module_label_key, module_tooltip_key
 from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
@@ -61,6 +66,9 @@ UI_ZOOM_NAMED_FONTS = (
 
 KITMIX_KEEP_LABEL = "-- keep current --"
 KITSIMPLE_GK_NONE_LABEL = "-- none --"
+KITSIMPLE_ART_SIZE = 118        # kit drawing beside the Simple tab's kit UI thumbnail
+KITMIX_RESULT_ART_SIZE = 110    # Advanced tab's result preview
+ZOOM_RENDER_SIZE = 512          # max_size of 32-bit bridge renders shown in the zoom dialog
 KITMIX_IMPORTED_LABEL_PREFIX = "[image] "
 KITMIX_IMPORTED_RX3_LABEL_PREFIX = "[file] "
 KITMIX_IMPORTED_DDS_LABEL_PREFIX = "[file] "
@@ -1833,14 +1841,18 @@ class UIMixin:
         sub_notebook.pack(fill="both", expand=True)
         self._kits_sub_notebook = sub_notebook
 
+        self.kits_classic_subtab = tk.Frame(sub_notebook, bg=self.bg)
         self.kits_simple_subtab = tk.Frame(sub_notebook, bg=self.bg)
         self.kits_advanced_subtab = tk.Frame(sub_notebook, bg=self.bg)
+        sub_notebook.add(self.kits_classic_subtab, text=self.tr("tab.kits.classic"))
         sub_notebook.add(self.kits_simple_subtab, text=self.tr("tab.kits.simple"))
         sub_notebook.add(self.kits_advanced_subtab, text=self.tr("tab.kits.advanced"))
         sub_notebook.bind("<<NotebookTabChanged>>", self._on_kits_subtab_changed)
 
         self._build_kits_advanced_tab(self.kits_advanced_subtab)
         self._build_kits_simple_tab(self.kits_simple_subtab)
+        # Built last: it shares self.kitmix_team_id, created by the advanced tab.
+        self.kit_classic_view = KitClassicTab(self.kits_classic_subtab, self)
 
     def _on_kits_subtab_changed(self, event=None) -> None:
         if self._kits_sub_notebook is None:
@@ -1849,7 +1861,10 @@ class UIMixin:
             current = self._kits_sub_notebook.nametowidget(self._kits_sub_notebook.select())
         except Exception:
             return
-        if current is self.kits_simple_subtab:
+        if current is self.kits_classic_subtab:
+            if self.kit_classic_view is not None:
+                self.kit_classic_view.on_shown()
+        elif current is self.kits_simple_subtab:
             self._kitsimple_on_tab_shown()
         elif current is self.kits_advanced_subtab:
             self._kitmix_on_tab_shown()
@@ -1877,11 +1892,14 @@ class UIMixin:
         self._dark_label(top, self.tr("dialog.kitmix.team_id"), bg=self.card, muted=True).pack(side="left")
         ttk.Entry(top, textvariable=self.kitmix_team_id, width=10).pack(side="left", padx=(6, 12))
         self._dark_label(top, self.tr("dialog.kitmix.kit_type"), bg=self.card, muted=True).pack(side="left")
-        ttk.Combobox(
+        kittype_combo = ttk.Combobox(
             top, state="readonly", textvariable=self.kitmix_kittype,
             values=tuple(self.kitmix_kittype_labels.values()), width=10,
             style="Server16.TCombobox",
-        ).pack(side="left", padx=(6, 12))
+        )
+        kittype_combo.pack(side="left", padx=(6, 12))
+        # The result preview's "keep current" parts depend on the kit type.
+        kittype_combo.bind("<<ComboboxSelected>>", lambda _e: self._kitmix_refresh_result_preview())
         ttk.Button(top, text=self.tr("dialog.kitmix.refresh"), command=self._kitmix_refresh_lists).pack(side="left")
         self.kitmix_team_name_label = self._dark_label(top, "", bg=self.card, muted=True)
         self.kitmix_team_name_label.pack(side="left", padx=(12, 0))
@@ -1989,8 +2007,74 @@ class UIMixin:
             role_key="kitui", kitui_image_import=True,
         )
         self._kitmix_build_namecolor_picker(body, 2, 0)
+        self._kitmix_build_result_preview(body)
 
         self._kitmix_refresh_lists()
+
+    def _kitmix_build_result_preview(self, parent: tk.Misc) -> None:
+        """Narrow 4th column next to the pickers: the kit drawing of the mix being
+        built (shirt from the Jersey source, shorts+socks from the Shorts source,
+        "keep current" parts from the kit the mix starts from) -- see
+        kit_art_preview.advanced_mix_sources. Click to enlarge."""
+        card = self._kitmix_card(parent, self.tr("dialog.kitmix.result"))
+        card.grid(row=0, column=3, rowspan=2, sticky="nsew", padx=(12, 0))
+        parent.grid_columnconfigure(3, weight=0)
+        self._kitmix_result_preview = KitArtPreview(card, self, KITMIX_RESULT_ART_SIZE,
+                                                    zoom_title=self.tr("dialog.kitmix.result"))
+        self._kitmix_result_preview.pack(padx=12, pady=(0, 8))
+        self._kitmix_result_caption = self._dark_label(
+            card, "", bg=self.card, muted=True, font=("Bahnschrift", 8), justify="left", wraplength=160,
+        )
+        self._kitmix_result_caption.pack(anchor="w", padx=12, pady=(0, 12))
+
+    def _kitmix_refresh_result_preview(self) -> None:
+        preview = getattr(self, "_kitmix_result_preview", None)
+        if preview is None:
+            return
+        from pathlib import Path
+
+        team_id, kittype = self._kitmix_current_team_kittype()
+        current = self.kit_mixer.current_kit_path(team_id, kittype) if team_id else None
+        sources = advanced_mix_sources(self._kitmix_jersey_source, self._kitmix_shorts_source, current)
+
+        def describe(source: dict) -> str:
+            if source.get("mode") in ("rx3", "img") and source.get("path"):
+                return Path(source["path"]).name
+            return self.tr("dialog.kitmix.result_current")
+
+        if sources is None:
+            preview.show(None, placeholder=self.tr("dialog.kitmix.no_changes"))
+            self._kitmix_result_caption.configure(text="")
+            return
+        preview.show(sources)
+        self._kitmix_result_caption.configure(text=(
+            f"{self.tr('dialog.kitmix.jersey')}: {describe(self._kitmix_jersey_source)}\n"
+            f"{self.tr('dialog.kitmix.shorts')}: {describe(self._kitmix_shorts_source)}"
+        ))
+
+    def _kitmix_zoom_source(self, role_key: str) -> None:
+        """Bigger view of one picker's inline preview: the imported image itself, or
+        the source rendered again at a larger size by the 32-bit bridge."""
+        from pathlib import Path
+
+        source = {
+            "jersey": self._kitmix_jersey_source, "shorts": self._kitmix_shorts_source,
+            "crest": self._kitmix_crest_source, "jersey_numbers": self._kitmix_jersey_numbers_source,
+            "shorts_numbers": self._kitmix_shorts_numbers_source, "kitui": self._kitmix_kitui_source,
+        }.get(role_key) or {}
+        mode, path = source.get("mode", "keep"), source.get("path")
+        if mode == "keep" or not path:
+            return
+
+        def load():
+            if mode != "img":
+                return Image.open(self.kit_mixer.render_preview(path, role_key, max_size=ZOOM_RENDER_SIZE,
+                                                                cache_key=f"zoom_{role_key}"))
+            image = Image.open(path)
+            image.load()
+            return image
+
+        ImageZoomDialog(self, load, f"{self.tr('dialog.zoom.title')} · {Path(path).name}")
 
     def _kitmix_build_namecolor_picker(self, parent: tk.Misc, row: int, column: int) -> None:
         card = self._kitmix_card(parent, self.tr("dialog.kitmix.name_color"))
@@ -2225,6 +2309,7 @@ class UIMixin:
         self._kitmix_populate_list(self._kitmix_kitui_list, self._kitmix_kitui_source, "kitui")
         self.kitmix_namecolor_var.set("")
         self._kitmix_refresh_namecolor_options()
+        self._kitmix_refresh_result_preview()
 
     def _kitmix_on_tab_shown(self) -> None:
         if not self.kitmix_team_id.get().strip():
@@ -2301,10 +2386,13 @@ class UIMixin:
         label.pack(padx=6, pady=6, ipadx=2, ipady=2)
         label.image_size = (88, 88)
         self._kitmix_preview_labels[role_key] = label
+        attach_zoom(self, label, lambda: self._kitmix_zoom_source(role_key))
 
     def _kitmix_on_source_changed(self, role_key: str, source: dict) -> None:
         from pathlib import Path
 
+        if role_key in ("jersey", "shorts"):
+            self._kitmix_refresh_result_preview()
         generation = self._kitmix_preview_generation.get(role_key, 0) + 1
         self._kitmix_preview_generation[role_key] = generation
         mode = source.get("mode", "keep")
@@ -2669,6 +2757,10 @@ class UIMixin:
         self._kitsimple_listbox.pack(fill="both", expand=True)
         self._kitsimple_listbox.bind("<<ListboxSelect>>", self._kitsimple_on_select)
 
+        # The selected kit set drawn as a kit (kit_art_preview), beside its kit UI thumbnail.
+        self._kitsimple_art_preview = KitArtPreview(body, self, KITSIMPLE_ART_SIZE)
+        self._kitsimple_art_preview.pack(side="left", anchor="n", padx=(0, 8))
+
         preview_frame = tk.Frame(body, bg=self.card_soft, highlightthickness=1, highlightbackground="#243654")
         preview_frame.pack(side="left", fill="y")
         preview_label = tk.Label(
@@ -2678,6 +2770,8 @@ class UIMixin:
         preview_label.pack(padx=8, pady=8, ipadx=4, ipady=4)
         preview_label.image_size = (170, 170)
         self._kitsimple_preview_label = preview_label
+        self._kitsimple_selected_entry: dict | None = None
+        attach_zoom(self, preview_label, self._kitsimple_zoom_kitui)
 
         numbers_warning_label = tk.Label(
             scroll_body, text="", bg=self.card, fg="#FFAA00", anchor="w", justify="left",
@@ -2888,11 +2982,17 @@ class UIMixin:
         generation = self._kitsimple_preview_generation + 1
         self._kitsimple_preview_generation = generation
         if not selection or not self._kitsimple_kit_sets or selection[0] >= len(self._kitsimple_kit_sets):
+            self._kitsimple_selected_entry = None
+            self._kitsimple_art_preview.show(None, placeholder=self.tr("dialog.kitmix.no_changes"))
             self._kitsimple_show_preview_placeholder(self.tr("dialog.kitmix.no_changes"))
             self._kitsimple_update_numbers_warning(None)
             return
 
         entry = self._kitsimple_kit_sets[selection[0]]
+        self._kitsimple_selected_entry = entry
+        kit_path = entry["kit_path"]
+        self._kitsimple_art_preview.zoom_title = f"{kit_path.name} · {entry['tourn_id']}"
+        self._kitsimple_art_preview.show((kit_path, kit_path, kit_path))
         self._kitsimple_update_numbers_warning(entry)
         if entry["kitui_path"] is None:
             fallback = kit_ui_placeholder_path()
@@ -2918,6 +3018,25 @@ class UIMixin:
             self.after(0, lambda: self._kitsimple_apply_preview_result(generation, png_path, error))
 
         threading.Thread(target=worker, daemon=True).start()
+
+    def _kitsimple_zoom_kitui(self) -> None:
+        """Bigger view of the kit UI thumbnail: the .dds itself when Pillow can read
+        it, otherwise a larger render through the 32-bit bridge."""
+        entry = self._kitsimple_selected_entry
+        if not entry or entry.get("kitui_path") is None:
+            return
+        path = entry["kitui_path"]
+
+        def load():
+            try:
+                image = Image.open(path)
+                image.load()
+                return image
+            except Exception:  # noqa: BLE001 - DDS variant Pillow can't decode
+                return Image.open(self.kit_mixer.render_preview(str(path), "kitui", max_size=ZOOM_RENDER_SIZE,
+                                                                cache_key="zoom_kitui"))
+
+        ImageZoomDialog(self, load, f"{self.tr('dialog.zoom.title')} · {path.name}")
 
     def _kitsimple_apply_preview_result(self, generation: int, png_path, error) -> None:
         # A newer selection may have superseded this one while the worker ran.
@@ -3101,13 +3220,24 @@ class UIMixin:
         )
         self.keep_open_switch.pack(anchor="w", padx=12, pady=(0, 4))
 
+        cache_row = tk.Frame(card, bg=self.card)
+        cache_row.pack(anchor="w", padx=12, pady=(0, 4))
         self.clean_cache_button = ttk.Button(
-            card,
+            cache_row,
             text=self.tr("button.clean_cache"),
             command=self._clean_generated_cache,
         )
-        self.clean_cache_button.pack(anchor="w", padx=12, pady=(0, 4))
+        self.clean_cache_button.pack(side="left")
         self._add_tooltip(self.clean_cache_button, "tooltip.clean_cache")
+        self.auto_clean_cache_switch = ttk.Checkbutton(
+            cache_row,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.auto_clean_cache"),
+            variable=self.auto_clean_cache_var,
+            command=self._toggle_auto_clean_cache,
+        )
+        self.auto_clean_cache_switch.pack(side="left", padx=(12, 0))
+        self._add_tooltip(self.auto_clean_cache_switch, "tooltip.auto_clean_cache")
 
         self.imgbb_key_button = ttk.Button(
             card,
@@ -3229,13 +3359,58 @@ class UIMixin:
             messagebox.showinfo(self.tr("message.clean_cache_title"), self.tr("message.clean_cache_empty"))
             return
 
-        size_mb = bytes_freed / (1024 * 1024)
-        size_text = f"{size_mb:.1f} MB" if size_mb >= 0.1 else f"{bytes_freed} B"
+        size_text = self._format_freed_size(bytes_freed)
         self.log(f"Clean cache: removed {folders_removed} folder(s), freed {size_text}")
         messagebox.showinfo(
             self.tr("message.clean_cache_title"),
             self.tr("message.clean_cache_done", size=size_text, count=folders_removed),
         )
+
+    @staticmethod
+    def _format_freed_size(bytes_freed: int) -> str:
+        size_mb = bytes_freed / (1024 * 1024)
+        return f"{size_mb:.1f} MB" if size_mb >= 0.1 else f"{bytes_freed} B"
+
+    def _toggle_auto_clean_cache(self) -> None:
+        self.settings.auto_clean_cache_on_startup = self.auto_clean_cache_var.get()
+
+    def _start_previous_session_cache_cleanup(self) -> None:
+        """The Settings switch next to Clean Cache: at launch, delete the
+        generated caches earlier sessions left (file_tools.
+        clear_previous_session_cache -- only files older than this launch, so
+        nothing the running session renders meanwhile). It can walk thousands
+        of thumbnails, so it runs on a worker thread; the outcome is logged
+        from the Tk thread, polled with after()."""
+        if not self.settings.auto_clean_cache_on_startup:
+            return
+        outcome: queue.Queue = queue.Queue()
+
+        def work() -> None:
+            try:
+                outcome.put(clear_previous_session_cache(self.base_dir, self._session_started_at))
+            except Exception as exc:  # noqa: BLE001 - logged by report()
+                outcome.put(exc)
+
+        def report() -> None:
+            if self._closing:
+                return
+            try:
+                result = outcome.get_nowait()
+            except queue.Empty:
+                self.after(500, report)
+                return
+            if isinstance(result, Exception):
+                self.log("Startup cache cleanup failed", result)
+                return
+            bytes_freed, files_removed = result
+            if files_removed:
+                self.log(f"Startup cache cleanup: removed {files_removed} file(s) left by earlier sessions, "
+                         f"freed {self._format_freed_size(bytes_freed)}")
+            else:
+                self.log("Startup cache cleanup: nothing left by earlier sessions")
+
+        threading.Thread(target=work, name="StartupCacheCleanup", daemon=True).start()
+        self.after(500, report)
 
     def _toggle_overlay_performance_mode(self) -> None:
         self.settings.overlay_performance_mode = self.overlay_performance_mode_var.get()
