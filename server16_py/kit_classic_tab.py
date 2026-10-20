@@ -27,7 +27,6 @@ from .team_picker_dialog import TeamPickerDialog
 CARD_ICON_SIZE = 46
 PREVIEW_ICON_SIZE = 110
 GK_ICON_SIZE = 30
-FALLBACK_KIT_TYPES = (0, 1, 2, 3)
 HOME_BADGE_BG = "#2e7d32"
 AWAY_BADGE_BG = "#e65100"
 WARNING_FG = "#FFAA00"
@@ -301,6 +300,13 @@ class KitClassicTab:
             self.app.kitmix_team_id.set(dialog.result)
             self.refresh()
 
+    def invalidate(self, team: int) -> None:
+        """Drop this tab's copy of `team` after its lua was saved elsewhere (the F12
+        overlay's Team Kits), so it is read again; refresh the view if it shows it."""
+        self._states.pop(team, None)
+        if team == self.team:
+            self.refresh()
+
     def _refresh_if_team_changed(self) -> None:
         raw = self.app.kitmix_team_id.get().strip()
         if (int(raw) if raw.isdigit() else None) != self.team:
@@ -437,11 +443,8 @@ class KitClassicTab:
                 thumb.show(None)
                 continue
             current = tc.gk_home if side == 0 else tc.gk_away
-            kits = self.runtime.gk_kit_options(tc.team)
-            if current is not None and current not in kits:
-                kits = sorted(kits + [current])
-            self._gk_options[side] = [None, *kits]
-            labels = [app.tr("kitclassic.gk_auto")] + [app.tr("kitclassic.gk_kit", kit=k) for k in kits]
+            self._gk_options[side] = self.runtime.gk_choices(tc.team, current)
+            labels = [app.tr("kitclassic.gk_auto")] + [app.tr("kitclassic.gk_kit", kit=k) for k in self._gk_options[side][1:]]
             combo.configure(values=tuple(labels))
             var.set(labels[self._gk_options[side].index(current)])
             if current is None:
@@ -452,8 +455,7 @@ class KitClassicTab:
                 thumb.show(self._team_sources(tc.team, 0, current, current, current))
 
     def _team_sources(self, team: int, tourn: int, shirt: int, shorts: int, socks: int) -> Sources:
-        path = self.runtime.kit_path
-        return path(team, tourn, shirt), path(team, tourn, shorts), path(team, tourn, socks)
+        return self.runtime.kit_sources(team, tourn, shirt, shorts, socks)
 
     def _on_gk_selected(self, side: int) -> None:
         tc = self._state()
@@ -563,8 +565,7 @@ class KitClassicTab:
             for combo in (self.tourn_combo, self.slot_combo, self.shirt_combo, self.shorts_combo, self.socks_combo):
                 combo.configure(values=())
             return
-        by_tourn = self.runtime.team_kits(self.team)
-        tourns = sorted(by_tourn) or [0]
+        tourns = self.runtime.tournament_choices(self.team)
         self.tourn_combo.configure(values=tuple(str(t) for t in tourns))
         if self._read_int(self.tourn_var) not in tourns:
             self.tourn_var.set(str(0 if 0 in tourns else tourns[0]))
@@ -573,8 +574,7 @@ class KitClassicTab:
     def _refresh_type_choices(self) -> None:
         if self.team is None:
             return
-        by_tourn = self.runtime.team_kits(self.team)
-        types = sorted(by_tourn.get(self._read_int(self.tourn_var) or 0) or by_tourn.get(0) or FALLBACK_KIT_TYPES)
+        types = self.runtime.kit_type_choices(self.team, self._read_int(self.tourn_var) or 0)
         values = tuple(str(t) for t in types)
         for combo in (self.slot_combo, self.shirt_combo, self.shorts_combo, self.socks_combo):
             combo.configure(values=values)
@@ -617,14 +617,9 @@ class KitClassicTab:
             return
         tourn = self._read_int(self.tourn_var) or 0
         current = self._current()
-        for mix in (current.mixes if current else []):
-            if mix.key == (tourn, slot):
-                self.shirt_var.set(str(mix.shirt))
-                self.shorts_var.set(str(mix.shorts))
-                self.socks_var.set(str(mix.socks))
-                return
-        for var in (self.shirt_var, self.shorts_var, self.socks_var):
-            var.set(str(slot))
+        parts = current.parts_for(tourn, slot) if current else (slot, slot, slot)
+        for var, part in zip((self.shirt_var, self.shorts_var, self.socks_var), parts):
+            var.set(str(part))
 
     def _update_preview(self) -> None:
         parts = self._read_parts()

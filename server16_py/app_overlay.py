@@ -43,6 +43,10 @@ from .file_tools import (
 )
 from .movie_preview_runtime import player_available as movie_player_available
 from .kit_mixer import KIT_TYPES
+from .kit_classic_art import ART_LAYERS
+from .kit_classic_editor import (
+    HOME, NEW, PART_ROWS, ROW_COMBINATION, ROW_GK, ROW_KIT, ROW_SHIRT, ROW_SHORTS, ROW_SOCKS, ROWS, open_sides,
+)
 
 # Stadiums country filter bubble grid — fallback column count only, used
 # before cgfs16_rmlui_menu.cpp has ever reported the real, current count
@@ -76,6 +80,25 @@ _OVERLAY_POLL_MS = 40
 # resolve_goalpost_sources reads back.
 _STADIUM_WIZARD_PHASES = ("police", "pitch", "net", "goalpost", "goalposttexture")
 _GOALPOST_WIZARD_SUBDIRS = {"goalpost": "GoalpostModel", "goalposttexture": "GoalpostColor"}
+
+# Kits tab, Custom Kits: which side's live team_id the kit set is applied to
+# (wizard phase "kitside", between the Team/Custom chooser and "kittype").
+_KIT_SIDE_OPTIONS = [("Home Team", "home"), ("Away Team", "away")]
+
+# Kits tab, Team Kits editor: nominal sizes of its drawings
+# (kit_classic_art.art_size): each garment layer of the big kits 312x374 px
+# (>= FULL_TEXTURE_SIZE, so the textures are used at full resolution, and the
+# DLL scales it to the stage), the forced goalkeeper's corner thumbnail 72x86.
+_TEAM_KIT_LAYER_SIZE = 260
+_TEAM_KIT_GK_SIZE = 60
+_TEAM_KIT_ROW_KEYS = {
+    ROW_COMBINATION: "overlay.teamkits.row.combination",
+    ROW_KIT: "overlay.teamkits.row.kit",
+    ROW_SHIRT: "overlay.teamkits.row.shirt",
+    ROW_SHORTS: "overlay.teamkits.row.shorts",
+    ROW_SOCKS: "overlay.teamkits.row.socks",
+    ROW_GK: "overlay.teamkits.row.gk",
+}
 
 
 class OverlayMixin:
@@ -135,7 +158,8 @@ class OverlayMixin:
             self._publish_overlay_menu_state()
 
     def _sync_d3d_menu_input(self) -> None:
-        """Manages the D3D in-game menu (F12 / Hold Start for 0.6s)."""
+        """Manages the D3D in-game menu (F12 / Hold Start for 0.6s; F12 or
+        Select held 0.6s goes straight to Kits > Team Kits)."""
         if not self._ensure_d3d_overlay_injected(log_errors=False):
             return
         inj = self._d3d_injector
@@ -289,12 +313,15 @@ class OverlayMixin:
             self._overlay_gp_start_hold_latched = False
         if back_edge:
             self._overlay_gp_back_pressed_at = now
+            self._overlay_gp_back_hold_latched = False
         if left_shoulder_edge:
             self._overlay_gp_left_pressed_at = now
         if right_shoulder_edge:
             self._overlay_gp_right_pressed_at = now
         if not start_down:
             self._overlay_gp_start_hold_latched = False
+        if not back_down:
+            self._overlay_gp_back_hold_latched = False
 
         # Toggle: opening requires FIFA/the overlay to actually be focused
         # (self._fifa_hwnd != 0 only means the process/window was found, not
@@ -369,10 +396,52 @@ class OverlayMixin:
                 start_hold_toggle = True
                 self._overlay_gp_start_hold_latched = True
 
-        if (f12_toggle or start_hold_toggle) and can_toggle:
+        # Select (Back) held 0.6s: the Kits tab's Team Kits editor, the same
+        # screen as picking Kits -> Team Kits by hand — opens the menu
+        # straight on it, or moves an already open menu there. Same
+        # press/hold latch as Start-hold above; Start and Select held
+        # together do neither.
+        back_hold_team_kits = False
+        if back_down and not start_down and self._overlay_gp_back_pressed_at > 0.0:
+            if (now - self._overlay_gp_back_pressed_at) >= 0.60 and not self._overlay_gp_back_hold_latched:
+                back_hold_team_kits = True
+                self._overlay_gp_back_hold_latched = True
+
+        # F12 held 0.6s: the keyboard's way to Team Kits. The press still
+        # opens the menu at once (a tap must not wait for its release);
+        # _overlay_f12_held_since remembers when, and while that same press
+        # stays down the menu moves to Team Kits after 0.6s. Every F12 edge
+        # seen meanwhile is the keyboard's auto-repeat of that press (the
+        # hook latches each repeated WM_KEYDOWN) and must not close the menu
+        # again — which is what holding F12 used to do, after Windows' ~0.5s
+        # repeat delay. Checked after f12_toggle was consumed above, so a
+        # repeat latched just before the release is swallowed as well.
+        f12_hold_team_kits = False
+        if self._overlay_f12_held_since > 0.0:
+            f12_toggle = False
+            if self._d3d_menu_visible and self._is_overlay_key_down(VK_F12, menu_input_fg):
+                if (now - self._overlay_f12_held_since) >= 0.60 and not self._overlay_f12_hold_latched:
+                    f12_hold_team_kits = True
+                    self._overlay_f12_hold_latched = True
+            else:
+                self._overlay_f12_held_since = 0.0
+                self._overlay_f12_hold_latched = False
+
+        menu_toggle = f12_toggle or start_hold_toggle or (back_hold_team_kits and not self._d3d_menu_visible)
+        if menu_toggle and can_toggle:
             self._d3d_menu_visible = not self._d3d_menu_visible
             self._overlay_toggle_ready_at = now + 0.22
-            self.log(f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}")
+            # Opened by Select-hold: on the Kits tab from the first frame
+            # (the tab index goes out with the menu state just below).
+            open_team_kits = (
+                self._d3d_menu_visible and back_hold_team_kits and "kits" in self._overlay_tab_names
+            )
+            if open_team_kits:
+                self._overlay_tab_index = self._overlay_tab_names.index("kits")
+            self.log(
+                f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}"
+                + (" on Team Kits via gamepad Select-hold" if open_team_kits else "")
+            )
             self._publish_overlay_menu_state()
             if self._d3d_menu_visible:
                 self._install_mouse_wheel_hook()
@@ -385,7 +454,13 @@ class OverlayMixin:
                 self._overlay_filter_phase = False
                 self._overlay_stadium_country_filter = set()
                 self._overlay_stadium_sort_desc = False
-                self._update_menu_content()
+                if open_team_kits:
+                    self._enter_kits_mode("team")
+                else:
+                    self._update_menu_content()
+                if f12_toggle:
+                    self._overlay_f12_held_since = now
+                    self._overlay_f12_hold_latched = False
             else:
                 self._clear_overlay_wizard_state()
                 self._overlay_selected_scope = None
@@ -397,6 +472,10 @@ class OverlayMixin:
                 self._overlay_stadium_sort_desc = False
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
+        elif back_hold_team_kits and can_toggle and self._d3d_menu_visible:
+            self._show_overlay_team_kits("gamepad Select-hold")
+        if f12_hold_team_kits and self._d3d_menu_visible:
+            self._show_overlay_team_kits("F12 hold")
 
         if (self._d3d_menu_visible or self._stadium_picker_pending) and inj is not None:
             # Shared with the stadium picker (see stadium_picker.rml's
@@ -509,14 +588,18 @@ class OverlayMixin:
         # below (hold L/R or Left/Right to keep cycling tabs, not just one
         # step per press). Suppressed while the Stadiums filter bubble is
         # open — LB/RB and Left/Right are repurposed as grid column
-        # navigation there instead (see the block right below).
+        # navigation there instead (see the block right below). In the Kits
+        # tab's Team Kits editor only the arrow keys are taken (they change
+        # the highlighted row, see the block after the filter one); LB/RB
+        # still switch tabs.
         if self._d3d_menu_visible and not self._overlay_filter_phase:
-            tab_left_down = left_shoulder_down or key_left_down
-            tab_right_down = right_shoulder_down or key_right_down
-            if left_shoulder_edge or key_left_edge:
+            arrows_free = not self._overlay_team_kits_active()
+            tab_left_down = left_shoulder_down or (key_left_down and arrows_free)
+            tab_right_down = right_shoulder_down or (key_right_down and arrows_free)
+            if left_shoulder_edge or (key_left_edge and arrows_free):
                 self._set_overlay_tab(self._overlay_tab_index - 1, "gamepad-l")
                 self._overlay_tab_ready_at = now + 0.40
-            elif right_shoulder_edge or key_right_edge:
+            elif right_shoulder_edge or (key_right_edge and arrows_free):
                 self._set_overlay_tab(self._overlay_tab_index + 1, "gamepad-r")
                 self._overlay_tab_ready_at = now + 0.40
             elif (tab_left_down or tab_right_down) and now >= self._overlay_tab_ready_at:
@@ -570,6 +653,38 @@ class OverlayMixin:
             elif lstick_lr_in_zone and now >= self._overlay_gp_lstick_lr_repeat_at:
                 self._navigate_menu_items(-1 if lstick_left_down else 1)
                 self._overlay_gp_lstick_lr_repeat_at = now + 0.03
+
+        # Kits tab, Team Kits editor: Left/Right (arrow keys, D-pad, left
+        # stick X) change the highlighted row's value — ‹ › in its label.
+        # Same press-then-repeat feel as the list, with a slower repeat:
+        # each step is a choice (and a combination/goalkeeper step saves).
+        if self._overlay_team_kits_active():
+            dpad_left_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right_down = bool(gamepad_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            dpad_left_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_LEFT) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_DPAD_RIGHT) and not bool(prev_buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            lstick_left_down = stick_lx < -STICK_ACTIVITY_DEADZONE
+            lstick_right_down = stick_lx > STICK_ACTIVITY_DEADZONE
+            lstick_lr_in_zone = lstick_left_down or lstick_right_down
+            lstick_lr_entered_zone = lstick_lr_in_zone and not self._overlay_gp_lstick_lr_prev_in_zone
+            self._overlay_gp_lstick_lr_prev_in_zone = lstick_lr_in_zone
+            held_left = key_left_down or dpad_left_down or lstick_left_down
+            held_right = key_right_down or dpad_right_down or lstick_right_down
+            if key_left_edge or dpad_left_edge or (lstick_lr_entered_zone and lstick_left_down):
+                self._cycle_team_kit_row(-1)
+                self._overlay_team_kit_repeat_at = now + 0.40
+            elif key_right_edge or dpad_right_edge or (lstick_lr_entered_zone and lstick_right_down):
+                self._cycle_team_kit_row(1)
+                self._overlay_team_kit_repeat_at = now + 0.40
+            elif (held_left or held_right) and now >= self._overlay_team_kit_repeat_at:
+                self._cycle_team_kit_row(-1 if held_left else 1)
+                self._overlay_team_kit_repeat_at = now + 0.15
+        # A kit drawing the editor was waiting for is ready (its worker thread
+        # only flags it — see _team_kit_art_worker): write the screen again.
+        if self._overlay_team_kit_art_dirty:
+            self._overlay_team_kit_art_dirty = False
+            if self._overlay_team_kits_active():
+                self._push_team_kit_editor()
 
         # DPAD up/down: navigate list items (with initial delay + repeat).
         # In the Stadiums filter bubble's grid layout, one "line" is
@@ -948,7 +1063,7 @@ class OverlayMixin:
     def _publish_overlay_menu_state(self) -> None:
         if not self._d3d_menu_visible:
             # The menu can close from several different code paths (F12,
-            # Escape, gamepad Back-hold, timeout...) — all of them funnel
+            # Escape, gamepad Start-hold/B, timeout...) — all of them funnel
             # through here, so this is the one place that reliably catches
             # every one of them for stopping a live Movies-tab preview too.
             try:
@@ -1058,6 +1173,10 @@ class OverlayMixin:
                     items = ["None"] + _list_dirs(self._overlay_goalpost_dir(self._overlay_wizard_phase))
                 elif self._overlay_wizard_phase == "kittype":
                     items = [self.kitmix_kittype_labels[k] for k in KIT_TYPES]
+                elif self._overlay_wizard_phase == "kitside":
+                    items = [label for label, _code in _KIT_SIDE_OPTIONS]
+                elif self._overlay_wizard_phase == "teamkits":
+                    items = self._team_kit_items()
                 else:
                     tab_name = self._overlay_tab_names[self._overlay_tab_index]
                     if tab_name == "scoreboards":
@@ -1107,6 +1226,12 @@ class OverlayMixin:
                 self._overlay_scroll_offset  = 0
                 if self._overlay_wizard_phase in _GOALPOST_WIZARD_SUBDIRS:
                     self._preselect_current_goalpost(items)
+                elif (self._overlay_scope_phase and not self._overlay_filter_phase
+                        and self._overlay_tab_names[self._overlay_tab_index] == "kits"):
+                    # The Team/Custom chooser starts on the mode used last.
+                    codes = [code for _label, code in self._get_scope_options_for_tab("kits")]
+                    if self._overlay_kit_mode_last in codes and len(items) == len(codes):
+                        self._overlay_selected_index = codes.index(self._overlay_kit_mode_last)
             self._overlay_item_count     = len(items)
             self._overlay_window_base    = 0
 
@@ -1117,7 +1242,14 @@ class OverlayMixin:
                 header = f"Filter countries ({n_selected} selected)" if n_selected else "Filter countries"
             elif self._overlay_scope_phase:
                 tab_name = self._overlay_tab_names[self._overlay_tab_index]
-                header = f"Select scope  ->  {tab_name.rstrip('s').title()}"
+                if tab_name == "kits":
+                    header = self.tr("overlay.kits.mode_header")
+                else:
+                    header = f"Select scope  ->  {tab_name.rstrip('s').title()}"
+            elif phase == "kitside":
+                header = self.tr("overlay.kits.side_header")
+            elif phase == "teamkits":
+                header = self._team_kit_header()
             elif phase == "police":
                 header = f"Stadium: {self._overlay_wizard_stadium or '?'}  ->  Police Pattern"
             elif phase == "pitch":
@@ -1135,7 +1267,8 @@ class OverlayMixin:
                 scope_label = ""
                 if self._overlay_selected_scope is not None:
                     tab_name = self._overlay_tab_names[self._overlay_tab_index]
-                    for label, code in self._get_scope_options_for_tab(tab_name):
+                    options = _KIT_SIDE_OPTIONS if tab_name == "kits" else self._get_scope_options_for_tab(tab_name)
+                    for label, code in options:
                         if code == self._overlay_selected_scope:
                             scope_label = label
                             break
@@ -1162,6 +1295,9 @@ class OverlayMixin:
 
             self._refresh_d3d_window()
             self._update_d3d_preview_image()
+            # Shows the Team Kits editor's screen, or clears it on every other
+            # tab/step — this runs on every one of those changes.
+            self._push_team_kit_editor()
         finally:
             try:
                 inj.set_menu_loading(False)
@@ -1253,13 +1389,14 @@ class OverlayMixin:
                 ("Tournament", "4"),
             ]
         if tab_name == "kits":
-            # Unlike the other tabs, kits are applied immediately to a live
-            # team_id (HID/AID), not written as a persistent settings.ini
-            # assignment — so "scope" here just means "which side", not
-            # round/tournament (see _activate_overlay_selected_item).
+            # The Kits tab's first step is not a scope but the mode: Team Kits
+            # (the team's own kit combinations, written to its team_<id>.lua —
+            # see _enter_kits_mode) or Custom Kits (kit sets applied straight to
+            # a live team_id, HID/AID: side -> kit type -> kit set). The side
+            # is its own step there now (_KIT_SIDE_OPTIONS, phase "kitside").
             return [
-                ("Home Team", "home"),
-                ("Away Team", "away"),
+                (self.tr("overlay.kits.mode_team"), "team"),
+                (self.tr("overlay.kits.mode_custom"), "custom"),
             ]
         return []
 
@@ -1442,9 +1579,13 @@ class OverlayMixin:
             self._overlay_wizard_phase = "police"
         elif self._overlay_wizard_phase == "kittype":
             # Unlike stadium's police/pitch/net (steps AFTER the final list,
-            # refining an already-picked stadium), kittype is the ONE step
-            # BEFORE the kits final list — so there's no earlier wizard step
-            # to fall back to, only the team-selection scope step.
+            # refining an already-picked stadium), Custom Kits' steps come
+            # BEFORE its final list: chooser -> kitside -> kittype -> kit sets.
+            self._overlay_wizard_phase = "kitside"
+            self._overlay_selected_scope = None
+            self._overlay_selected_kittype = None
+        elif self._overlay_wizard_phase in ("kitside", "teamkits"):
+            # Back to the Kits tab's Team/Custom chooser (its scope step).
             self._overlay_wizard_phase = None
             self._overlay_scope_phase = True
             self._overlay_selected_scope = None
@@ -1514,11 +1655,11 @@ class OverlayMixin:
                 return
             sel = max(0, min(self._overlay_selected_index, len(scope_options) - 1))
             _label, code = scope_options[sel]
+            if tab_name == "kits":
+                self._enter_kits_mode(code)
+                return
             self._overlay_selected_scope = code
             self._overlay_scope_phase = False
-            if tab_name == "kits":
-                self._overlay_wizard_phase = "kittype"
-                self._overlay_selected_kittype = None
             self._update_menu_content()
             return
 
@@ -1602,7 +1743,359 @@ class OverlayMixin:
         self._uninstall_keyboard_hook()
         self._publish_overlay_menu_state()
 
+    # ------------------------------------------------------------------
+    # Kits tab, Team Kits editor (wizard phase "teamkits"): the teams' own
+    # kit combinations (Kits > Team in the main window, same team_<id>.lua),
+    # one kit_classic_editor.TeamKitSide per side of the match. Every row is
+    # one side's combination, kit, shirt/shorts/socks or goalkeeper; ‹ ›
+    # (Left/Right) change it and A/Enter saves the garments. The 12 rows are
+    # still the menu's list items (so Up/Down, the wheel and the selection
+    # work as in every list), but the DLL draws them as a PES-style two-kit
+    # screen (menu.rml's #kit-editor) from what _push_team_kit_editor writes;
+    # each kit is three garment layers drawn in the background
+    # (_team_kit_art), stacked by the DLL so a garment swaps instantly.
+    # ------------------------------------------------------------------
+    def _overlay_team_kits_active(self) -> bool:
+        return (
+            self._d3d_menu_visible
+            and not self._overlay_scope_phase
+            and not self._overlay_filter_phase
+            and self._overlay_wizard_phase == "teamkits"
+            and self._overlay_tab_names[self._overlay_tab_index] == "kits"
+        )
+
+    def _open_team_kit_sides(self) -> None:
+        """(Re)reads both teams of the match from disk. Leaves None (nothing to
+        edit) without a FIFA folder or a known home and away team."""
+        self._overlay_team_kit_sides = None
+        # Drawings are remembered by kit file path only; a kit file can change
+        # between visits (Custom Kits copies kit sets onto it), and the disk
+        # cache behind layer_path/render_path is keyed by mtime, so asking
+        # again is cheap.
+        self._overlay_team_kit_art.clear()
+        home, away = str(self.HID or "").strip(), str(self.AID or "").strip()
+        if getattr(self, "fifaEXE", "default") == "default":
+            return
+        if not (home.isdigit() and away.isdigit() and int(home) > 0 and int(away) > 0):
+            return
+        runtime = self.kit_classic
+        try:
+            runtime.kits(refresh=True)
+            self._overlay_team_kit_sides = open_sides(
+                runtime, int(home), int(away), lambda n: self.tr("kitclassic.default_name", n=n),
+            )
+        except Exception as exc:
+            self.log("Overlay Team Kits: could not read the teams' Lua files", exc, exc_info=sys.exc_info())
+            return
+        self._prerender_team_kit_art()
+
+    def _team_kit_items(self) -> list[str]:
+        """One row per side and value (kit_classic_editor.ROWS), home side first;
+        _overlay_team_kit_rows says which (side, row) each one is. A garment
+        changed but not saved yet ends in "•"."""
+        sides = self._overlay_team_kit_sides
+        self._overlay_team_kit_rows = []
+        if sides is None:
+            no_fifa = getattr(self, "fifaEXE", "default") == "default"
+            return [self.tr("message.warning.select_fifa_first" if no_fifa else "overlay.teamkits.no_match")]
+        items = []
+        for side in sides:
+            tag = self.tr("kitclassic.badge_home" if side.side == HOME else "kitclassic.badge_away")
+            for row in ROWS:
+                text = f"{tag} · {self.tr(_TEAM_KIT_ROW_KEYS[row])}:  ‹ {self._team_kit_value(side, row)} ›"
+                if row in PART_ROWS:
+                    part = PART_ROWS.index(row)
+                    if side.parts[part] != side.saved_parts[part]:
+                        text += "  •"
+                items.append(text)
+                self._overlay_team_kit_rows.append((side.side, row))
+        return items
+
+    def _team_kit_value(self, side, row: int) -> str:
+        if row == ROW_COMBINATION:
+            cursor = side.combination_cursor
+            if cursor is None:
+                return self.tr("kitclassic.original_kits")
+            if cursor == NEW:
+                return self.tr("overlay.teamkits.new_combination")
+            return f"{cursor + 1}. {side.tc.items[cursor].name}"
+        if row == ROW_KIT:
+            return self.tr("kitclassic.card_kit", slot=side.slot)
+        if row in PART_ROWS:
+            return self.tr("kitclassic.card_kit", slot=side.parts[PART_ROWS.index(row)])
+        gk = side.gk
+        return self.tr("kitclassic.gk_auto") if gk is None else self.tr("kitclassic.gk_kit", kit=gk)
+
+    def _team_kit_header(self) -> str:
+        title = self.tr("overlay.teamkits.title")
+        sides = self._overlay_team_kit_sides
+        if sides is None:
+            return title
+        names = [self._resolve_team_name(str(side.team)) or str(side.team) for side in sides]
+        header = f"{title}  ·  {names[0]}  vs  {names[1]}"
+        if not sides[0].editable:
+            header += "  ·  " + self.tr("overlay.teamkits.readonly")
+        return header
+
+    def _team_kit_focus(self):
+        """(TeamKitSide, row) of the highlighted row, or (None, None)."""
+        sides = self._overlay_team_kit_sides
+        sel = self._overlay_selected_index
+        if sides is None or not 0 <= sel < len(self._overlay_team_kit_rows):
+            return None, None
+        side_index, row = self._overlay_team_kit_rows[sel]
+        return sides[side_index], row
+
+    def _cycle_team_kit_row(self, direction: int) -> None:
+        """Left/Right on the highlighted row (see the editor's input block in
+        _sync_d3d_menu_input)."""
+        if not self._overlay_team_kits_active():
+            return
+        side, row = self._team_kit_focus()
+        if side is None:
+            return
+        try:
+            saved = side.cycle(row, direction)
+        except Exception as exc:
+            self._team_kit_save_failed(side, exc)
+            return
+        if saved:
+            self._team_kit_saved(side)
+        self._refresh_team_kit_rows()
+
+    def _commit_team_kit_row(self, source: str) -> None:
+        """A/Enter (or the hero button / a double-click): saves the highlighted
+        side's garments, creating a combination on "+ New" or the original kits."""
+        side, _row = self._team_kit_focus()
+        if side is None:
+            return
+        try:
+            saved = side.commit()
+        except Exception as exc:
+            self._team_kit_save_failed(side, exc)
+            return
+        if saved:
+            self.log(f"Overlay Team Kits: garments saved ({source}): team {side.team}, kit {side.slot}")
+            self._team_kit_saved(side)
+        self._refresh_team_kit_rows()
+
+    def _team_kit_saved(self, side) -> None:
+        """The main window's Kits > Team tab keeps its own copy of each team: make
+        it read this one again."""
+        view = getattr(self, "kit_classic_view", None)
+        if view is None:
+            return
+        try:
+            view.invalidate(side.team)
+        except Exception as exc:
+            self.log("Overlay Team Kits: could not refresh the Kits > Team tab", exc, exc_info=sys.exc_info())
+
+    def _team_kit_save_failed(self, side, exc: Exception) -> None:
+        """The change didn't reach the file: say why and read both teams again,
+        so the rows show what is really saved."""
+        self.log(f"Overlay Team Kits: could not save team {side.team}", exc, exc_info=sys.exc_info())
+        try:
+            self._show_toast_notification(self.tr("overlay.teamkits.title"),
+                                          self.tr("kitclassic.status.save_failed", error=exc), 1)
+        except Exception:
+            pass
+        self._open_team_kit_sides()
+        self._refresh_team_kit_rows()
+
+    def _refresh_team_kit_rows(self) -> None:
+        """Rewrites the rows, header and the editor's screen after a change,
+        keeping the cursor. Not _update_menu_content: its loading spinner would
+        blink on every Left/Right press."""
+        items = self._team_kit_items()
+        self._overlay_items = items
+        self._overlay_item_checked = [False] * len(items)
+        self._overlay_item_count = len(items)
+        self._overlay_selected_index = max(0, min(self._overlay_selected_index, len(items) - 1))
+        self._overlay_list_header = self._team_kit_header()
+        inj = self._d3d_injector
+        if inj is not None:
+            try:
+                inj.set_list_header(self._overlay_list_header)
+            except Exception:
+                pass
+        self._refresh_d3d_window()
+        self._update_d3d_preview_image()
+        self._push_team_kit_editor()
+
+    def _push_team_kit_editor(self) -> None:
+        """Writes the editor's screen to shared memory (set_kit_editor), or hides
+        it outside the editor. Called on every menu content change (so leaving
+        the editor clears it), after every change in it, and when a drawing it
+        was waiting for is ready (_sync_d3d_menu_input)."""
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        state = None
+        if self._overlay_team_kits_active():
+            sides = self._overlay_team_kit_sides
+            state = {
+                "editable": sides is not None and sides[0].editable,
+                "message": "" if sides is not None else (self._overlay_items[0] if self._overlay_items else ""),
+                "save_label": self.tr("overlay.teamkits.save"),
+                "row_names": [self.tr(_TEAM_KIT_ROW_KEYS[row]) for row in ROWS],
+                "sides": [self._team_kit_side_state(side) for side in sides] if sides is not None else [],
+            }
+        try:
+            inj.set_kit_editor(state)
+        except Exception:
+            pass
+
+    def _team_kit_side_state(self, side) -> dict:
+        """One half of the editor's screen (see d3d_injector._KitEditorSide)."""
+        home = side.side == HOME
+        sources = side.layer_sources()
+        gk = side.gk
+        if home:
+            crest = getattr(self, "_home_crest_png_large", "") or getattr(self, "_home_crest_png", "") or ""
+        else:
+            crest = getattr(self, "_away_crest_png_large", "") or getattr(self, "_away_crest_png", "") or ""
+        saved = side.saved_parts
+        return {
+            "badge": self.tr("kitclassic.badge_home" if home else "kitclassic.badge_away"),
+            "team_name": self._resolve_team_name(str(side.team)) or str(side.team),
+            "crest_path": crest,
+            "layer_paths": [self._team_kit_art(layer, sources[layer]) for layer in ART_LAYERS],
+            "gk_path": self._team_kit_art("gk", side.runtime.kit_path(side.team, 0, gk)) if gk is not None else "",
+            "row_values": [self._team_kit_value(side, row) for row in ROWS],
+            "row_pending": [row in PART_ROWS and side.parts[PART_ROWS.index(row)] != saved[PART_ROWS.index(row)]
+                            for row in ROWS],
+        }
+
+    def _team_kit_art(self, kind: str, source) -> str:
+        """Path of a drawing the editor shows — `kind` is a garment layer
+        (kit_classic_art.ART_LAYERS) of `source`, or "gk" for the whole forced
+        goalkeeper kit — or "" until it is drawn; asking puts it first in line."""
+        key = (kind, str(source) if source is not None else "")
+        path = self._overlay_team_kit_art.get(key)
+        if path:
+            return path
+        self._queue_team_kit_art([(kind, source)], urgent=True)
+        return ""
+
+    def _prerender_team_kit_art(self) -> None:
+        """Queues every kit both teams can show (all their garment layers and
+        goalkeeper kits), behind anything already asked for, so cycling through
+        them finds them drawn. Skipped in performance mode, where only what is
+        on screen gets drawn. The disk cache keeps them for the next visit."""
+        sides = self._overlay_team_kit_sides
+        if sides is None or self.overlay_performance_mode_var.get():
+            return
+        jobs = []
+        for side in sides:
+            for kit in side.kit_choices():
+                source = side.runtime.kit_path(side.team, side.tourn, kit)
+                jobs += [(layer, source) for layer in ART_LAYERS]
+            for gk in side.gk_choices():
+                if gk is not None:
+                    jobs.append(("gk", side.runtime.kit_path(side.team, 0, gk)))
+        self._queue_team_kit_art(jobs)
+
+    def _queue_team_kit_art(self, jobs, urgent: bool = False) -> None:
+        """Adds drawings to the editor's render queue (urgent = to its front)
+        and starts its worker thread if it isn't running."""
+        start = None
+        with self._overlay_team_kit_job_lock:
+            for kind, source in jobs:
+                key = (kind, str(source) if source is not None else "")
+                if key in self._overlay_team_kit_art:
+                    continue
+                job = (key, kind, source)
+                if key in self._overlay_team_kit_job_keys:
+                    if urgent:
+                        self._overlay_team_kit_jobs[:] = [j for j in self._overlay_team_kit_jobs if j[0] != key]
+                        self._overlay_team_kit_jobs.insert(0, job)
+                    continue
+                self._overlay_team_kit_job_keys.add(key)
+                if urgent:
+                    self._overlay_team_kit_jobs.insert(0, job)
+                else:
+                    self._overlay_team_kit_jobs.append(job)
+            worker = self._overlay_team_kit_worker
+            if self._overlay_team_kit_jobs and (worker is None or not worker.is_alive()):
+                start = threading.Thread(target=self._team_kit_art_worker, name="team-kit-art", daemon=True)
+                self._overlay_team_kit_worker = start
+        if start is not None:
+            start.start()
+
+    def _team_kit_art_worker(self) -> None:
+        """Draws the queued kits one by one (under the kit drawings' lock, shared
+        with the main window's Kits tab) until the queue is empty. Touches no Tk:
+        a finished drawing only sets _overlay_team_kit_art_dirty, which the
+        input tick turns into a _push_team_kit_editor. Like the other preview
+        workers it reports nothing: a kit file that can't be read is already
+        drawn grey by IconFactory, and a failed write is simply asked for again
+        the next time that kit is on screen."""
+        runtime = self.kit_classic
+        art, lock = runtime.art, runtime.art_lock
+        while True:
+            with self._overlay_team_kit_job_lock:
+                if not self._overlay_team_kit_jobs:
+                    self._overlay_team_kit_worker = None
+                    return
+                key, kind, source = self._overlay_team_kit_jobs.pop(0)
+            path = None
+            try:
+                with lock:
+                    if kind == "gk":
+                        path = art.render_path(source, source, source, size=_TEAM_KIT_GK_SIZE)
+                    else:
+                        path = art.layer_path(source, kind, size=_TEAM_KIT_LAYER_SIZE)
+            except Exception:
+                path = None
+            with self._overlay_team_kit_job_lock:
+                self._overlay_team_kit_job_keys.discard(key)
+                if path is not None:
+                    self._overlay_team_kit_art[key] = str(path)
+                    self._overlay_team_kit_art_dirty = True
+
+    def _enter_kits_mode(self, mode: str) -> None:
+        """Leaves the Kits tab's Team/Custom chooser (its scope step) for the
+        picked mode: Custom Kits -> the side step ("kitside"), then kit type and
+        kit set as before; Team Kits -> the editor ("teamkits"), both teams of
+        the match read fresh from their team_<id>.lua."""
+        self._overlay_kit_mode_last = mode
+        self._overlay_scope_phase = False
+        self._overlay_selected_scope = None
+        self._overlay_selected_kittype = None
+        if mode == "team":
+            self._open_team_kit_sides()
+            self._overlay_wizard_phase = "teamkits"
+        else:
+            self._overlay_wizard_phase = "kitside"
+        self._update_menu_content()
+
+    def _show_overlay_team_kits(self, source: str) -> None:
+        """Moves an open menu to the Kits tab's Team Kits editor (Select or F12
+        held, see _sync_d3d_menu_input), leaving the tab/step it was on the
+        way a tab switch by hand does. A no-op while the editor already shows."""
+        if self._overlay_team_kits_active() or "kits" not in self._overlay_tab_names:
+            return
+        self._overlay_tab_index = self._overlay_tab_names.index("kits")
+        self.log(f"Overlay menu moved to Team Kits via {source}")
+        self._clear_overlay_wizard_state()
+        self._overlay_kit_sets_cache = []
+        self._overlay_filter_phase = False
+        self._overlay_stadium_country_filter = set()
+        self._overlay_stadium_sort_desc = False
+        self._publish_overlay_menu_state()
+        self._enter_kits_mode("team")
+
     def _activate_wizard_step(self, source: str) -> None:
+        if self._overlay_wizard_phase == "teamkits":
+            self._commit_team_kit_row(source)
+            return
+        if self._overlay_wizard_phase == "kitside":
+            sel = max(0, min(self._overlay_selected_index, len(_KIT_SIDE_OPTIONS) - 1))
+            self._overlay_selected_scope = _KIT_SIDE_OPTIONS[sel][1]
+            self._overlay_selected_kittype = None
+            self._overlay_wizard_phase = "kittype"
+            self._update_menu_content()
+            return
         if not self._overlay_items:
             return
         sel = max(0, min(self._overlay_selected_index, len(self._overlay_items) - 1))
@@ -1704,6 +2197,34 @@ class OverlayMixin:
                 "B / Esc = back",
             ]
 
+        if self._overlay_wizard_phase == "kitside":
+            return [
+                "-- KIT SELECTION --",
+                self.tr("overlay.kits.mode_custom"),
+                f">> {self.tr('overlay.kits.side_header')} <<",
+                "",
+                "B / Esc = back",
+            ]
+
+        if self._overlay_wizard_phase == "teamkits":
+            # The Team Kits editor's controls, until it gets its own screen.
+            lines = [
+                f"-- {self.tr('overlay.teamkits.title').upper()} --",
+                self.tr("overlay.teamkits.help_rows"),
+                self.tr("overlay.teamkits.help_change"),
+                self.tr("overlay.teamkits.help_save"),
+                self.tr("overlay.teamkits.help_back"),
+                "",
+                self.tr("overlay.teamkits.help_applies"),
+                self.tr("overlay.teamkits.help_menu"),
+            ]
+            sides = self._overlay_team_kit_sides
+            conflicts = sides[0].conflicts() if sides is not None and sides[0].tc is sides[1].tc else []
+            if conflicts:
+                slots = ", ".join(str(slot) for slot in sorted({slot for _tourn, slot in conflicts}))
+                lines.append(self.tr("overlay.teamkits.conflict", slots=slots))
+            return lines
+
         if self._overlay_wizard_phase is not None:
             phase = self._overlay_wizard_phase
             phase_labels = {
@@ -1804,6 +2325,14 @@ class OverlayMixin:
                 preview_path = self._home_crest_png_large or self._home_crest_png or ""
             else:
                 preview_path = self._away_crest_png_large or self._away_crest_png or ""
+        elif phase == "kitside" and selected_item:
+            # The highlighted side's crest, same images as the kittype step.
+            if sel == 0:
+                preview_path = self._home_crest_png_large or self._home_crest_png or ""
+            else:
+                preview_path = self._away_crest_png_large or self._away_crest_png or ""
+        elif phase == "teamkits":
+            preview_path = ""   # the editor draws its own kits (#kit-editor), no hero preview
         elif phase is not None and selected_item:
             exedir = getattr(self, "exedir", None)
             if exedir:
@@ -2295,6 +2824,21 @@ class OverlayMixin:
         elif kind == 8:  # mute_toggle — a mouse click on the Movies tab's
             # #hero-mute-btn; same toggle the gamepad X button fires.
             self._toggle_movie_mute()
+        elif kind in (9, 10, 11) and self._overlay_team_kits_active() and self._overlay_team_kit_rows:
+            # Team Kits editor (#kit-editor): 9 = a row clicked (index = its
+            # flat index, side * rows + row — the list's own numbering),
+            # 10 = its ‹ / › (index = flat index * 2 + 1 for ›), 11 = a side's
+            # save button (index = side). Same actions as Up/Down, Left/Right
+            # and A/Enter.
+            per_side = len(ROWS)
+            if kind == 9 and 0 <= index < self._overlay_item_count:
+                self._set_menu_selection(index)
+            elif kind == 10 and 0 <= index // 2 < self._overlay_item_count:
+                self._set_menu_selection(index // 2)
+                self._cycle_team_kit_row(1 if index % 2 else -1)
+            elif kind == 11 and index in (0, 1):
+                self._set_menu_selection(index * per_side + self._overlay_selected_index % per_side)
+                self._commit_team_kit_row("click")
 
     def _handle_stadium_picker_event(self, inj) -> None:
         """Poll the DLL's stadium_picker_event_* "last event wins" click
@@ -2639,12 +3183,17 @@ class OverlayMixin:
             hook = self.user32.SetWindowsHookExW(WH_KEYBOARD_LL, proc, module_handle, 0)
         except Exception:
             hook = None
-        self._keyboard_hook = hook
         self._keyboard_hook_thread_id = self.kernel32.GetCurrentThreadId()
-        # Seed state for keys already held when the hook is installed.
+        # Seed state for keys already held when the hook is installed —
+        # BEFORE publishing self._keyboard_hook: from then on
+        # _is_overlay_key_down reads only this set, and the F12-hold check in
+        # _sync_d3d_menu_input would take a not-yet-seeded F12 for a release.
+        # The hook only runs once the GetMessageW loop below pumps, so no
+        # keystroke is missed meanwhile.
         for vk in blocked_keys:
             if bool(self.user32.GetAsyncKeyState(vk) & 0x8000):
                 self._overlay_blocked_key_down.add(vk)
+        self._keyboard_hook = hook
 
         win_msg = MSG()
         while self.user32.GetMessageW(ctypes.byref(win_msg), None, 0, 0) > 0:

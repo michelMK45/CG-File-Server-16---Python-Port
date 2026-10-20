@@ -83,6 +83,13 @@ ART_SHAPES = [
     ("hem", "hem", [(0.295, 0.505), (0.705, 0.505), (0.705, 0.55), (0.295, 0.55)], 0.2),
     ("collar", "collar", [(0.42, 0.045), (0.58, 0.045), (0.55, 0.095), (0.50, 0.13), (0.45, 0.095)], 0.1),
 ]
+# Garments as separate layers, bottom to top, and the texture each one paints
+# from (ART_REGIONS). ART_SHAPES draws the socks, then the shorts, then the shirt,
+# so the three layers stacked in this order give the same drawing as painting
+# them together -- the F12 overlay stacks them to swap one garment without
+# rendering again.
+ART_LAYERS = ("socks", "shorts", "shirt")
+_LAYER_TEXTURE = {"socks": "sock", "shorts": "shorts", "shirt": "shirt"}
 ART_ROW_AVG = ("sock", "sockcuff")   # socks: keep the horizontal stripes, drop the artwork
 ART_ASPECT = 1.2                     # thumbnail height / width
 ART_OUTLINE = (84, 86, 96)           # grey outline, readable on dark and light backgrounds
@@ -273,15 +280,19 @@ def art_size(size: int = 56) -> tuple[int, int]:
     return w, int(round(w * ART_ASPECT))
 
 
-def make_kit_icon(shirt_rows, shorts_atlas_rows, socks_atlas_rows, size: int = 56) -> Image.Image:
+def make_kit_icon(shirt_rows, shorts_atlas_rows, socks_atlas_rows, size: int = 56,
+                  layers: tuple[str, ...] = ART_LAYERS) -> Image.Image:
     """RGBA thumbnail (transparent background): shirt, shorts and socks painted with
     the given textures, thin outline and a little volume shading. A None texture
-    paints that piece grey."""
+    paints that piece grey. Only the garments in `layers` are painted."""
     w, h = art_size(size)
     rows = [bytearray(w * 4) for _ in range(h)]
     src = {"shirt": shirt_rows, "shorts": shorts_atlas_rows, "sock": socks_atlas_rows}
+    textures = {_LAYER_TEXTURE[layer] for layer in layers}
     for _name, region, shade, cov, dil, (bx0, by0, bx1, by1) in _shape_masks(w, h):
         tex_name, crop = ART_REGIONS[region]
+        if tex_name not in textures:
+            continue
         tex = src[tex_name]
         bw, bh = bx1 - bx0, by1 - by0
         colors = _sample_crop(tex, crop, bw, bh) if tex is not None else None
@@ -310,13 +321,25 @@ def make_kit_icon(shirt_rows, shorts_atlas_rows, socks_atlas_rows, size: int = 5
     return Image.frombytes("RGBA", (w, h), b"".join(bytes(r) for r in rows))
 
 
+def make_kit_layer(layer: str, rows, size: int = 56) -> Image.Image:
+    """One garment alone (`layer` in ART_LAYERS) on a transparent canvas the size of
+    the whole drawing. `rows`: the shirt texture for "shirt", the socks+shorts atlas
+    for "shorts" and "socks" (None = grey)."""
+    if layer not in ART_LAYERS:
+        raise ValueError(f"unknown kit layer: {layer}")
+    src = {name: (rows if name == layer else None) for name in ART_LAYERS}
+    return make_kit_icon(src["shirt"], src["shorts"], src["socks"], size, layers=(layer,))
+
+
 class IconFactory:
     """Renders (and caches on disk) kit drawings.
 
     render_png(shirt, shorts, socks, size) takes the three texture sources as file
     paths (.rx3 or image, None = grey); icon_png(team, tourn, shirt, shorts, socks)
     is the Classic shortcut that resolves kit types through `kit_path(team, tourn,
-    ktype) -> Path | None`. Not thread-safe: callers serialize with one lock
+    ktype) -> Path | None`. layer_path(source, layer, size) renders one garment
+    into the disk cache and returns the file (the F12 overlay loads drawings from
+    files). Not thread-safe: callers serialize with one lock
     (KitClassicRuntime.art_lock)."""
 
     def __init__(self, kit_path: Callable[[int, int, int], Optional[Path]], cache_dir: Optional[Path]) -> None:
@@ -347,19 +370,28 @@ class IconFactory:
     def icon_png(self, team: int, tourn: int, shirt: int, shorts: int, socks: int, size: int = 56) -> bytes:
         return self.render_png(*(self.kit_path(team, tourn, k) for k in (shirt, shorts, socks)), size=size)
 
+    def _drawing_cache(self, paths: list[Optional[Path]], size: int) -> Optional[Path]:
+        if self.cache_dir is None:
+            return None
+        sig = hashlib.md5(repr((ART_VERSION, size, [_stamp(p) for p in paths])).encode("utf-8", "replace")).hexdigest()
+        return self.cache_dir / f"kit_v{ART_VERSION}_{size}_{sig[:16]}.png"
+
+    def render_path(self, shirt: Optional[Path], shorts: Optional[Path], socks: Optional[Path],
+                    size: int = 56) -> Optional[Path]:
+        """The cached PNG of render_png's drawing, rendered first if needed. None
+        without a cache folder or when it can't be written."""
+        paths = [Path(p) if p is not None else None for p in (shirt, shorts, socks)]
+        cache = self._drawing_cache(paths, size)
+        if cache is None:
+            return None
+        if not cache.is_file():
+            self.render_png(*paths, size=size)
+        return cache if cache.is_file() else None
+
     def render_png(self, shirt: Optional[Path], shorts: Optional[Path], socks: Optional[Path], size: int = 56) -> bytes:
         paths = [Path(p) if p is not None else None for p in (shirt, shorts, socks)]
-
-        def stamp(p: Optional[Path]):
-            try:
-                return str(p), p.stat().st_mtime if p is not None else 0
-            except OSError:
-                return str(p), 0
-
-        sig = hashlib.md5(repr((ART_VERSION, size, [stamp(p) for p in paths])).encode("utf-8", "replace")).hexdigest()
-        cache = None
-        if self.cache_dir is not None:
-            cache = self.cache_dir / f"kit_v{ART_VERSION}_{size}_{sig[:16]}.png"
+        cache = self._drawing_cache(paths, size)
+        if cache is not None:
             try:
                 return cache.read_bytes()
             except OSError:
@@ -367,15 +399,51 @@ class IconFactory:
         reduce = 1 if size >= FULL_TEXTURE_SIZE else TEXTURE_REDUCE
         image = make_kit_icon(self._rows(paths[0], "shirt", reduce), self._rows(paths[1], "atlas", reduce),
                               self._rows(paths[2], "atlas", reduce), size)
-        buf = io.BytesIO()
-        image.save(buf, "PNG")
-        png = buf.getvalue()
+        png = _png_bytes(image)
         if cache is not None:
-            try:
-                cache.parent.mkdir(parents=True, exist_ok=True)
-                tmp = cache.with_name(cache.name + ".tmp")
-                tmp.write_bytes(png)
-                tmp.replace(cache)
-            except OSError:
-                pass
+            _write_cache(cache, png)
         return png
+
+    def kit_layer_path(self, team: int, tourn: int, ktype: int, layer: str, size: int = 56) -> Optional[Path]:
+        return self.layer_path(self.kit_path(team, tourn, ktype), layer, size)
+
+    def layer_path(self, source: Optional[Path], layer: str, size: int = 56) -> Optional[Path]:
+        """The cached PNG of garment `layer` of `source` (see make_kit_layer), rendered
+        first if needed. None without a cache folder or when it can't be written."""
+        if layer not in ART_LAYERS:
+            raise ValueError(f"unknown kit layer: {layer}")
+        if self.cache_dir is None:
+            return None
+        path = Path(source) if source is not None else None
+        sig = hashlib.md5(repr((ART_VERSION, size, layer, _stamp(path))).encode("utf-8", "replace")).hexdigest()
+        cache = self.cache_dir / f"kit_v{ART_VERSION}_{size}_{layer}_{sig[:16]}.png"
+        if cache.is_file():
+            return cache
+        reduce = 1 if size >= FULL_TEXTURE_SIZE else TEXTURE_REDUCE
+        rows = self._rows(path, "shirt" if layer == "shirt" else "atlas", reduce)
+        return cache if _write_cache(cache, _png_bytes(make_kit_layer(layer, rows, size))) else None
+
+
+def _stamp(p: Optional[Path]):
+    try:
+        return str(p), p.stat().st_mtime if p is not None else 0
+    except OSError:
+        return str(p), 0
+
+
+def _png_bytes(image: Image.Image) -> bytes:
+    buf = io.BytesIO()
+    image.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _write_cache(cache: Path, png: bytes) -> bool:
+    """Atomic (temp file + replace): a reader never sees a half-written PNG."""
+    try:
+        cache.parent.mkdir(parents=True, exist_ok=True)
+        tmp = cache.with_name(cache.name + ".tmp")
+        tmp.write_bytes(png)
+        tmp.replace(cache)
+        return True
+    except OSError:
+        return False

@@ -76,6 +76,10 @@ _RE_KIT_FILE = re.compile(r"^kit_(\d+)_(\d+)_(\d+)\.rx3$", re.I)
 # Goalkeeper kit types (Rev Mod), the ones offered as a forced goalkeeper kit.
 GK_KITS = (2, 12, 13, 30, 31)
 
+# Kit types offered for a team without loose kits (they may still be in the
+# game's archives, so the combinations work; only the drawings are grey).
+FALLBACK_KIT_TYPES = (0, 1, 2, 3)
+
 # How the side is chosen: like Dinei's tool, when the team file runs, from
 # wvPlayer 9 (home) / wvPlayer 20 (away) -- confirmed working in matches by the
 # user with his tool. Rev Mod re-runs the file on every player update and decides
@@ -203,6 +207,14 @@ class Combination:
 
     def remove_mix(self, key: tuple[int, int]) -> None:
         self.mixes = [m for m in self.mixes if m.key != key]
+
+    def parts_for(self, tourn: int, slot: int) -> tuple[int, int, int]:
+        """(shirt, shorts, socks) worn when the game asks for kit `slot`: this
+        combination's mix for it, or the slot's own kit when it has none."""
+        for mix in self.mixes:
+            if mix.key == (tourn, slot):
+                return mix.shirt, mix.shorts, mix.socks
+        return slot, slot, slot
 
 
 @dataclass
@@ -649,9 +661,33 @@ class KitClassicRuntime:
         have = self.team_kits(team).get(0) or {}
         return [k for k in GK_KITS if k in have] or [GK_KITS[0]]
 
+    def gk_choices(self, team: int, current: Optional[int]) -> list[Optional[int]]:
+        """None (automatic) + the goalkeeper kits offered for `team`, plus `current`
+        when it isn't among them (e.g. set by Dinei's tool for a kit that isn't loose
+        here)."""
+        kits = self.gk_kit_options(team)
+        if current is not None and current not in kits:
+            kits = sorted(kits + [current])
+        return [None, *kits]
+
+    def tournament_choices(self, team: int) -> list[int]:
+        """Tournament ids `team` has loose kits for (0 = any tournament)."""
+        return sorted(self.team_kits(team)) or [0]
+
+    def kit_type_choices(self, team: int, tourn: int) -> list[int]:
+        """Kit types offered for the requested kit and each garment: the team's loose
+        kits for `tourn`, else for any tournament, else FALLBACK_KIT_TYPES."""
+        by_tourn = self.team_kits(team)
+        return sorted(by_tourn.get(tourn) or by_tourn.get(0) or FALLBACK_KIT_TYPES)
+
     def kit_path(self, team: int, tourn: int, ktype: int) -> Optional[Path]:
         by_tourn = self.team_kits(team)
         return (by_tourn.get(tourn) or {}).get(ktype) or (by_tourn.get(0) or {}).get(ktype)
+
+    def kit_sources(self, team: int, tourn: int, shirt: int, shorts: int,
+                    socks: int) -> tuple[Optional[Path], Optional[Path], Optional[Path]]:
+        """Loose kit files the shirt, shorts and socks are drawn from (None = grey)."""
+        return self.kit_path(team, tourn, shirt), self.kit_path(team, tourn, shorts), self.kit_path(team, tourn, socks)
 
     # -- combinations --------------------------------------------------------------
     def load(self, team: int) -> Optional[TeamCombinations]:

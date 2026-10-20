@@ -688,6 +688,232 @@ body {
     overflow: hidden;
     text-overflow: ellipsis;
 }
+/* Kits tab, Team Kits editor (PES-style): both teams side by side, each with
+   its kit drawn big and its rows (combination, kit, shirt, shorts, socks,
+   goalkeeper) changed with ‹ › — shown instead of #list-area/the scrollbar/
+   #split-preview while Python says so (kit_editor.active, see SyncKitEditor
+   in cgfs16_rmlui_menu.cpp). #kit-editor's own rect comes from RmlMenu_Sync's
+   SetRectPx like every other top-level box; everything inside is plain flex
+   layout. The home half runs right-to-left (rows | kit) so the two kits sit
+   next to each other in the middle. Only horizontal/vertical-gradient
+   decorators (see #scrim's comment), and press feedback through classes
+   (.pressed), since `transition` never fires for inline SetProperty. */
+#kit-editor {
+    display: none;
+    position: absolute;
+    flex-direction: row;
+    column-gap: 14px;
+}
+#kit-message {
+    display: none;
+    flex: 1 1 auto;
+    align-items: center;
+    justify-content: center;
+    font-size: 20px;
+    color: #8B9BB4FF;
+}
+.kit-side {
+    display: flex;
+    flex: 1 1 0%;
+    flex-direction: column;
+    min-width: 0px;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    row-gap: 8px;
+    background-color: #FFFFFF08;
+    border: 1px #FFFFFF14;
+    border-radius: 12px;
+    transition: background-color 0.2s sine-in-out;
+}
+.kit-side.focused {
+    background-color: #00F2FE0D;
+    border: 1px #00F2FE4D;
+}
+.kit-head {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 10px;
+    flex-shrink: 0;
+}
+.kit-crest {
+    display: none;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+}
+.kit-badge {
+    display: block;
+    flex-shrink: 0;
+    padding: 1px 8px;
+    border-radius: 4px;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 18px;
+    letter-spacing: 1px;
+    color: #FFFFFFFF;
+    decorator: horizontal-gradient(#11998E #38EF7D);
+}
+#kit-side1 .kit-badge { decorator: horizontal-gradient(#FF0844 #FFB199); }
+.kit-team {
+    display: block;
+    flex: 1 1 auto;
+    min-width: 0px;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 28px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: #FFFFFFFF;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.kit-body {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0px;
+    flex-direction: row;
+    column-gap: 12px;
+}
+#kit-side0 .kit-body { flex-direction: row-reverse; }
+/* The drawing's own box (.kit-figure) is sized by SyncKitEditor to the
+   largest 1:1.2 rectangle that fits this stage — the layers are all the same
+   size, so they stack exactly with plain absolute 100% boxes. */
+.kit-stage {
+    display: flex;
+    flex: 1 1 0%;
+    min-width: 0px;
+    position: relative;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    decorator: vertical-gradient(#1C4A2E40 #0C1E1440);
+}
+.kit-figure {
+    display: block;
+    position: relative;
+    flex-shrink: 0;
+}
+.kit-layer {
+    display: none;
+    position: absolute;
+    left: 0px;
+    top: 0px;
+    width: 100%;
+    height: 100%;
+}
+/* Forced goalkeeper kit, small in the stage's corner. left/bottom rather
+   than right: — see #panel-accent's note on right+width in this file. */
+.kit-gk {
+    display: none;
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    width: 60px;
+    height: 72px;
+}
+.kit-rows {
+    display: flex;
+    flex: 1 1 0%;
+    min-width: 0px;
+    flex-direction: column;
+    justify-content: center;
+    row-gap: 6px;
+}
+.kit-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    column-gap: 6px;
+    flex-shrink: 0;
+    height: 36px;
+    padding: 0px 4px;
+    border-radius: 6px;
+    background-color: #00000033;
+    border-left: 3px #00000000;
+}
+.kit-row:hover { background-color: #4FACFE1F; }
+.kit-row.focused {
+    background-color: #00F2FE29;
+    border-left: 3px #00F2FEFF;
+}
+.kit-arrow {
+    display: block;
+    flex-shrink: 0;
+    width: 26px;
+    height: 30px;
+    line-height: 30px;
+    text-align: center;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 30px;
+    color: #8B9BB4FF;
+    border-radius: 4px;
+    transition: color 0.15s sine-in-out;
+}
+.kit-row.focused .kit-arrow { color: #00F2FEFF; }
+.kit-arrow:hover {
+    background-color: #FFFFFF1F;
+    color: #FFFFFFFF;
+}
+.kit-text {
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0px;
+}
+.kit-row-name {
+    display: block;
+    font-size: 12px;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    color: #8B9BB4FF;
+}
+.kit-row-value {
+    display: block;
+    font-size: 18px;
+    color: #FFFFFFFF;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+/* A garment changed but not saved yet (A / Enter / the save button). */
+.kit-row.pending .kit-row-value { color: #FFCC55FF; }
+.kit-save {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    justify-content: center;
+    column-gap: 8px;
+    flex-shrink: 0;
+    margin-top: 4px;
+    padding: 6px;
+    border-radius: 6px;
+    decorator: horizontal-gradient(#11998E #38EF7D);
+    transform: scale(1);
+    transition: transform 0.15s cubic-out;
+}
+.kit-save:hover {
+    decorator: horizontal-gradient(#14B39F #45FF97);
+    transform: scale(1.03);
+}
+.kit-save:active, .kit-save.pressed { transform: scale(0.94); }
+.kit-save-icon {
+    display: block;
+    width: 22px;
+    height: 22px;
+}
+.kit-save-label {
+    display: block;
+    font-family: "Teko";
+    font-weight: 700;
+    font-size: 22px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: #08150FFF;
+}
+#kit-editor.readonly .kit-arrow, #kit-editor.readonly .kit-save { opacity: 0.35; }
 </style>
 </head>
 <body>
@@ -988,6 +1214,39 @@ body {
 <div id="hero-actions-row">
 <div id="hero-btn"><img class="hero-btn-icon"/><div class="hero-btn-label">Select</div></div>
 <div id="hero-mute-btn"><img class="hero-mute-icon"/><img class="hero-mute-gp-icon"/></div>
+</div>
+</div>
+<div id="kit-editor">
+<div id="kit-message"></div>
+<div id="kit-side0" class="kit-side">
+<div class="kit-head"><img id="kit0-crest" class="kit-crest"/><div id="kit0-badge" class="kit-badge"></div><div id="kit0-team" class="kit-team"></div></div>
+<div class="kit-body">
+<div id="kit0-stage" class="kit-stage"><div id="kit0-figure" class="kit-figure"><img id="kit0-layer0" class="kit-layer"/><img id="kit0-layer1" class="kit-layer"/><img id="kit0-layer2" class="kit-layer"/></div><img id="kit0-gk" class="kit-gk"/></div>
+<div class="kit-rows">
+<div id="kit0-row0" class="kit-row"><div id="kit0-left0" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name0" class="kit-row-name"></div><div id="kit0-value0" class="kit-row-value"></div></div><div id="kit0-right0" class="kit-arrow">›</div></div>
+<div id="kit0-row1" class="kit-row"><div id="kit0-left1" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name1" class="kit-row-name"></div><div id="kit0-value1" class="kit-row-value"></div></div><div id="kit0-right1" class="kit-arrow">›</div></div>
+<div id="kit0-row2" class="kit-row"><div id="kit0-left2" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name2" class="kit-row-name"></div><div id="kit0-value2" class="kit-row-value"></div></div><div id="kit0-right2" class="kit-arrow">›</div></div>
+<div id="kit0-row3" class="kit-row"><div id="kit0-left3" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name3" class="kit-row-name"></div><div id="kit0-value3" class="kit-row-value"></div></div><div id="kit0-right3" class="kit-arrow">›</div></div>
+<div id="kit0-row4" class="kit-row"><div id="kit0-left4" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name4" class="kit-row-name"></div><div id="kit0-value4" class="kit-row-value"></div></div><div id="kit0-right4" class="kit-arrow">›</div></div>
+<div id="kit0-row5" class="kit-row"><div id="kit0-left5" class="kit-arrow">‹</div><div class="kit-text"><div id="kit0-name5" class="kit-row-name"></div><div id="kit0-value5" class="kit-row-value"></div></div><div id="kit0-right5" class="kit-arrow">›</div></div>
+<div id="kit0-save" class="kit-save"><img id="kit0-save-icon" class="kit-save-icon"/><div id="kit0-save-label" class="kit-save-label"></div></div>
+</div>
+</div>
+</div>
+<div id="kit-side1" class="kit-side">
+<div class="kit-head"><img id="kit1-crest" class="kit-crest"/><div id="kit1-badge" class="kit-badge"></div><div id="kit1-team" class="kit-team"></div></div>
+<div class="kit-body">
+<div id="kit1-stage" class="kit-stage"><div id="kit1-figure" class="kit-figure"><img id="kit1-layer0" class="kit-layer"/><img id="kit1-layer1" class="kit-layer"/><img id="kit1-layer2" class="kit-layer"/></div><img id="kit1-gk" class="kit-gk"/></div>
+<div class="kit-rows">
+<div id="kit1-row0" class="kit-row"><div id="kit1-left0" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name0" class="kit-row-name"></div><div id="kit1-value0" class="kit-row-value"></div></div><div id="kit1-right0" class="kit-arrow">›</div></div>
+<div id="kit1-row1" class="kit-row"><div id="kit1-left1" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name1" class="kit-row-name"></div><div id="kit1-value1" class="kit-row-value"></div></div><div id="kit1-right1" class="kit-arrow">›</div></div>
+<div id="kit1-row2" class="kit-row"><div id="kit1-left2" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name2" class="kit-row-name"></div><div id="kit1-value2" class="kit-row-value"></div></div><div id="kit1-right2" class="kit-arrow">›</div></div>
+<div id="kit1-row3" class="kit-row"><div id="kit1-left3" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name3" class="kit-row-name"></div><div id="kit1-value3" class="kit-row-value"></div></div><div id="kit1-right3" class="kit-arrow">›</div></div>
+<div id="kit1-row4" class="kit-row"><div id="kit1-left4" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name4" class="kit-row-name"></div><div id="kit1-value4" class="kit-row-value"></div></div><div id="kit1-right4" class="kit-arrow">›</div></div>
+<div id="kit1-row5" class="kit-row"><div id="kit1-left5" class="kit-arrow">‹</div><div class="kit-text"><div id="kit1-name5" class="kit-row-name"></div><div id="kit1-value5" class="kit-row-value"></div></div><div id="kit1-right5" class="kit-arrow">›</div></div>
+<div id="kit1-save" class="kit-save"><img id="kit1-save-icon" class="kit-save-icon"/><div id="kit1-save-label" class="kit-save-label"></div></div>
+</div>
+</div>
 </div>
 </div>
 <div id="dashboard">

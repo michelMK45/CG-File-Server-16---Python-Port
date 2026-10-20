@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import random
 import struct
 import tempfile
 import unittest
@@ -209,6 +210,13 @@ class TeamCombinationsTests(unittest.TestCase):
         tc.remove(0)
         self.assertEqual((tc.home, tc.away), (0, None))
 
+    def test_parts_for_a_kit_are_its_mix_or_the_kit_itself(self):
+        combo = _sample().items[1]
+        self.assertEqual(combo.parts_for(0, 1), (1, 0, 1))
+        self.assertEqual(combo.parts_for(223, 0), (0, 1, 1))
+        self.assertEqual(combo.parts_for(0, 0), (0, 0, 0))     # tournament mix doesn't count for tournament 0
+        self.assertEqual(combo.parts_for(0, 3), (3, 3, 3))
+
     def test_unique_name(self):
         tc = _sample()
         self.assertEqual(tc.unique_name("Empty"), "Empty (2)")
@@ -281,6 +289,23 @@ class RuntimeTests(unittest.TestCase):
         self.runtime.kits(refresh=True)
         self.assertEqual(self.runtime.gk_kit_options(383), [2, 12, 31])
         self.assertEqual(self.runtime.gk_kit_options(999), [2])
+        self.assertEqual(self.runtime.gk_choices(383, None), [None, 2, 12, 31])
+        self.assertEqual(self.runtime.gk_choices(383, 13), [None, 2, 12, 13, 31])   # saved but not loose
+
+    def test_kit_choices_fall_back_to_any_tournament_then_to_kits_0_to_3(self):
+        kit_dir = self.runtime.kit_dir()
+        kit_dir.mkdir(parents=True)
+        for name in ("kit_383_0_0.rx3", "kit_383_1_0.rx3", "kit_383_3_0.rx3", "kit_383_1_223.rx3"):
+            (kit_dir / name).write_bytes(b"x")
+        self.runtime.kits(refresh=True)
+        self.assertEqual(self.runtime.tournament_choices(383), [0, 223])
+        self.assertEqual(self.runtime.tournament_choices(999), [0])
+        self.assertEqual(self.runtime.kit_type_choices(383, 0), [0, 1, 3])
+        self.assertEqual(self.runtime.kit_type_choices(383, 223), [1])
+        self.assertEqual(self.runtime.kit_type_choices(383, 7), [0, 1, 3])
+        self.assertEqual(self.runtime.kit_type_choices(999, 0), list(kc.FALLBACK_KIT_TYPES))
+        self.assertEqual(self.runtime.kit_sources(383, 223, 1, 0, 2),
+                         (kit_dir / "kit_383_1_223.rx3", kit_dir / "kit_383_0_0.rx3", None))
 
     def test_scan_kit_folder_indexes_loose_kits(self):
         kit_dir = self.runtime.kit_dir()
@@ -435,6 +460,65 @@ class ArtTests(unittest.TestCase):
         w, h = art.art_size(56)
         r, g, b, a = image.getpixel((w // 2, int(h * 0.3)))
         self.assertTrue(a > 200 and abs(r - g) < 10 and abs(g - b) < 10)
+
+    @staticmethod
+    def _noise_rows(w: int, h: int, seed: int) -> list[bytes]:
+        rnd = random.Random(seed)
+        image = Image.new("RGB", (w, h))
+        image.putdata([(rnd.randrange(256), rnd.randrange(256), rnd.randrange(256)) for _ in range(w * h)])
+        return art._image_rows(image)
+
+    def test_stacked_layers_give_exactly_the_whole_drawing(self):
+        textures = {"shirt": self._noise_rows(64, 64, 1), "shorts": self._noise_rows(64, 32, 2),
+                    "socks": self._noise_rows(64, 32, 3)}
+        for size in (46, 56, 110, 240):
+            whole = art.make_kit_icon(textures["shirt"], textures["shorts"], textures["socks"], size)
+            stacked = Image.new("RGBA", whole.size, (0, 0, 0, 0))
+            for layer in art.ART_LAYERS:   # bottom to top, the order the overlay stacks them
+                stacked = Image.alpha_composite(stacked, art.make_kit_layer(layer, textures[layer], size))
+            self.assertEqual(stacked.tobytes(), whole.tobytes(), size)
+
+    def test_a_layer_holds_only_its_garment(self):
+        rows = self._noise_rows(64, 32, 4)
+        w, h = art.art_size(56)
+        body, sock = (w // 2, int(h * 0.3)), (int(w * 0.39), int(h * 0.95))
+        socks_layer = art.make_kit_layer("socks", rows, 56)
+        self.assertGreater(socks_layer.getpixel(sock)[3], 200)
+        self.assertEqual(socks_layer.getpixel(body)[3], 0)
+        shirt_layer = art.make_kit_layer("shirt", self._noise_rows(64, 64, 5), 56)
+        self.assertGreater(shirt_layer.getpixel(body)[3], 200)
+        self.assertEqual(shirt_layer.getpixel(sock)[3], 0)
+        with self.assertRaises(ValueError):
+            art.make_kit_layer("gloves", rows, 56)
+
+    def test_layer_files_are_rendered_once_into_the_cache(self):
+        cache = self.dir / "cache"
+        factory = art.IconFactory(lambda team, tourn, k: self.kit if k == 0 else None, cache)
+        path = factory.kit_layer_path(383, 0, 0, "shirt", size=56)
+        self.assertEqual(path.parent, cache)
+        self.assertIn("_shirt_", path.name)
+        r, g, b, a = Image.open(path).convert("RGBA").getpixel((art.art_size(56)[0] // 2, int(art.art_size(56)[1] * 0.3)))
+        self.assertTrue(a > 200 and r > 150 and b < 80)
+        stamp = path.stat().st_mtime_ns
+        self.assertEqual(factory.layer_path(self.kit, "shirt", size=56), path)
+        self.assertEqual(path.stat().st_mtime_ns, stamp)
+        others = {factory.layer_path(self.kit, layer, size=56) for layer in ("shorts", "socks")}
+        grey = factory.kit_layer_path(383, 0, 1, "shirt", size=56)   # no loose kit 1: grey shirt
+        self.assertEqual(len(others | {path, grey}), 4)
+        self.assertEqual(list(cache.glob("*.tmp")), [])
+        with self.assertRaises(ValueError):
+            factory.layer_path(self.kit, "gloves")
+
+    def test_render_path_is_the_cached_drawing_of_render_png(self):
+        cache = self.dir / "cache"
+        factory = art.IconFactory(lambda *a: None, cache)
+        path = factory.render_path(self.kit, self.kit, None, size=56)
+        self.assertEqual(path.read_bytes(), factory.render_png(self.kit, self.kit, None, size=56))
+        self.assertEqual(len(list(cache.glob("*.png"))), 1)
+        self.assertIsNone(art.IconFactory(lambda *a: None, None).render_path(self.kit, self.kit, self.kit))
+
+    def test_layer_path_needs_a_cache_folder(self):
+        self.assertIsNone(art.IconFactory(lambda *a: None, None).layer_path(self.kit, "shirt"))
 
 
 try:

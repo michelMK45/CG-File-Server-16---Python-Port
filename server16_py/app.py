@@ -261,6 +261,13 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_left_pressed_at = 0.0
         self._overlay_gp_right_pressed_at = 0.0
         self._overlay_gp_start_hold_latched = False
+        # Select (Back) held 0.6s opens the menu straight on Kits > Team Kits;
+        # F12 held 0.6s does the same from the keyboard: the press opens the
+        # menu as usual and _overlay_f12_held_since remembers when, until F12
+        # is released (see _sync_d3d_menu_input).
+        self._overlay_gp_back_hold_latched = False
+        self._overlay_f12_held_since = 0.0
+        self._overlay_f12_hold_latched = False
         # Gamepad Y on the Stadiums tab: tap toggles the filter bubble
         # (_toggle_stadium_filter_panel), a 0.6s hold clears the active
         # filter (_clear_stadium_filter) instead — same press/hold-latch
@@ -291,6 +298,20 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_kit_sets_cache: list[dict | None] = []
         self._overlay_kit_preview_cache: dict[str, str] = {}
         self._overlay_kit_preview_pending: set[str] = set()
+        # Kits tab: Team Kits / Custom Kits chooser and the Team Kits editor
+        # (wizard phase "teamkits") — see _enter_kits_mode in app_overlay.py.
+        self._overlay_kit_mode_last = "team"
+        self._overlay_team_kit_sides = None
+        self._overlay_team_kit_rows: list[tuple[int, int]] = []
+        self._overlay_team_kit_repeat_at = 0.0
+        # The editor's kit drawings (_team_kit_art in app_overlay.py): finished
+        # ones by (kind, source path), and the render queue its worker drains.
+        self._overlay_team_kit_art: dict[tuple, str] = {}
+        self._overlay_team_kit_art_dirty = False
+        self._overlay_team_kit_jobs: list[tuple] = []
+        self._overlay_team_kit_job_keys: set[tuple] = set()
+        self._overlay_team_kit_job_lock = threading.Lock()
+        self._overlay_team_kit_worker: threading.Thread | None = None
         self._overlay_list_header: str = ""
         # Stadiums-tab country filter panel (Y button) — see
         # _activate_filter_row / _update_menu_content in app_overlay.py.
