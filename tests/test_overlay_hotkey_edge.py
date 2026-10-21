@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import ctypes
 import threading
 import time
+import types
 import unittest
 
 from server16_py.app_overlay import OverlayMixin
-from server16_py.win32_types import VK_F12
+from server16_py.input_bindings import KIT_TYPE, OVERLAY_MENU, TEAM_KITS, InputBindings, KeyBinding
+from server16_py.win32_types import HC_ACTION, KBDLLHOOKSTRUCT, VK_F12, WM_KEYDOWN, WM_KEYUP
+
+VK_F5 = 0x74
 
 
 class FakeUser32:
@@ -40,9 +45,11 @@ class FakeOverlayApp(OverlayMixin):
 
     def __init__(self) -> None:
         self.user32 = FakeUser32()
+        self.input_bindings = InputBindings.defaults()
         self._hotkey_poll_thread = None
         self._hotkey_poll_stop = threading.Event()
         self._overlay_hotkey_edge_pending: set[int] = set()
+        self._kit_hotkey_edge_pending: set[int] = set()
         self._overlay_key_edge_pending: set[int] = set()
         self._d3d_menu_visible = False
         self._stadium_picker_pending = False
@@ -206,6 +213,138 @@ class HotkeyEdgeReopenRegressionTests(unittest.TestCase):
             self.assertEqual(app._overlay_hotkey_edge_pending, set())
         finally:
             app._uninstall_hotkey_poll_thread()
+
+
+class CustomBindingHotkeyEdgeTests(unittest.TestCase):
+    """Settings > Controls: the poll thread and _consume_hotkey_edge follow
+    whatever keys are bound, not F12/F7-F11."""
+
+    @staticmethod
+    def _wait_until(condition, timeout: float = 1.0) -> bool:
+        deadline = time.perf_counter() + timeout
+        while time.perf_counter() < deadline:
+            if condition():
+                return True
+            time.sleep(0.01)
+        return condition()
+
+    def test_a_key_bound_while_held_is_not_latched_but_its_next_press_is(self) -> None:
+        app = FakeOverlayApp()
+        app._install_hotkey_poll_thread()
+        try:
+            app.user32.press(VK_F5)                  # pressed in the capture dialog...
+            time.sleep(0.05)
+            app.input_bindings = app.input_bindings.with_key(OVERLAY_MENU, KeyBinding(VK_F5))   # ...and bound
+            time.sleep(0.05)
+            self.assertNotIn(VK_F5, app._overlay_hotkey_edge_pending)
+            app.user32.release(VK_F5)
+            time.sleep(0.05)
+            app.user32.press(VK_F5)
+            self.assertTrue(self._wait_until(lambda: VK_F5 in app._overlay_hotkey_edge_pending))
+            self.assertNotIn(VK_F5, app._kit_hotkey_edge_pending)    # not a kit hotkey's key
+        finally:
+            app._uninstall_hotkey_poll_thread()
+
+    def test_a_key_the_overlay_and_a_kit_hotkey_share_reaches_both(self) -> None:
+        app = FakeOverlayApp()
+        # F12 opens the overlay, F12 held changes the kit type.
+        app.input_bindings = (
+            app.input_bindings.with_key(TEAM_KITS, KeyBinding()).with_key(KIT_TYPE, KeyBinding(VK_F12, True))
+        )
+        app._install_hotkey_poll_thread()
+        try:
+            time.sleep(0.03)
+            app.user32.press(VK_F12)
+            self.assertTrue(self._wait_until(
+                lambda: VK_F12 in app._overlay_hotkey_edge_pending and VK_F12 in app._kit_hotkey_edge_pending
+            ))
+            self.assertTrue(app._consume_hotkey_edge(VK_F12))
+            self.assertTrue(app._consume_kit_hotkey_edge(VK_F12))
+            self.assertFalse(app._consume_kit_hotkey_edge(VK_F12))
+        finally:
+            app._uninstall_hotkey_poll_thread()
+
+    def test_a_custom_overlay_key_closes_the_open_menu_through_the_hook(self) -> None:
+        app = FakeOverlayApp()
+        app.input_bindings = (
+            app.input_bindings.with_key(OVERLAY_MENU, KeyBinding(VK_F5)).with_key(TEAM_KITS, KeyBinding())
+        )
+        app._d3d_menu_visible = True
+        app._keyboard_hook = object()
+        app._overlay_hotkey_edge_pending.add(VK_F5)  # the poll thread's latch of the opening press
+        app._overlay_key_edge_pending.add(VK_F5)     # the hook's latch of the new one
+        self.assertTrue(app._consume_hotkey_edge(VK_F5))
+        self.assertEqual(app._overlay_hotkey_edge_pending, set())
+        # F12 isn't the menu's key any more: the hook doesn't track it.
+        app._overlay_key_edge_pending.add(VK_F12)
+        self.assertFalse(app._consume_hotkey_edge(VK_F12))
+
+
+class FakeHookUser32(FakeUser32):
+    """user32 for _keyboard_hook_thread_func run on the test thread: keeps the
+    hook procedure it installs (so the test can call it with real
+    KBDLLHOOKSTRUCTs), records what is passed on, and ends the message loop
+    at once. GetAsyncKeyState is the system's view of the keys."""
+
+    PASSED = 7   # what CallNextHookEx returns, to tell "passed on" from "eaten" (1)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.proc = None
+        self.passed: list[tuple[int, int]] = []
+
+    def SetWindowsHookExW(self, _kind, proc, _module, _thread) -> int:
+        self.proc = proc
+        return 1
+
+    def CallNextHookEx(self, _hook, _code, w_param, l_param) -> int:
+        info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
+        self.passed.append((int(w_param), int(info.vkCode)))
+        return self.PASSED
+
+    def GetMessageW(self, *_args) -> int:
+        return 0
+
+    def UnhookWindowsHookEx(self, _hook) -> int:
+        return 1
+
+
+class KeyboardHookReleaseTests(unittest.TestCase):
+    """The menu's keyboard hook eats its keys from FIFA, but a key's release
+    goes where its press went: eating the WM_KEYUP of a press the system saw
+    (the F12 press that opened the menu) left GetAsyncKeyState reporting F12
+    down after the menu closed, and "F12 held" reopened it on Team Kits."""
+
+    def setUp(self) -> None:
+        app = FakeOverlayApp()
+        app.user32 = FakeHookUser32()
+        app.kernel32 = types.SimpleNamespace(GetModuleHandleW=lambda _name: 0, GetCurrentThreadId=lambda: 1)
+        app._overlay_blocked_key_down = set()
+        app._d3d_menu_visible = True
+        app._is_overlay_input_foreground = lambda: True
+        app._keyboard_hook_thread_func()   # installs the hook, the loop ends at once
+        self.assertIsNotNone(app.user32.proc)
+        app._keyboard_hook = 1
+        self.app = app
+
+    def send(self, msg: int, vk: int) -> int:
+        info = KBDLLHOOKSTRUCT(vkCode=vk)
+        return int(self.app.user32.proc(HC_ACTION, msg, ctypes.addressof(info)))
+
+    def test_releasing_the_key_that_opened_the_menu_reaches_the_system(self) -> None:
+        self.app.user32.press(VK_F12)                    # went down before the hook was in
+        self.app._overlay_blocked_key_down.add(VK_F12)   # seeded when it was installed
+        self.assertEqual(self.send(WM_KEYUP, VK_F12), FakeHookUser32.PASSED)
+        self.assertEqual(self.app.user32.passed, [(WM_KEYUP, VK_F12)])
+        self.assertNotIn(VK_F12, self.app._overlay_blocked_key_down)
+
+    def test_a_key_pressed_with_the_menu_open_stays_eaten_both_ways(self) -> None:
+        self.assertEqual(self.send(WM_KEYDOWN, VK_F12), 1)
+        self.assertIn(VK_F12, self.app._overlay_blocked_key_down)
+        self.assertIn(VK_F12, self.app._overlay_key_edge_pending)
+        self.assertEqual(self.send(WM_KEYUP, VK_F12), 1)
+        self.assertNotIn(VK_F12, self.app._overlay_blocked_key_down)
+        self.assertEqual(self.app.user32.passed, [])
 
 
 if __name__ == "__main__":

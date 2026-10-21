@@ -76,6 +76,10 @@ class SettingsMixin:
                 _, side, team_id, kittype_code, direction, tourn_id, result, png_path = event
                 self._kit_cycle_task_running = False
                 self._show_kit_hotkey_notification(side, team_id, kittype_code, direction, tourn_id, result, png_path)
+            elif kind == "team_combo_cycled":
+                _, side, team_id, direction, detail, images = event
+                self._kit_cycle_task_running = False
+                self._show_team_combination_notification(side, team_id, direction, detail, images)
             elif kind == "kit_cycle_error":
                 _, side, team_id, message = event
                 self._kit_cycle_task_running = False

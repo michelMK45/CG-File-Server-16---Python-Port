@@ -12,7 +12,7 @@ from tkinter import filedialog, font as tkfont, messagebox, ttk
 from PIL import Image, ImageTk
 
 from .camera_runtime import CameraPreset
-from .dialogs import AboutDialog, ImgbbApiKeyDialog
+from .dialogs import AboutDialog, ImgbbApiKeyDialog, KeyCaptureDialog, PadCaptureDialog
 from .gamepad_bridge_runtime import GamepadBridgeRuntime, XINPUT_USER_COUNT, xinput_gamepad_has_input
 from .file_tools import (
     clear_generated_cache,
@@ -25,6 +25,10 @@ from .file_tools import (
     stadium_preview_fallback_path,
 )
 from .image_zoom_dialog import ImageZoomDialog
+from .input_bindings import (
+    CAPTURE_VKS, KIT_ACTIONS, MENU_ACTIONS, NEEDS_FREE_BUTTON, OVERLAY_MENU, RESERVED, InputBindings, KeyBinding,
+    PadBinding, key_binding_name, key_name, key_problem, overlay_help_text, pad_binding_name, pad_name, pad_problem,
+)
 from .kit_art_preview import KitArtPreview, advanced_mix_sources, attach_zoom
 from .kit_classic_tab import KitClassicTab
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
@@ -339,6 +343,9 @@ class UIMixin:
         # it's disabled (TButton itself doesn't change look when disabled).
         style.configure("Server16.Picker.TButton", padding=(6, 4))
         style.map("Server16.Picker.TButton", foreground=[("disabled", self.muted)])
+        # Settings > Controls: the key / gamepad binding buttons, one row per
+        # action — TButton's padding=8 would make the table twice as tall.
+        style.configure("Server16.Binding.TButton", padding=(10, 4))
         style.configure("TCheckbutton", background=self.bg, foreground=self.fg)
         style.configure(
             "Server16.TEntry",
@@ -590,7 +597,7 @@ class UIMixin:
         help_bar.pack(fill="x", pady=(8, 0))
         self.help_label = tk.Label(
             help_bar,
-            text=self.tr("help.overlay_toggle"),
+            text=overlay_help_text(self.input_bindings, self.tr),
             bg=self.bg,
             fg=self.muted,
             font=("Bahnschrift", 9),
@@ -1876,6 +1883,9 @@ class UIMixin:
         self.kitmix_team_id = tk.StringVar(value="")
         self.kitmix_kittype_labels = {key: key.capitalize() for key in KIT_TYPES}
         self.kitmix_kittype = tk.StringVar(value=self.kitmix_kittype_labels.get("home", "Home"))
+        # A kit type picked in either Kits subtab (or F11 moving on to Home)
+        # takes the kit hotkeys off F11's "Team combination" step.
+        self.kitmix_kittype.trace_add("write", lambda *_a: setattr(self, "_kit_hotkey_team_mode", False))
         self._kitmix_jersey_source: dict = {"mode": "keep", "path": None}
         self._kitmix_shorts_source: dict = {"mode": "keep", "path": None}
         self._kitmix_crest_source: dict = {"mode": "keep", "path": None}
@@ -3178,15 +3188,37 @@ class UIMixin:
     def _build_settings_tab(self) -> None:
         """App Options, moved off the Dashboard's Modules card into their own
         tab and split into App Settings (general app behavior) vs. Overlay
-        Settings (F12 in-game overlay / stadium picker behavior)."""
-        outer = tk.Frame(self.settings_tab, bg=self.bg)
-        outer.pack(fill="both", expand=True, padx=10, pady=10)
+        Settings (F12 in-game overlay / stadium picker behavior), with
+        Controls (the overlay's and the kit hotkeys' keys and gamepad
+        buttons) under both.
+
+        Scrollable, like the Gamepads tab: the Controls card doesn't fit
+        under the other two in a shorter window."""
+        scroll_host = tk.Frame(self.settings_tab, bg=self.bg)
+        scroll_host.pack(fill="both", expand=True, padx=10, pady=10)
+
+        canvas = tk.Canvas(scroll_host, bg=self.bg, highlightthickness=0, bd=0)
+        scrollbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview, style="Server16.Vertical.TScrollbar")
+        canvas.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        outer = tk.Frame(canvas, bg=self.bg)
+        canvas_win = canvas.create_window((0, 0), window=outer, anchor="nw")
+        outer.bind("<Configure>", lambda _e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_win, width=e.width))
+        self._settings_canvas = canvas
+        self._settings_canvas_body = outer
+        # add="+" — see the comment on the dashboard's own bind_all for why
+        # this must not replace other tabs' scoped mousewheel handlers.
+        canvas.bind_all("<MouseWheel>", self._on_settings_mousewheel, add="+")
+
         outer.grid_columnconfigure(0, weight=1)
         outer.grid_columnconfigure(1, weight=1)
-        outer.grid_rowconfigure(0, weight=1)
 
         self._build_app_settings_card(outer)
         self._build_overlay_settings_card(outer)
+        self._build_controls_card(outer)
 
     def _build_app_settings_card(self, parent: tk.Misc) -> None:
         card = self._card(parent, "card.app_settings.title", "card.app_settings.subtitle")
@@ -3279,6 +3311,276 @@ class UIMixin:
         )
         self.random_stadium_switch.pack(anchor="w", padx=12, pady=(0, 10))
         self._add_tooltip(self.random_stadium_switch, "tooltip.random_stadium_selection")
+
+    def _build_controls_card(self, parent: tk.Misc) -> None:
+        """Settings > Controls: the key and the gamepad binding of every
+        overlay shortcut and kit hotkey (input_bindings.py). Each binding is
+        a button opening a capture dialog (dialogs.KeyCaptureDialog /
+        PadCaptureDialog) with its own Hold switch beside it, keyboard and
+        gamepad apart: on, the binding fires after being held 0.6s instead
+        of on the press — which also lets one key or combination serve two
+        actions (F12 / F12 held). The menu's own navigation keys/buttons are
+        not here: they stay fixed."""
+        card = self._card(parent, "card.controls.title", "card.controls.subtitle")
+        card.grid(row=1, column=0, columnspan=2, sticky="new", pady=(12, 0))
+        self._controls_texts = []
+        self._controls_rows = {}
+
+        table = tk.Frame(card, bg=self.card)
+        table.pack(fill="x", padx=12, pady=(6, 4))
+        table.grid_columnconfigure(0, weight=1)
+        for column, key in ((0, "controls.header.action"), (1, "controls.header.keyboard"), (3, "controls.header.gamepad")):
+            header = tk.Label(table, text=self.tr(key), bg=self.card, fg=self.muted, font=("Bahnschrift", 9, "bold"))
+            header.grid(row=0, column=column, columnspan=1 if column == 0 else 2, sticky="w",
+                        padx=(0 if column == 0 else 8, 0), pady=(0, 2))
+            self._controls_texts.append((header, key))
+
+        row = 1
+        for group_key, actions in (("controls.group.overlay", MENU_ACTIONS), ("controls.group.kits", KIT_ACTIONS)):
+            group = tk.Label(table, text=self.tr(group_key), bg=self.card, fg=self.accent, font=("Bahnschrift", 10, "bold"))
+            group.grid(row=row, column=0, columnspan=5, sticky="w", pady=(8, 2))
+            self._controls_texts.append((group, group_key))
+            row += 1
+            for action in actions:
+                label_key = f"controls.action.{action}"
+                label = tk.Label(table, text=self.tr(label_key), bg=self.card, fg=self.fg, font=("Bahnschrift", 10))
+                label.grid(row=row, column=0, sticky="w", padx=(12, 0), pady=2)
+                self._controls_texts.append((label, label_key))
+                widgets = {}
+                for column, device, width, capture, toggle in (
+                    (1, "key", 14, self._capture_key_binding, self._toggle_key_binding_hold),
+                    (3, "pad", 22, self._capture_pad_binding, self._toggle_pad_binding_hold),
+                ):
+                    button = ttk.Button(
+                        table, style="Server16.Binding.TButton", width=width,
+                        command=lambda a=action, c=capture: c(a),
+                    )
+                    button.grid(row=row, column=column, sticky="ew", padx=(8, 0), pady=2)
+                    hold_var = tk.BooleanVar(value=False)
+                    hold_switch = ttk.Checkbutton(
+                        table, style="Module.Switch.TCheckbutton", text=self.tr("toggle.controls.hold"),
+                        variable=hold_var, command=lambda a=action, t=toggle: t(a),
+                    )
+                    hold_switch.grid(row=row, column=column + 1, sticky="w", padx=(4, 0), pady=2)
+                    self._add_tooltip(hold_switch, "tooltip.controls.hold")
+                    self._controls_texts.append((hold_switch, "toggle.controls.hold"))
+                    widgets.update({device: button, f"{device}_hold": hold_switch, f"{device}_hold_var": hold_var})
+                self._controls_rows[action] = widgets
+                row += 1
+
+        note = tk.Label(card, text=self.tr("controls.note"), bg=self.card, fg=self.muted, anchor="w",
+                        justify="left", wraplength=800, font=("Bahnschrift", 9))
+        note.pack(fill="x", padx=12, pady=(8, 6))
+        card.bind("<Configure>", lambda e: note.configure(wraplength=max(200, e.width - 24)), add="+")
+        self._controls_texts.append((note, "controls.note"))
+        restore = ttk.Button(card, text=self.tr("button.controls.restore_defaults"), command=self._restore_default_bindings)
+        restore.pack(anchor="w", padx=12, pady=(0, 12))
+        self._controls_texts.append((restore, "button.controls.restore_defaults"))
+        self._refresh_controls_card()
+
+    def _refresh_controls_card(self) -> None:
+        bindings = self.input_bindings
+        for action, row in self._controls_rows.items():
+            key = bindings.key(action)
+            row["key"].configure(text=key_name(key.vk, self.tr) if key.vk else self.tr("controls.unbound"))
+            row["key_hold_var"].set(bool(key.vk and key.hold))
+            row["key_hold"].state(["!disabled"] if key.vk else ["disabled"])
+            pad = bindings.pad(action)
+            row["pad"].configure(text=pad_name(pad.buttons, self.tr) if pad.buttons else self.tr("controls.unbound"))
+            row["pad_hold_var"].set(bool(pad.buttons and pad.hold))
+            row["pad_hold"].state(["!disabled"] if pad.buttons else ["disabled"])
+
+    def _on_settings_mousewheel(self, event) -> None:
+        if self.tabview is None or self._settings_canvas is None:
+            return
+        current = self.tabview.nametowidget(self.tabview.select())
+        if current is not self.settings_tab:
+            return
+        if not self._event_widget_belongs_to(event, self._settings_canvas, self._settings_canvas_body):
+            return
+        self._settings_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _controls_action_label(self, action: str) -> str:
+        return self.tr(f"controls.action.{action}")
+
+    def _capture_key_binding(self, action: str) -> None:
+        bindings = self.input_bindings
+        current = bindings.key(action)
+        # A new key keeps the row's Hold setting (the press for a row that
+        # had none) — or takes the other one when another action already has
+        # the key that way: F12 for Team Kits is F12 held, since F12's press
+        # opens the overlay.
+        preferred = current.hold if current.vk else False
+
+        def free_hold(vk: int) -> bool | None:
+            return next(
+                (hold for hold in (preferred, not preferred)
+                 if bindings.key_owner(KeyBinding(vk, hold), exclude=action) is None),
+                None,
+            )
+
+        def validate(vk: int) -> str | None:
+            if not vk:
+                if action == OVERLAY_MENU and not bindings.pad(OVERLAY_MENU).buttons:
+                    return self.tr("message.controls.overlay_needs_binding")
+                return None
+            problem = key_problem(vk)
+            if problem == RESERVED:
+                return self.tr("message.controls.key_reserved")
+            if problem:
+                return self.tr("message.controls.key_unsupported")
+            if free_hold(vk) is None:
+                return self._controls_in_use_both(
+                    key_name(vk, self.tr),
+                    bindings.key_owner(KeyBinding(vk, False), exclude=action),
+                    bindings.key_owner(KeyBinding(vk, True), exclude=action),
+                )
+            return None
+
+        dialog = KeyCaptureDialog(
+            self, self._controls_action_label(action),
+            key_binding_name(current, self.tr) if current.vk else self.tr("controls.unbound"),
+            validate, self.user32.GetAsyncKeyState, CAPTURE_VKS,
+        )
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        binding = KeyBinding(dialog.result, free_hold(dialog.result)) if dialog.result else KeyBinding()
+        if binding == current:
+            return
+        before = key_binding_name(current, self.tr) if current.vk else "-"
+        after = key_binding_name(binding, self.tr) if binding.vk else "-"
+        self._set_input_bindings(bindings.with_key(action, binding), f"{action} key {before} -> {after}")
+
+    def _capture_pad_binding(self, action: str) -> None:
+        bindings = self.input_bindings
+        current = bindings.pad(action)
+        # A new combination keeps the row's Hold setting; a row that had
+        # none starts the way its defaults do: menu shortcuts held (FIFA gets
+        # the press too), kit hotkeys on the press. Either way the other one
+        # when another action already has the combination that way.
+        preferred = current.hold if current.buttons else action in MENU_ACTIONS
+
+        def free_hold(buttons: int) -> bool | None:
+            return next(
+                (hold for hold in (preferred, not preferred)
+                 if bindings.pad_owner(PadBinding(buttons, hold), exclude=action) is None),
+                None,
+            )
+
+        def validate(buttons: int) -> str | None:
+            if not buttons:
+                if action == OVERLAY_MENU and not bindings.key(OVERLAY_MENU).vk:
+                    return self.tr("message.controls.overlay_needs_binding")
+                return None
+            if pad_problem(action, buttons) == NEEDS_FREE_BUTTON:
+                return self.tr("message.controls.pad_needs_free_button")
+            if free_hold(buttons) is None:
+                return self._controls_in_use_both(
+                    pad_name(buttons, self.tr),
+                    bindings.pad_owner(PadBinding(buttons, False), exclude=action),
+                    bindings.pad_owner(PadBinding(buttons, True), exclude=action),
+                )
+            return None
+
+        dialog = PadCaptureDialog(
+            self, self._controls_action_label(action),
+            pad_binding_name(current, self.tr) if current.buttons else self.tr("controls.unbound"),
+            validate, self._read_gamepad_for_capture, lambda buttons: pad_name(buttons, self.tr),
+        )
+        self.wait_window(dialog)
+        if dialog.result is None:
+            return
+        binding = PadBinding(dialog.result, free_hold(dialog.result)) if dialog.result else PadBinding()
+        if binding == current:
+            return
+        before = pad_binding_name(current, self.tr) if current.buttons else "-"
+        after = pad_binding_name(binding, self.tr) if binding.buttons else "-"
+        self._set_input_bindings(bindings.with_pad(action, binding), f"{action} gamepad {before} -> {after}")
+
+    def _controls_in_use_both(self, name: str, press_owner: str, hold_owner: str) -> str:
+        return self.tr(
+            "message.controls.in_use_both", name=name,
+            press=self._controls_action_label(press_owner), hold=self._controls_action_label(hold_owner),
+        )
+
+    def _toggle_key_binding_hold(self, action: str) -> None:
+        current = self.input_bindings.key(action)
+        hold = bool(self._controls_rows[action]["key_hold_var"].get())
+        if not current.vk or hold == current.hold:
+            self._refresh_controls_card()
+            return
+        binding = KeyBinding(current.vk, hold)
+        owner = self.input_bindings.key_owner(binding, exclude=action)
+        if owner:
+            self._refuse_hold_toggle(key_binding_name(binding, self.tr), owner)
+            return
+        self._set_input_bindings(
+            self.input_bindings.with_key(action, binding), f"{action} key {'hold' if hold else 'press'}",
+        )
+
+    def _toggle_pad_binding_hold(self, action: str) -> None:
+        current = self.input_bindings.pad(action)
+        hold = bool(self._controls_rows[action]["pad_hold_var"].get())
+        if not current.buttons or hold == current.hold:
+            self._refresh_controls_card()
+            return
+        binding = PadBinding(current.buttons, hold)
+        owner = self.input_bindings.pad_owner(binding, exclude=action)
+        if owner:
+            self._refuse_hold_toggle(pad_binding_name(binding, self.tr), owner)
+            return
+        self._set_input_bindings(
+            self.input_bindings.with_pad(action, binding), f"{action} gamepad {'hold' if hold else 'press'}",
+        )
+
+    def _refuse_hold_toggle(self, name: str, owner: str) -> None:
+        """A Hold switch that would give the row the same binding as another
+        action (F12 for Team Kits while F12 opens the overlay) springs back."""
+        self._refresh_controls_card()
+        messagebox.showwarning(
+            self.tr("message.controls.title"),
+            self.tr("message.controls.in_use", name=name, action=self._controls_action_label(owner)),
+        )
+
+    def _restore_default_bindings(self) -> None:
+        if not messagebox.askyesno(self.tr("message.controls.title"), self.tr("message.controls.restore_confirm")):
+            return
+        self._set_input_bindings(InputBindings.defaults(), "defaults restored")
+
+    def _set_input_bindings(self, bindings: InputBindings, change: str) -> None:
+        """Applies a Settings > Controls change: swaps self.input_bindings
+        whole (the hotkey poll thread and the keyboard hook pick it up on
+        their next read), saves it, and drops every input state the old
+        bindings left behind — a press the poll thread latched for the old
+        key, or a gamepad hold half done, must not fire as the new one."""
+        if bindings == self.input_bindings:
+            return
+        self.input_bindings = bindings
+        self.settings.input_bindings = bindings
+        self._overlay_hotkey_edge_pending.clear()
+        self._kit_hotkey_edge_pending.clear()
+        self._overlay_key_trackers.clear()
+        self._overlay_pad_trackers.clear()
+        self._kit_key_trackers.clear()
+        self._kit_pad_trackers.clear()
+        self._kit_hotkey_pending.clear()
+        self._kit_input_primed = False
+        self.log(f"Controls changed: {change}")
+        self._refresh_controls_card()
+        if self.help_label is not None:
+            self.help_label.configure(text=overlay_help_text(bindings, self.tr))
+
+    def _read_gamepad_for_capture(self) -> int | None:
+        """wButtons of the pad the overlay reads — the first connected XInput
+        player, the one _get_gamepad_snapshot settles on — or None when no
+        pad is connected (PadCaptureDialog)."""
+        first = self._active_gamepad_index
+        for index in [first] + [i for i in range(XINPUT_USER_COUNT) if i != first]:
+            gamepad = self._read_xinput_gamepad(index)
+            if gamepad is not None:
+                return int(gamepad.wButtons)
+        return None
 
     def _toggle_discord_rpc(self) -> None:
         new_state = self.module_vars["DiscordRPC"].get()
@@ -3457,9 +3759,10 @@ class UIMixin:
         self.settings.save()
         if not self.kit_hotkeys_var.get() and not self.show_overlay_var.get():
             # Mirrors _toggle_overlay_enabled's own symmetric check — only
-            # tear down the shared F12/kit-hotkey poll thread once neither
-            # feature needs it.
+            # tear down the shared overlay-key/kit-hotkey poll threads once
+            # neither feature needs them.
             self._uninstall_hotkey_poll_thread()
+            self._uninstall_gamepad_poll_thread()
 
     def _toggle_overlay_enabled(self) -> None:
         self.settings.show_overlay = self.show_overlay_var.get()
@@ -3470,17 +3773,15 @@ class UIMixin:
             self._uninstall_mouse_wheel_hook()
             self._uninstall_keyboard_hook()
             self._publish_overlay_menu_state()
-        if not self.show_overlay_var.get() and not self.kit_hotkeys_var.get():
-            # Kit hotkeys (F7-F11) install this same poll thread
-            # independently in _sync_kit_hotkeys and would just respawn it
-            # on the very next tick if it's still enabled — only tear down
-            # once neither feature needs it.
-            self._uninstall_hotkey_poll_thread()
         if not self.show_overlay_var.get():
-            # The gamepad poll thread is only ever installed from
-            # _sync_d3d_menu_input (kit hotkeys have no gamepad equivalent),
-            # so it can be torn down unconditionally here.
-            self._uninstall_gamepad_poll_thread()
+            # The kit hotkeys install these same poll threads independently
+            # in _sync_kit_hotkeys (keys, and gamepad buttons once one is
+            # bound in Settings > Controls) — only tear down what they don't
+            # need, or they'd just respawn it on the very next tick.
+            if not self._kit_hotkeys_need_key_poll():
+                self._uninstall_hotkey_poll_thread()
+            if not self._kit_hotkeys_need_pad_poll():
+                self._uninstall_gamepad_poll_thread()
         # The stadium picker is deliberately NOT stranded/cancelled here —
         # it no longer depends on this toggle at all (see
         # _sync_d3d_menu_input's show_overlay_var gate and

@@ -57,6 +57,34 @@ def open_sides(runtime: "KitClassicRuntime", home_team: int, away_team: int,
             TeamKitSide(runtime, away_team, AWAY, away_tc, default_name))
 
 
+def usual_slot(side: int) -> int:
+    """The kit a side usually asks for. The one actually chosen in FIFA's kit menu
+    can't be read from Python."""
+    return 0 if side == HOME else 1
+
+
+def preview_mix(combo: Optional[Combination], tourn: int, slot: int) -> Optional[Mix]:
+    """The mix that shows `combo` best when kit `slot` (of tournament `tourn`) is
+    the one looked at: its mix for that kit, else another kit of that tournament
+    it mixes (lowest first), else one of another tournament — so a combination
+    that only changes another kit doesn't look like the original kits. None for
+    the original kits or a combination that mixes nothing."""
+    mixes = [m for m in combo.mixes if not m.is_identity] if combo is not None else []
+    if not mixes:
+        return None
+    return min(mixes, key=lambda m: (m.key != (tourn, slot), m.tourn != tourn, m.tourn, m.slot))
+
+
+def preview_parts(combo: Optional[Combination], tourn: int, slot: int) -> tuple[int, int, int, int]:
+    """(tourn, shirt, shorts, socks) that show `combo` in one small drawing (the
+    kit hotkeys' carousel, `slot` = the kit the side usually asks for): the
+    preview_mix's, else kit `slot` itself."""
+    mix = preview_mix(combo, tourn, slot)
+    if mix is None:
+        return tourn, slot, slot, slot
+    return mix.tourn, mix.shirt, mix.shorts, mix.socks
+
+
 def _step(choices: list, current, direction: int):
     """The choice `direction` steps away from `current`, wrapping around. A value
     that isn't offered (a kit set by hand or by Dinei's tool that isn't loose
@@ -77,10 +105,11 @@ class TeamKitSide:
         # Name of the n-th combination (the overlay passes tr("kitclassic.default_name")).
         self.default_name = default_name or (lambda n: f"Combination {n}")
         self.tourn = 0
-        # The kit the side usually asks for. The one actually chosen in FIFA's kit
-        # menu can't be read from Python, so the kit row lets the user pick.
-        self.slot = 0 if side == HOME else 1
+        # The kit looked at: the one the side usually asks for (the kit row lets
+        # the user pick another), unless its combination only mixes others.
+        self.slot = usual_slot(side)
         self._new = False
+        self._follow_combination()
         self.parts: tuple[int, int, int] = self.saved_parts
 
     # -- state ---------------------------------------------------------------------
@@ -182,8 +211,25 @@ class TeamKitSide:
         changed = not self._new and target != self.selection
         if changed:
             self._set_selection(target)
+        self._follow_combination()
         self.parts = self.saved_parts   # uncommitted garments are dropped
         return self._save() if changed else False
+
+    def step_saved_combination(self, direction: int) -> bool:
+        """Moves the side's combination one step through the original kits and the
+        saved combinations only (no NEW) and saves it: the F7-F10 kit hotkeys with
+        F11 on "Team combination". Returns True when it saved; False without
+        editing support or with nothing else to step to."""
+        if not self.editable:
+            return False
+        current = self.selection
+        target = _step([None, *range(len(self.tc.items))], current, direction)
+        self._new = False
+        if target != current:
+            self._set_selection(target)
+        self._follow_combination()
+        self.parts = self.saved_parts
+        return self._save() if target != current else False
 
     def commit(self) -> bool:
         """Saves the garments shown for the current kit into the side's combination
@@ -204,6 +250,16 @@ class TeamKitSide:
         if pending:
             combo.set_mix(Mix(self.tourn, self.slot, *self.parts))
         return self._save()
+
+    def _follow_combination(self) -> None:
+        """Moves the kit row to a kit the side's combination mixes when it doesn't
+        mix the one looked at (preview_mix), so the drawing shows the combination:
+        one that only mixes kit 3 used to open on kit 0 and show it untouched, the
+        original kit, while the tab's cards showed the mix. Kits of the
+        tournament looked at only (the editor has no tournament row)."""
+        mix = preview_mix(self.combination, self.tourn, self.slot)
+        if mix is not None and mix.tourn == self.tourn:
+            self.slot = mix.slot
 
     def _set_selection(self, selection: Optional[int]) -> None:
         if self.side == HOME:

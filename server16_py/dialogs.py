@@ -10,6 +10,7 @@ from tkinter import messagebox, ttk
 from PIL import Image, ImageTk
 
 from .asset_grid_items import goalpost_model_items, goalpost_texture_items, make_picker_button, png_items
+from .input_bindings import PAD_ALL_BUTTONS
 from .file_tools import (
     discover_stadium_names,
     resolve_asset_thumbnail_path,
@@ -1370,6 +1371,159 @@ class ImgbbApiKeyDialog(BaseDialog):
         entry.focus_set()
         self.update_idletasks()
         self.geometry(f"{self.winfo_reqwidth()}x{self.winfo_reqheight()}")
+
+
+class BindingCaptureDialog(BaseDialog):
+    """Settings > Controls: waits for the new key (KeyCaptureDialog) or
+    gamepad combination (PadCaptureDialog) of one binding. `result` is None
+    on cancel (Esc, Cancel, closing the window), 0 for Clear, otherwise the
+    new value. `validate(value)` returns the text to show when the value
+    can't be used — the dialog then keeps listening — or None to accept it.
+
+    Both read the device on an after() poll instead of Tk key events: Tk on
+    Windows takes F10/Alt for menu traversal and reports Left/Right Shift
+    and Ctrl as one key. Keystrokes are swallowed (<Key> -> "break") and
+    the buttons take no focus, so the key being bound (Space, Enter...)
+    can't press one of them."""
+
+    POLL_MS = 15
+
+    def __init__(self, master: tk.Misc, prompt_key: str, action_label: str, current: str, validate) -> None:
+        super().__init__(master, "dialog.binding_capture.title")
+        self.resizable(False, False)
+        self._validate = validate
+        self._poll_job = None
+
+        body = tk.Frame(self, bg=self.bg, padx=20, pady=16)
+        body.pack(fill="both", expand=True)
+        tk.Label(
+            body, text=self.tr(prompt_key, action=action_label), bg=self.bg, fg=self.fg,
+            justify="left", wraplength=400, font=("Bahnschrift", 11, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            body, text=self.tr("dialog.binding_capture.current", binding=current), bg=self.bg, fg=self.muted,
+            font=("Bahnschrift", 9),
+        ).pack(anchor="w", pady=(4, 0))
+        self.live_label = tk.Label(body, text="", bg=self.bg, fg=self.accent, font=("Bahnschrift", 14, "bold"))
+        self.live_label.pack(anchor="w", pady=(10, 0))
+        self.message_label = tk.Label(
+            body, text="", bg=self.bg, fg=self.gold, justify="left", wraplength=400, font=("Bahnschrift", 9),
+        )
+        self.message_label.pack(anchor="w", pady=(4, 0))
+
+        buttons = tk.Frame(body, bg=self.bg)
+        buttons.pack(fill="x", pady=(14, 0))
+        ttk.Button(buttons, text=self.tr("button.cancel"), command=self.destroy, takefocus=False).pack(side="right")
+        ttk.Button(
+            buttons, text=self.tr("button.binding_capture.clear"), command=lambda: self._offer(0), takefocus=False,
+        ).pack(side="right", padx=(0, 8))
+        tk.Label(
+            buttons, text=self.tr("dialog.binding_capture.esc_cancels"), bg=self.bg, fg=self.muted,
+            font=("Bahnschrift", 9),
+        ).pack(side="left")
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.bind("<Key>", lambda _e: "break")
+        self.update_idletasks()
+        self.geometry(f"{max(self.winfo_reqwidth(), 440)}x{self.winfo_reqheight()}")
+        self._poll_job = self.after(self.POLL_MS, self._poll)
+
+    def _poll(self) -> None:
+        raise NotImplementedError
+
+    def _offer(self, value: int) -> bool:
+        """Closes with `value` unless validate() refuses it."""
+        problem = self._validate(value)
+        if problem:
+            self.message_label.configure(text=problem)
+            return False
+        self.close_ok(value)
+        return True
+
+    def destroy(self) -> None:
+        if self._poll_job is not None:
+            try:
+                self.after_cancel(self._poll_job)
+            except Exception:
+                pass
+            self._poll_job = None
+        super().destroy()
+
+
+class KeyCaptureDialog(BindingCaptureDialog):
+    """The next key that goes down among `candidates` (GetAsyncKeyState via
+    `get_key_state`). Keys already held when the dialog opens — the Enter or
+    Space that opened it — only count once released and pressed again."""
+
+    def __init__(self, master: tk.Misc, action_label: str, current: str, validate, get_key_state, candidates) -> None:
+        self._get_key_state = get_key_state
+        self._candidates = tuple(candidates)
+        self._held = {vk for vk in self._candidates if self._key_down(vk)}
+        super().__init__(master, "dialog.binding_capture.key_prompt", action_label, current, validate)
+
+    def _key_down(self, vk: int) -> bool:
+        try:
+            return bool(int(self._get_key_state(vk)) & 0x8000)
+        except Exception:
+            return False
+
+    def _poll(self) -> None:
+        self._poll_job = None
+        for vk in self._candidates:
+            if not self._key_down(vk):
+                self._held.discard(vk)
+                continue
+            if vk in self._held:
+                continue
+            self._held.add(vk)
+            if self._offer(vk):
+                return
+        self._poll_job = self.after(self.POLL_MS, self._poll)
+
+
+class PadCaptureDialog(BindingCaptureDialog):
+    """A gamepad button or combination: everything held together, taken
+    once all of it is released (so LB+RB+Start can be pressed one button at
+    a time). `read_buttons()` returns the XInput wButtons of the pad the
+    overlay reads, or None when no pad is connected; `describe(buttons)`
+    names a combination for the live preview."""
+
+    NO_PAD_POLL_MS = 500
+
+    def __init__(self, master: tk.Misc, action_label: str, current: str, validate, read_buttons, describe) -> None:
+        self._read_buttons = read_buttons
+        self._describe = describe
+        self._combo = 0
+        # Whatever is held when the dialog opens has to be let go first.
+        self._wait_release = True
+        self._no_pad_shown = False
+        super().__init__(master, "dialog.binding_capture.pad_prompt", action_label, current, validate)
+
+    def _poll(self) -> None:
+        self._poll_job = None
+        buttons = self._read_buttons()
+        if buttons is None:
+            # XInputGetState on an empty player is slow — don't ask 60x a second.
+            self._combo = 0
+            self.live_label.configure(text="")
+            self.message_label.configure(text=self.tr("dialog.binding_capture.no_gamepad"))
+            self._no_pad_shown = True
+            self._poll_job = self.after(self.NO_PAD_POLL_MS, self._poll)
+            return
+        if self._no_pad_shown:
+            self._no_pad_shown = False
+            self.message_label.configure(text="")
+        buttons &= PAD_ALL_BUTTONS
+        if self._wait_release:
+            self._wait_release = bool(buttons)
+        elif buttons:
+            self._combo |= buttons
+            self.live_label.configure(text=self._describe(self._combo))
+        elif self._combo:
+            combo, self._combo = self._combo, 0
+            if self._offer(combo):
+                return
+        self._poll_job = self.after(self.POLL_MS, self._poll)
 
 
 class AboutDialog(BaseDialog):

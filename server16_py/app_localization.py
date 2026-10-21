@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from .input_bindings import overlay_help_text
 from .localization import LANGUAGE_LABELS, SUPPORTED_LANGUAGES
 from .module_catalog import MODULE_SLUGS, module_category_key, module_label_key
 
@@ -72,7 +73,7 @@ class LocalizationMixin:
         if self.banner_title_label is not None:
             self.banner_title_label.configure(text=self.tr("banner.control_room"))
         if self.help_label is not None:
-            self.help_label.configure(text=self.tr("help.overlay_toggle"))
+            self.help_label.configure(text=overlay_help_text(self.input_bindings, self.tr))
         if self.tabview is not None:
             self.tabview.tab(self.dashboard_tab, text=self.tr("tab.dashboard"))
             self.tabview.tab(self.kits_tab, text=self.tr("tab.kits"))
@@ -128,6 +129,9 @@ class LocalizationMixin:
             self.performance_mode_switch.configure(text=self.tr("toggle.performance_mode"))
         if self.random_stadium_switch is not None:
             self.random_stadium_switch.configure(text=self.tr("toggle.random_stadium_selection"))
+        for widget, key in self._controls_texts:
+            widget.configure(text=self.tr(key))
+        self._refresh_controls_card()
 
     def _refresh_card_titles(self) -> None:
         if hasattr(self, "_card_title_bindings"):

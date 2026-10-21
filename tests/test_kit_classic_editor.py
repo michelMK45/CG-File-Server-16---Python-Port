@@ -98,6 +98,73 @@ class TeamKitSideTests(unittest.TestCase):
         self.assertFalse(home.cycle(ed.ROW_COMBINATION, -1))  # back onto NEW
         self.assertEqual(home.combination_cursor, ed.NEW)
 
+    def test_stepping_saved_combinations_skips_new_and_saves_each_step(self):
+        self._save_two_combinations()
+        home, _ = self._sides()
+        home.cycle(ed.ROW_SHIRT, +1)                       # uncommitted garments are dropped
+        self.assertTrue(home.step_saved_combination(+1))
+        self.assertEqual((home.combination_cursor, home.parts), (1, (0, 0, 0)))
+        self.assertTrue(home.step_saved_combination(+1))   # B -> original kits, no NEW between
+        tc = self.runtime.load(383)
+        self.assertEqual((tc.home, tc.away), (None, 1))    # only this side's choice moves
+        self.assertTrue(home.step_saved_combination(-1))   # wraps back round to B
+        self.assertEqual(self.runtime.load(383).home, 1)
+        before = kc.read_lua_text(self.runtime.team_lua_path(383))
+        self.assertFalse(home.step_saved_combination(0))   # no step: nothing written
+        self.assertEqual(kc.read_lua_text(self.runtime.team_lua_path(383)), before)
+
+    def test_stepping_saved_combinations_with_none_saved_or_without_support_writes_nothing(self):
+        home, _ = self._sides()
+        self.assertFalse(home.step_saved_combination(+1))
+        self.assertFalse(self.runtime.team_lua_path(383).exists())
+        self._save_two_combinations()
+        self._install_player_lua("function swapTeamKit(team,type1,type2)\nend\n")
+        home, _ = self._sides()
+        before = kc.read_lua_text(self.runtime.team_lua_path(383))
+        self.assertFalse(home.step_saved_combination(+1))
+        self.assertEqual(kc.read_lua_text(self.runtime.team_lua_path(383)), before)
+
+    def test_a_side_opens_on_a_kit_its_combination_mixes(self):
+        self.runtime.save(kc.TeamCombinations(383, [kc.Combination("Third", [kc.Mix(0, 3, 0, 1, 0)])], home=0, away=None))
+        home, away = self._sides()
+        self.assertEqual((home.slot, home.parts, home.pending), (3, (0, 1, 0), False))
+        self.assertEqual((away.slot, away.parts), (1, (1, 1, 1)))   # team 100: no combinations
+
+    def test_changing_combination_moves_the_kit_row_only_when_the_new_one_does_not_mix_it(self):
+        self.runtime.save(kc.TeamCombinations(383, [
+            kc.Combination("A", [kc.Mix(0, 0, 0, 1, 0), kc.Mix(0, 1, 1, 0, 1)]),
+            kc.Combination("C", [kc.Mix(0, 3, 3, 0, 0)]),
+        ], home=0, away=1))
+        home, _ = self._sides()
+        home.cycle(ed.ROW_KIT, +1)                     # the user looks at kit 1, which A mixes
+        self.assertEqual((home.slot, home.parts), (1, (1, 0, 1)))
+        home.cycle(ed.ROW_COMBINATION, +1)             # C doesn't mix kit 1: its kit 3
+        self.assertEqual((home.slot, home.parts), (3, (3, 0, 0)))
+        home.cycle(ed.ROW_COMBINATION, +1)             # NEW and the original kits keep kit 3
+        self.assertEqual((home.combination_cursor, home.slot, home.parts), (ed.NEW, 3, (3, 3, 3)))
+        home.cycle(ed.ROW_COMBINATION, +1)
+        self.assertEqual((home.combination_cursor, home.slot), (None, 3))
+        home.cycle(ed.ROW_COMBINATION, +1)             # A again: back on a kit it mixes, the lowest
+        self.assertEqual((home.slot, home.parts), (0, (0, 1, 0)))
+        self.assertTrue(home.step_saved_combination(+1))   # the hotkeys' step follows too
+        self.assertEqual((home.slot, home.parts), (3, (3, 0, 0)))
+
+    def test_a_combination_of_another_tournament_only_leaves_the_kit_row_alone(self):
+        self.runtime.save(kc.TeamCombinations(383, [kc.Combination("Cup", [kc.Mix(7, 3, 0, 1, 0)])], home=0))
+        home, _ = self._sides()
+        self.assertEqual((home.slot, home.parts), (0, (0, 0, 0)))
+
+    def test_preview_parts_show_the_kit_a_combination_changes(self):
+        self.assertEqual(ed.preview_parts(None, 0, 1), (0, 1, 1, 1))
+        both = kc.Combination("Both", [kc.Mix(0, 0, 3, 3, 3), kc.Mix(0, 1, 0, 1, 0)])
+        self.assertEqual(ed.preview_parts(both, 0, 1), (0, 0, 1, 0))     # the side's own kit first
+        self.assertEqual(ed.preview_parts(both, 0, 2), (0, 3, 3, 3))     # else another kit it mixes
+        cup = kc.Combination("Cup", [kc.Mix(7, 1, 0, 1, 1), kc.Mix(0, 3, 3, 0, 3)])
+        self.assertEqual(ed.preview_parts(cup, 0, 1), (0, 3, 0, 3))      # same tournament before others
+        self.assertEqual(ed.preview_parts(kc.Combination("Cup only", [kc.Mix(7, 1, 0, 1, 1)]), 0, 0), (7, 0, 1, 1))
+        plain = kc.Combination("Plain", [kc.Mix(0, 0, 0, 0, 0)])
+        self.assertEqual(ed.preview_parts(plain, 0, 1), (0, 1, 1, 1))    # nothing mixed: the kit itself
+
     def test_commit_on_new_creates_the_combination_and_selects_it(self):
         self._save_two_combinations()
         home, _ = self._sides()

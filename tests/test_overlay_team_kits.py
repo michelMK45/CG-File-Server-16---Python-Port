@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import queue
 import tempfile
 import threading
 import time
@@ -14,12 +15,15 @@ from server16_py import d3d_injector
 from server16_py import kit_classic as kc
 from server16_py.app_overlay import OverlayMixin
 from server16_py.d3d_injector import D3DOverlayInjector
+from server16_py.input_bindings import OVERLAY_MENU, TEAM_KITS, InputBindings, KeyBinding, PadBinding
 from server16_py.kit_mixer import KIT_TYPES
 from server16_py.locales_data import LOCALE_CATALOGS
 from server16_py.win32_types import (
     VK_F12, VK_LEFT, VK_RETURN, VK_RIGHT, XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_BACK, XINPUT_GAMEPAD_DPAD_LEFT,
-    XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_START,
+    XINPUT_GAMEPAD_LEFT_THUMB, XINPUT_GAMEPAD_RIGHT_SHOULDER, XINPUT_GAMEPAD_RIGHT_THUMB, XINPUT_GAMEPAD_START,
 )
+
+VK_F5, VK_F6 = 0x74, 0x75
 
 EN = LOCALE_CATALOGS["en"]
 SUPPORTED_PLAYER_LUA = "\n".join(
@@ -131,12 +135,11 @@ class FakeOverlayApp(OverlayMixin):
         self._overlay_toggle_ready_at = 0.0
         self._overlay_tab_ready_at = 0.0
         self._overlay_gp_prev_buttons = 0
-        for name in ("start", "back", "left", "right", "y"):
+        for name in ("left", "right", "y"):
             setattr(self, f"_overlay_gp_{name}_pressed_at", 0.0)
-        self._overlay_gp_start_hold_latched = False
-        self._overlay_gp_back_hold_latched = False
-        self._overlay_f12_held_since = 0.0
-        self._overlay_f12_hold_latched = False
+        self.input_bindings = InputBindings.defaults()
+        self._overlay_key_trackers: dict = {}
+        self._overlay_pad_trackers: dict = {}
         self._overlay_gp_y_hold_latched = False
         self._overlay_gp_rstick_repeat_at = 0.0
         self._overlay_gp_lstick_repeat_at = 0.0
@@ -239,6 +242,9 @@ class FakeOverlayApp(OverlayMixin):
     def _is_overlay_key_down(self, vk: int, _foreground: bool) -> bool:
         return vk in self.keys_held
 
+    def _is_hotkey_down(self, vk: int) -> bool:
+        return vk in self.keys_held
+
     def _consume_overlay_key_edge(self, vk: int) -> bool:
         if vk in self.key_edges:
             self.key_edges.discard(vk)
@@ -298,7 +304,10 @@ class FakeOverlayApp(OverlayMixin):
         self._sync_d3d_menu_input()
 
 
-class OverlayTeamKitsTests(unittest.TestCase):
+class _TeamKitsTestBase(unittest.TestCase):
+    """FakeOverlayApp on a temporary FIFA folder: both teams' loose kits and a
+    player.lua that supports combinations."""
+
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -343,6 +352,8 @@ class OverlayTeamKitsTests(unittest.TestCase):
     def row(self, index: int) -> str:
         return self.app._overlay_items[index]
 
+
+class OverlayTeamKitsTests(_TeamKitsTestBase):
     # --- chooser and Custom Kits ---
     def test_kits_tab_starts_on_the_team_or_custom_chooser(self) -> None:
         self.app.open_kits_tab()
@@ -380,6 +391,25 @@ class OverlayTeamKitsTests(unittest.TestCase):
         self.assertEqual(self.row(7), "AWAY · Kit:  ‹ Kit 1 ›")
         self.assertEqual(self.app.inj.header, "Team Kits  ·  Palmeiras  vs  Santos")
         self.assertEqual(self.app.inj.dashboard[0], "-- TEAM KITS --")
+
+    def test_a_combination_that_only_mixes_another_kit_opens_on_that_kit(self) -> None:
+        # Reported with a screenshot: home on "3. Combination 3" (only kit 3
+        # mixed) showed kit 0, i.e. the original kit, while the tab showed the mix.
+        self.runtime.save(kc.TeamCombinations(383, [
+            kc.Combination("Combination 1", [kc.Mix(0, 0, 0, 1, 0)]),
+            kc.Combination("Combination 3", [kc.Mix(0, 3, 3, 0, 0)]),
+        ], home=1, away=None))
+        self.enter_team_kits()
+        self.assertEqual(self.row(0), "HOME · Combination:  ‹ 2. Combination 3 ›")
+        self.assertEqual(self.row(1), "HOME · Kit:  ‹ Kit 3 ›")
+        self.assertEqual(self.row(2), "HOME · Shirt:  ‹ Kit 3 ›")
+        self.assertEqual(self.row(3), "HOME · Shorts:  ‹ Kit 0 ›")
+        self.app._set_menu_selection(0)
+        self.app.press_key(VK_LEFT)                    # Combination 1 mixes kit 0
+        self.assertEqual(self.row(1), "HOME · Kit:  ‹ Kit 0 ›")
+        self.assertEqual(self.row(3), "HOME · Shorts:  ‹ Kit 1 ›")
+        home_screen = self.app.inj.kit_editor["sides"][0]
+        self.assertEqual(home_screen["row_values"][1], "Kit 0")
 
     def test_arrow_keys_change_the_row_and_enter_saves_like_the_tab(self) -> None:
         self.enter_team_kits()
@@ -608,6 +638,317 @@ class OverlayTeamKitsTests(unittest.TestCase):
         self.app.hotkey_edges.add(VK_F12)              # a new press closes it as always
         self.tick(1.2, f12=True)
         self.assertFalse(self.app._d3d_menu_visible)
+
+    def test_holding_f12_to_close_the_menu_does_not_reopen_it_on_team_kits(self) -> None:
+        self.app.hotkey_edges.add(VK_F12)
+        self.tick(0.0, f12=True)
+        self.assertFalse(self.app._d3d_menu_visible)
+        self.tick(0.7, f12=True)                       # Team Kits' hold time, same press
+        self.tick(0.9)
+        self.assertFalse(self.app._d3d_menu_visible)
+        self.app.hotkey_edges.add(VK_F12)              # the next press opens it, the next hold moves it
+        self.tick(1.0, f12=True)
+        self.tick(1.7, f12=True)
+        self.assertTrue(self.app._overlay_team_kits_active())
+
+    # --- Settings > Controls: other keys and buttons ---
+    def press_hotkey(self, at: float, vk: int) -> None:
+        self.app.hotkey_edges.add(vk)
+        self.app.keys_held.add(vk)
+        self.tick(at)
+
+    def test_a_custom_overlay_key_opens_the_menu_and_f12_no_longer_does(self) -> None:
+        self.app.input_bindings = (
+            InputBindings.defaults().with_key(OVERLAY_MENU, KeyBinding(VK_F5)).with_key(TEAM_KITS, KeyBinding())
+        )
+        self.app._d3d_menu_visible = False
+        self.app.hotkey_edges.add(VK_F12)
+        self.tick(0.0, f12=True)
+        self.tick(0.7, f12=True)                       # nor does holding it
+        self.assertFalse(self.app._d3d_menu_visible)
+        self.press_hotkey(1.0, VK_F5)
+        self.assertEqual((self.app._d3d_menu_visible, self.app._overlay_tab_index), (True, 0))
+        self.tick(1.8)                                 # held: Team Kits isn't on F5 held
+        self.assertEqual(self.app._overlay_tab_index, 0)
+
+    def test_team_kits_follows_a_custom_overlay_key_only_when_it_is_that_key_held(self) -> None:
+        self.app.input_bindings = (
+            InputBindings.defaults().with_key(OVERLAY_MENU, KeyBinding(VK_F5))
+            .with_key(TEAM_KITS, KeyBinding(VK_F5, True))
+        )
+        self.app._d3d_menu_visible = False
+        self.press_hotkey(0.0, VK_F5)
+        self.assertEqual((self.app._d3d_menu_visible, self.app._overlay_tab_index), (True, 0))
+        self.app.hotkey_edges.add(VK_F5)               # Windows' auto-repeat
+        self.tick(0.5)
+        self.tick(0.65)
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.assertTrue(self.app._overlay_team_kits_active())
+
+    def test_a_press_waits_for_the_release_when_another_action_holds_the_key(self) -> None:
+        # The other way round from the defaults: F12 held opens/closes the
+        # overlay, so F12's press (Team Kits) acts only on a quick release.
+        self.app.input_bindings = (
+            InputBindings.defaults().with_key(OVERLAY_MENU, KeyBinding(VK_F12, True))
+            .with_key(TEAM_KITS, KeyBinding(VK_F12))
+        )
+        self.app._d3d_menu_visible = False
+        self.app.hotkey_edges.add(VK_F12)
+        self.tick(0.0, f12=True)
+        self.assertFalse(self.app._d3d_menu_visible)
+        self.tick(0.2)                                 # released
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.assertTrue(self.app._overlay_team_kits_active())
+        self.app.hotkey_edges.add(VK_F12)
+        self.tick(1.0, f12=True)
+        self.tick(1.65, f12=True)                      # held: the overlay's turn
+        self.assertFalse(self.app._d3d_menu_visible)
+        self.tick(1.8)                                 # the release after a hold is no tap
+        self.assertFalse(self.app._d3d_menu_visible)
+
+    def test_the_team_kits_key_opens_the_menu_on_team_kits(self) -> None:
+        self.app.input_bindings = InputBindings.defaults().with_key(TEAM_KITS, KeyBinding(VK_F6))
+        self.app._d3d_menu_visible = False
+        self.press_hotkey(0.0, VK_F6)
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.assertTrue(self.app._overlay_team_kits_active())
+
+    def test_the_team_kits_key_moves_an_open_menu_and_its_auto_repeat_does_nothing(self) -> None:
+        self.app.input_bindings = InputBindings.defaults().with_key(TEAM_KITS, KeyBinding(VK_F6))
+        self.press_hotkey(0.0, VK_F6)
+        self.assertTrue(self.app._overlay_team_kits_active())
+        self.app._set_overlay_tab(0, "test")           # left the editor, key still held
+        self.app.hotkey_edges.add(VK_F6)               # Windows' auto-repeat
+        self.tick(0.6)
+        self.assertEqual(self.app._overlay_tab_index, 0)
+        self.app.keys_held.discard(VK_F6)
+        self.tick(0.8)
+        self.press_hotkey(1.0, VK_F6)                  # a new press
+        self.assertTrue(self.app._overlay_team_kits_active())
+
+    def test_a_gamepad_overlay_binding_on_the_press(self) -> None:
+        sticks = XINPUT_GAMEPAD_LEFT_THUMB | XINPUT_GAMEPAD_RIGHT_THUMB
+        self.app.input_bindings = InputBindings.defaults().with_pad(OVERLAY_MENU, PadBinding(sticks, False))
+        self.app._d3d_menu_visible = False
+        self.tick(0.0, sticks)
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.tick(0.7, sticks)                         # held: no second toggle
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.tick(0.8)
+        self.tick(1.0, sticks)
+        self.assertFalse(self.app._d3d_menu_visible)
+
+    def test_start_pressed_opens_the_menu_and_start_held_goes_on_to_team_kits(self) -> None:
+        start = XINPUT_GAMEPAD_START
+        self.app.input_bindings = (
+            InputBindings.defaults().with_pad(OVERLAY_MENU, PadBinding(start, False))
+            .with_pad(TEAM_KITS, PadBinding(start, True))
+        )
+        self.app._d3d_menu_visible = False
+        self.tick(0.0, start)
+        self.assertEqual((self.app._d3d_menu_visible, self.app._overlay_tab_index), (True, 0))
+        self.tick(0.65, start)
+        self.assertTrue(self.app._overlay_team_kits_active())
+        self.tick(0.8)
+        self.tick(1.0, start)                          # closing: its hold doesn't reopen it
+        self.tick(1.7, start)
+        self.assertFalse(self.app._d3d_menu_visible)
+
+    def test_start_alone_does_not_open_while_start_and_select_is_the_team_kits_combination(self) -> None:
+        both = XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK
+        self.app.input_bindings = InputBindings.defaults().with_pad(TEAM_KITS, PadBinding(both, True))
+        self.app._d3d_menu_visible = False
+        self.tick(0.0, both)
+        self.tick(0.65, both)
+        self.assertTrue(self.app._d3d_menu_visible)
+        self.assertTrue(self.app._overlay_team_kits_active())
+        self.tick(0.7, XINPUT_GAMEPAD_START)           # Select let go first: Start alone starts over
+        self.tick(1.0, XINPUT_GAMEPAD_START)
+        self.assertTrue(self.app._d3d_menu_visible)
+
+
+class HotkeyInjector(FakeInjector):
+    """Also records the F11 kit type panel and the F7-F10 kit carousel."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.panels: list[tuple] = []
+        self.carousels: list[tuple] = []
+
+    def is_injected(self) -> bool:
+        return True
+
+    def show(self, title: str, detail: str = "", *_args, **_kwargs) -> None:
+        self.panels.append((title, detail))
+
+    def show_kit_carousel(self, title, detail, hint, image_prev, image_current, image_next, direction=0) -> None:
+        self.carousels.append((title, detail, [image_prev, image_current, image_next], direction))
+
+
+class FakeKitTypeVar:
+    """kitmix_kittype with the trace app_ui.py puts on it: any write leaves
+    F11's Team combination step."""
+
+    def __init__(self, app, value: str) -> None:
+        self.app = app
+        self.value = value
+
+    def get(self) -> str:
+        return self.value
+
+    def set(self, value: str) -> None:
+        self.value = value
+        self.app._kit_hotkey_team_mode = False
+
+
+class KitHotkeyTeamCombinationTests(_TeamKitsTestBase):
+    """F11's Team combination step and F7-F10 stepping the teams' Kits > Team
+    combinations, through the real _cycle_kit_type / _trigger_kit_cycle."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        app = self.app
+        app._d3d_menu_visible = False
+        app._d3d_injector = HotkeyInjector()
+        app.kitmix_kittype = FakeKitTypeVar(app, "Home")
+        app._kitsimple_current_kittype_code = lambda: KIT_TYPES[app.kitmix_kittype.get().lower()]
+        app._kit_hotkey_team_mode = False
+        app._kit_cycle_task_running = False
+        app._stadium_task_running = False
+        app._kit_type_hide_job = app._kit_carousel_hide_job = None
+        app._kit_carousel_ctx = ("stale",)
+        app._worker_queue = queue.Queue()
+        app._schedule_worker_poll = lambda: None
+        app.after = lambda _ms, _fn: "job"
+        app.after_cancel = lambda _job: None
+        app._hide_toast_notification = lambda _slot: None
+
+    def save_combinations(self, home=None, away=None) -> None:
+        self.runtime.save(kc.TeamCombinations(
+            383, [kc.Combination("Retro", [kc.Mix(0, 0, 0, 1, 0)]), kc.Combination("Night", [kc.Mix(0, 0, 3, 0, 1)])],
+            home=home, away=away,
+        ))
+
+    def press(self, side: str, direction: int):
+        """One F7-F10 press; returns the carousel shown once its drawings are
+        made (the worker's queue event, handled as _poll_worker_queue does)."""
+        self.app._trigger_kit_cycle(side, direction)
+        if not self.app._kit_cycle_task_running:
+            return None
+        event = self.app._worker_queue.get(timeout=30)
+        self.assertEqual(event[0], "team_combo_cycled")
+        self.app._kit_cycle_task_running = False
+        self.app._show_team_combination_notification(*event[1:])
+        return self.app.inj.carousels[-1]
+
+    def test_f11_goes_from_third_to_team_combination_and_back_to_home(self) -> None:
+        for expected in ("Away", "Keeper", "Third"):
+            self.app._cycle_kit_type()
+            self.assertEqual(self.app.kitmix_kittype.get(), expected)
+        self.assertFalse(self.app._kit_hotkey_team_mode)
+        self.app._cycle_kit_type()
+        self.assertTrue(self.app._kit_hotkey_team_mode)
+        self.assertEqual(self.app.kitmix_kittype.get(), "Third")   # the Kits tab's kit type is left alone
+        self.assertEqual(self.app.inj.panels[-1], (EN["dialog.kitmix.kit_type"], EN["kitsimple.hotkey_type_team"]))
+        self.app._cycle_kit_type()
+        self.assertFalse(self.app._kit_hotkey_team_mode)
+        self.assertEqual(self.app.kitmix_kittype.get(), "Home")
+        self.assertEqual(self.app.inj.panels[-1][1], "Home")
+
+    def test_a_kit_type_picked_in_the_kits_tab_leaves_team_combination(self) -> None:
+        self.app.kitmix_kittype.set("Third")
+        self.app._cycle_kit_type()
+        self.app.kitmix_kittype.set("Away")
+        self.assertFalse(self.app._kit_hotkey_team_mode)
+        self.app._cycle_kit_type()
+        self.assertEqual(self.app.kitmix_kittype.get(), "Keeper")
+
+    def test_home_keys_step_the_home_combination_and_save_it_at_once(self) -> None:
+        self.save_combinations()
+        self.app._kit_hotkey_team_mode = True
+        title, detail, images, direction = self.press("home", 1)
+        tc = self.runtime.load(383)
+        self.assertEqual((tc.home, tc.away), (0, None))
+        self.assertEqual(self.app.kit_classic_view.invalidated, [383])
+        self.assertEqual((title, detail, direction), ("TEAM A: Palmeiras", "1. Retro", 1))
+        self.assertTrue(all(Path(image).is_file() for image in images))   # original kits / Retro / Night
+        self.assertEqual(len(set(images)), 3)
+        self.assertIsNone(self.app._kit_carousel_ctx)                   # no kit set refresh lands on it
+        self.assertIn("Kit hotkey: team 383 (home) now uses 1. Retro", self.app.logs)
+
+        self.assertEqual(self.press("home", 1)[1], "2. Night")
+        self.assertEqual(self.press("home", 1)[1], EN["kitclassic.original_kits"])   # wraps, no "+ New"
+        self.assertIsNone(self.runtime.load(383).home)
+        self.assertEqual(self.press("home", -1)[1], "2. Night")
+        self.assertEqual(self.runtime.load(383).home, 1)
+
+    def test_with_one_combination_the_other_choice_is_drawn_once(self) -> None:
+        self.runtime.save(kc.TeamCombinations(383, [kc.Combination("Retro", [kc.Mix(0, 0, 0, 1, 0)])],
+                                              home=None, away=None))
+        self.app._kit_hotkey_team_mode = True
+        _title, detail, images, _direction = self.press("home", 1)
+        self.assertEqual(detail, "1. Retro")
+        self.assertEqual(images[0], "")                      # not the original kits above and below
+        self.assertTrue(Path(images[1]).is_file() and Path(images[2]).is_file())
+        self.assertNotEqual(images[1], images[2])
+
+    def test_a_combination_changing_only_another_kit_does_not_look_like_the_original_kits(self) -> None:
+        # Home draws kit 0; this combination only mixes kit 1.
+        self.runtime.save(kc.TeamCombinations(383, [kc.Combination("Away mix", [kc.Mix(0, 1, 3, 1, 1)])],
+                                              home=None, away=None))
+        self.app._kit_hotkey_team_mode = True
+        _title, _detail, images, _direction = self.press("home", 1)
+        self.assertNotEqual(images[1], images[2])            # Away mix / original kits
+
+    def test_away_keys_change_only_the_away_choice(self) -> None:
+        self.save_combinations(home=1)
+        self.app.HID, self.app.AID = "100", "383"
+        self.app._kit_hotkey_team_mode = True
+        title, detail, _images, _direction = self.press("away", -1)
+        tc = self.runtime.load(383)
+        self.assertEqual((tc.home, tc.away), (1, 1))
+        self.assertEqual((title, detail), ("TEAM B: Palmeiras", "2. Night"))
+
+    def test_a_team_without_combinations_shows_its_kit_and_saves_nothing(self) -> None:
+        self.app._kit_hotkey_team_mode = True
+        _title, detail, images, _direction = self.press("away", 1)
+        self.assertEqual(detail, EN["kitsimple.hotkey_team_none"])
+        self.assertEqual((images[0], images[2]), ("", ""))
+        self.assertTrue(Path(images[1]).is_file())
+        self.assertFalse(self.runtime.team_lua_path(100).exists())
+        self.assertEqual(self.app.kit_classic_view.invalidated, [])
+
+    def test_without_rev_mod_support_it_says_so_and_saves_nothing(self) -> None:
+        self.save_combinations()
+        before = kc.read_lua_text(self.runtime.team_lua_path(383))
+        self._install_player_lua("function swapTeamKit(team,type1,type2)\nend\n")
+        self.app._kit_hotkey_team_mode = True
+        self.assertEqual(self.press("home", 1)[1], EN["kitsimple.hotkey_team_unsupported"])
+        self.assertEqual(kc.read_lua_text(self.runtime.team_lua_path(383)), before)
+
+    def test_a_failed_save_shows_a_toast_and_no_carousel(self) -> None:
+        self.save_combinations()
+        self.app._kit_hotkey_team_mode = True
+        with mock.patch.object(self.runtime, "save", side_effect=OSError("locked")):
+            self.assertIsNone(self.press("home", 1))
+        self.assertEqual(self.app.toasts[-1][:2], (EN["kitsimple.hotkey_type_team"],
+                                                   EN["kitclassic.status.save_failed"].format(error="locked")))
+        self.assertEqual(self.app.inj.carousels, [])
+
+    def test_a_press_while_the_last_one_is_still_drawn_is_dropped(self) -> None:
+        self.save_combinations()
+        self.app._kit_hotkey_team_mode = True
+        self.app._kit_cycle_task_running = True
+        self.app._trigger_kit_cycle("home", 1)
+        self.assertIsNone(self.runtime.load(383).home)
+
+    def test_without_a_known_team_or_fifa_folder_nothing_happens(self) -> None:
+        self.app._kit_hotkey_team_mode = True
+        self.app.HID = ""
+        self.assertIsNone(self.press("home", 1))
+        self.app.HID, self.app.fifaEXE = "383", "default"
+        self.assertIsNone(self.press("home", 1))
+        self.assertEqual(self.app.inj.carousels, [])
 
 
 class KitEditorSharedMemoryTests(unittest.TestCase):

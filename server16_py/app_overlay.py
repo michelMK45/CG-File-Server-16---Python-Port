@@ -14,21 +14,23 @@ from .win32_types import (
     RECT, POINT, MSG, MSLLHOOKSTRUCT, KBDLLHOOKSTRUCT, XINPUT_STATE, XINPUT_GAMEPAD,
     GWL_EXSTYLE, WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, HWND_TOPMOST,
     SW_RESTORE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    VK_F12, VK_ESCAPE, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
+    VK_ESCAPE, VK_LEFT, VK_UP, VK_RIGHT, VK_DOWN,
     VK_PRIOR, VK_NEXT, VK_HOME, VK_END, VK_MENU, VK_RETURN, VK_LBUTTON,
-    VK_F7, VK_F8, VK_F9, VK_F10, VK_F11,
     KEYEVENTF_KEYUP,
     WH_MOUSE_LL, WH_KEYBOARD_LL, HC_ACTION, GA_ROOT,
     WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONDOWN, WM_RBUTTONUP,
     WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEWHEEL,
     WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_QUIT,
-    XINPUT_GAMEPAD_START, XINPUT_GAMEPAD_BACK,
     XINPUT_GAMEPAD_LEFT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER,
     XINPUT_GAMEPAD_A, XINPUT_GAMEPAD_B, XINPUT_GAMEPAD_X, XINPUT_GAMEPAD_Y, XINPUT_SUCCESS,
     XINPUT_GAMEPAD_DPAD_UP, XINPUT_GAMEPAD_DPAD_DOWN,
     XINPUT_GAMEPAD_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_RIGHT,
 )
 from .xinput_players import bind_capabilities_ex
+from .input_bindings import (
+    KIT_AWAY_NEXT, KIT_AWAY_PREV, KIT_HOME_NEXT, KIT_HOME_PREV, KIT_TYPE, MENU_NAV_VKS, OVERLAY_MENU, TEAM_KITS,
+    BindingTracker, kit_hotkey_hint,
+)
 from .file_tools import (
     asset_placeholder_path,
     discover_stadium_names,
@@ -45,7 +47,8 @@ from .movie_preview_runtime import player_available as movie_player_available
 from .kit_mixer import KIT_TYPES
 from .kit_classic_art import ART_LAYERS
 from .kit_classic_editor import (
-    HOME, NEW, PART_ROWS, ROW_COMBINATION, ROW_GK, ROW_KIT, ROW_SHIRT, ROW_SHORTS, ROW_SOCKS, ROWS, open_sides,
+    AWAY, HOME, NEW, PART_ROWS, ROW_COMBINATION, ROW_GK, ROW_KIT, ROW_SHIRT, ROW_SHORTS, ROW_SOCKS, ROWS,
+    TeamKitSide, open_sides, preview_parts, usual_slot,
 )
 
 # Stadiums country filter bubble grid — fallback column count only, used
@@ -80,6 +83,22 @@ _OVERLAY_POLL_MS = 40
 # resolve_goalpost_sources reads back.
 _STADIUM_WIZARD_PHASES = ("police", "pitch", "net", "goalpost", "goalposttexture")
 _GOALPOST_WIZARD_SUBDIRS = {"goalpost": "GoalpostModel", "goalposttexture": "GoalpostColor"}
+
+# The kit hotkeys, in the order _sync_kit_hotkeys checks them: (action,
+# side, direction); no side = cycle the shared kit type instead.
+_KIT_HOTKEY_ACTIONS = (
+    (KIT_HOME_PREV, "home", -1),
+    (KIT_HOME_NEXT, "home", 1),
+    (KIT_AWAY_PREV, "away", -1),
+    (KIT_AWAY_NEXT, "away", 1),
+    (KIT_TYPE, None, 0),
+)
+
+# F11's step after the four kit types (KIT_TYPES): F7-F10 then step the
+# teams' Kits > Team combinations. Its carousel drawings are 86x103 px
+# (kit_classic_art.art_size), the height of the carousel's middle slot.
+_KIT_TYPE_TEAM = "team"
+_KIT_CAROUSEL_ART_SIZE = 72
 
 # Kits tab, Custom Kits: which side's live team_id the kit set is applied to
 # (wizard phase "kitside", between the Team/Custom chooser and "kittype").
@@ -158,8 +177,10 @@ class OverlayMixin:
             self._publish_overlay_menu_state()
 
     def _sync_d3d_menu_input(self) -> None:
-        """Manages the D3D in-game menu (F12 / Hold Start for 0.6s; F12 or
-        Select held 0.6s goes straight to Kits > Team Kits)."""
+        """Manages the D3D in-game menu (opened with the overlay key / the
+        gamepad's overlay binding, F12 / Start held 0.6s by default; the
+        Team Kits bindings, F12 / Select held 0.6s by default, go straight
+        to Kits > Team Kits — Settings > Controls, input_bindings.py)."""
         if not self._ensure_d3d_overlay_injected(log_errors=False):
             return
         inj = self._d3d_injector
@@ -179,8 +200,16 @@ class OverlayMixin:
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
                 self._publish_overlay_menu_state()
-            self._uninstall_hotkey_poll_thread()
-            self._uninstall_gamepad_poll_thread()
+            # Not when the kit hotkeys still poll through them: tearing the
+            # hotkey poll thread down here on every tick (as this used to;
+            # the DLL is injected even with the overlay disabled, so this
+            # branch runs every tick) dropped its pending presses right
+            # before _sync_kit_hotkeys respawned it and read them, so with
+            # the overlay disabled nearly every kit hotkey press was lost.
+            if not self._kit_hotkeys_need_key_poll():
+                self._uninstall_hotkey_poll_thread()
+            if not self._kit_hotkeys_need_pad_poll():
+                self._uninstall_gamepad_poll_thread()
             return
         now = perf_counter()
         self._refresh_fifa_hwnd_if_needed(now)
@@ -271,8 +300,6 @@ class OverlayMixin:
         # every hold/repeat/release/deadzone check. See
         # _consume_gamepad_state's own docstring.
         gp_edge_buttons, gamepad_buttons, _stick_rx, stick_ry, stick_ly, stick_lx = self._consume_gamepad_state()
-        start_down = bool(gamepad_buttons & XINPUT_GAMEPAD_START)
-        back_down = bool(gamepad_buttons & XINPUT_GAMEPAD_BACK)
         left_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
         right_shoulder_down = bool(gamepad_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
         a_down = bool(gamepad_buttons & XINPUT_GAMEPAD_A)
@@ -303,25 +330,13 @@ class OverlayMixin:
             self._overlay_input_mode = "keyboard"
 
         prev_buttons = self._overlay_gp_prev_buttons
-        start_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_START) and not bool(prev_buttons & XINPUT_GAMEPAD_START)
-        back_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_BACK) and not bool(prev_buttons & XINPUT_GAMEPAD_BACK)
         left_shoulder_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER) and not bool(prev_buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
         right_shoulder_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER) and not bool(prev_buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
 
-        if start_edge:
-            self._overlay_gp_start_pressed_at = now
-            self._overlay_gp_start_hold_latched = False
-        if back_edge:
-            self._overlay_gp_back_pressed_at = now
-            self._overlay_gp_back_hold_latched = False
         if left_shoulder_edge:
             self._overlay_gp_left_pressed_at = now
         if right_shoulder_edge:
             self._overlay_gp_right_pressed_at = now
-        if not start_down:
-            self._overlay_gp_start_hold_latched = False
-        if not back_down:
-            self._overlay_gp_back_hold_latched = False
 
         # Toggle: opening requires FIFA/the overlay to actually be focused
         # (self._fifa_hwnd != 0 only means the process/window was found, not
@@ -350,9 +365,11 @@ class OverlayMixin:
         # (_consume_overlay_key_edge) — see that method's docstring: a plain
         # "down this tick, not down last tick" level comparison alone can
         # miss a press whose whole down+up cycle completes inside one Tk
-        # gap. f12_toggle uses the equivalent latch for the hotkey-poll/hook
-        # combo (_consume_hotkey_edge) instead of a level comparison at all,
-        # since F12 has no "held" behavior to preserve.
+        # gap. The overlay's own keys (Settings > Controls) use the
+        # equivalent latch for the hotkey-poll/hook combo
+        # (_consume_hotkey_edge), consumed once per key even when both
+        # actions share it (F12 / F12 held), and fed with the key's level to
+        # a BindingTracker per action (press / hold / tap).
         #
         # Each _consume_overlay_key_edge(...) call below is stored in its
         # own variable and always evaluated, never folded into an
@@ -361,7 +378,14 @@ class OverlayMixin:
         # leave that key's latch un-consumed, ready to fire a SECOND, stale
         # edge on some later, unrelated tick once the level check happens
         # to read False.
-        f12_toggle = self._consume_hotkey_edge(VK_F12)
+        bindings = self.input_bindings
+        menu_key_edges = {vk for vk in bindings.menu_hook_vks if self._consume_hotkey_edge(vk)}
+        menu_key_toggle = self._update_key_tracker(
+            self._overlay_key_trackers, OVERLAY_MENU, bindings, menu_key_edges, now,
+        )
+        team_kits_key_press = self._update_key_tracker(
+            self._overlay_key_trackers, TEAM_KITS, bindings, menu_key_edges, now,
+        )
         escape_latched = self._consume_overlay_key_edge(VK_ESCAPE)
         left_latched = self._consume_overlay_key_edge(VK_LEFT)
         right_latched = self._consume_overlay_key_edge(VK_RIGHT)
@@ -389,58 +413,40 @@ class OverlayMixin:
         x_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_X) and not bool(prev_buttons & XINPUT_GAMEPAD_X)
         y_edge = bool(gp_edge_buttons & XINPUT_GAMEPAD_Y) and not bool(prev_buttons & XINPUT_GAMEPAD_Y)
         y_up_edge = (not y_down) and bool(prev_buttons & XINPUT_GAMEPAD_Y)
-        start_hold_toggle = False
 
-        if start_down and not back_down and self._overlay_gp_start_pressed_at > 0.0:
-            if (now - self._overlay_gp_start_pressed_at) >= 0.60 and not self._overlay_gp_start_hold_latched:
-                start_hold_toggle = True
-                self._overlay_gp_start_hold_latched = True
+        # The gamepad's overlay and Team Kits bindings (Start held 0.6s and
+        # Select held 0.6s by default): press, hold or tap detection per
+        # binding, see input_bindings.BindingTracker. Start and Select held
+        # together do neither (combo_held).
+        pad_menu_toggle = self._update_pad_tracker(
+            self._overlay_pad_trackers, OVERLAY_MENU, bindings, gp_edge_buttons, gamepad_buttons, now,
+        )
+        pad_team_kits = self._update_pad_tracker(
+            self._overlay_pad_trackers, TEAM_KITS, bindings, gp_edge_buttons, gamepad_buttons, now,
+        )
 
-        # Select (Back) held 0.6s: the Kits tab's Team Kits editor, the same
+        # A Team Kits binding: the Kits tab's Team Kits editor, the same
         # screen as picking Kits -> Team Kits by hand — opens the menu
-        # straight on it, or moves an already open menu there. Same
-        # press/hold latch as Start-hold above; Start and Select held
-        # together do neither.
-        back_hold_team_kits = False
-        if back_down and not start_down and self._overlay_gp_back_pressed_at > 0.0:
-            if (now - self._overlay_gp_back_pressed_at) >= 0.60 and not self._overlay_gp_back_hold_latched:
-                back_hold_team_kits = True
-                self._overlay_gp_back_hold_latched = True
-
-        # F12 held 0.6s: the keyboard's way to Team Kits. The press still
-        # opens the menu at once (a tap must not wait for its release);
-        # _overlay_f12_held_since remembers when, and while that same press
-        # stays down the menu moves to Team Kits after 0.6s. Every F12 edge
-        # seen meanwhile is the keyboard's auto-repeat of that press (the
-        # hook latches each repeated WM_KEYDOWN) and must not close the menu
-        # again — which is what holding F12 used to do, after Windows' ~0.5s
-        # repeat delay. Checked after f12_toggle was consumed above, so a
-        # repeat latched just before the release is swallowed as well.
-        f12_hold_team_kits = False
-        if self._overlay_f12_held_since > 0.0:
-            f12_toggle = False
-            if self._d3d_menu_visible and self._is_overlay_key_down(VK_F12, menu_input_fg):
-                if (now - self._overlay_f12_held_since) >= 0.60 and not self._overlay_f12_hold_latched:
-                    f12_hold_team_kits = True
-                    self._overlay_f12_hold_latched = True
-            else:
-                self._overlay_f12_held_since = 0.0
-                self._overlay_f12_hold_latched = False
-
-        menu_toggle = f12_toggle or start_hold_toggle or (back_hold_team_kits and not self._d3d_menu_visible)
+        # straight on it, or moves an already open menu there. With the
+        # overlay on a key's press and Team Kits on the same key held (F12
+        # by default), the press opens the menu at once and the hold, 0.6s
+        # into that same press, moves it to Team Kits.
+        team_kits_trigger = team_kits_key_press or pad_team_kits
+        team_kits_source = "Team Kits key" if team_kits_key_press else "gamepad Team Kits binding"
+        menu_toggle = menu_key_toggle or pad_menu_toggle or (team_kits_trigger and not self._d3d_menu_visible)
         if menu_toggle and can_toggle:
             self._d3d_menu_visible = not self._d3d_menu_visible
             self._overlay_toggle_ready_at = now + 0.22
-            # Opened by Select-hold: on the Kits tab from the first frame
-            # (the tab index goes out with the menu state just below).
+            # Opened by a Team Kits binding: on the Kits tab from the first
+            # frame (the tab index goes out with the menu state just below).
             open_team_kits = (
-                self._d3d_menu_visible and back_hold_team_kits and "kits" in self._overlay_tab_names
+                self._d3d_menu_visible and team_kits_trigger and "kits" in self._overlay_tab_names
             )
             if open_team_kits:
                 self._overlay_tab_index = self._overlay_tab_names.index("kits")
             self.log(
                 f"D3D menu {'opened' if self._d3d_menu_visible else 'closed'}"
-                + (" on Team Kits via gamepad Select-hold" if open_team_kits else "")
+                + (f" on Team Kits via {team_kits_source}" if open_team_kits else "")
             )
             self._publish_overlay_menu_state()
             if self._d3d_menu_visible:
@@ -458,10 +464,14 @@ class OverlayMixin:
                     self._enter_kits_mode("team")
                 else:
                     self._update_menu_content()
-                if f12_toggle:
-                    self._overlay_f12_held_since = now
-                    self._overlay_f12_hold_latched = False
             else:
+                # The press that closed the menu doesn't go on to reopen it
+                # on Team Kits once held, when Team Kits is the same
+                # key/combination held (F12 / F12 held).
+                if menu_key_toggle and bindings.key(TEAM_KITS).vk == bindings.key(OVERLAY_MENU).vk:
+                    self._overlay_key_trackers[TEAM_KITS].spend()
+                if pad_menu_toggle and bindings.pad(TEAM_KITS).buttons == bindings.pad(OVERLAY_MENU).buttons:
+                    self._overlay_pad_trackers[TEAM_KITS].spend()
                 self._clear_overlay_wizard_state()
                 self._overlay_selected_scope = None
                 self._overlay_selected_kittype = None
@@ -472,10 +482,8 @@ class OverlayMixin:
                 self._overlay_stadium_sort_desc = False
                 self._uninstall_mouse_wheel_hook()
                 self._uninstall_keyboard_hook()
-        elif back_hold_team_kits and can_toggle and self._d3d_menu_visible:
-            self._show_overlay_team_kits("gamepad Select-hold")
-        if f12_hold_team_kits and self._d3d_menu_visible:
-            self._show_overlay_team_kits("F12 hold")
+        elif team_kits_trigger and can_toggle and self._d3d_menu_visible:
+            self._show_overlay_team_kits(team_kits_source)
 
         if (self._d3d_menu_visible or self._stadium_picker_pending) and inj is not None:
             # Shared with the stadium picker (see stadium_picker.rml's
@@ -978,6 +986,7 @@ class OverlayMixin:
                 buttons, rx, ry, ly, lx = 0, 0, 0, 0, 0
             with self._gamepad_poll_lock:
                 self._overlay_gp_latched_buttons |= buttons
+                self._kit_gp_latched_buttons |= buttons
                 self._overlay_gp_raw_buttons = buttons
                 self._overlay_gp_raw_rx = rx
                 self._overlay_gp_raw_ry = ry
@@ -986,6 +995,7 @@ class OverlayMixin:
             self._gamepad_poll_stop.wait(0.01)
         with self._gamepad_poll_lock:
             self._overlay_gp_latched_buttons = 0
+            self._kit_gp_latched_buttons = 0
             self._overlay_gp_raw_buttons = 0
             self._overlay_gp_raw_rx = 0
             self._overlay_gp_raw_ry = 0
@@ -1000,6 +1010,7 @@ class OverlayMixin:
             self._gamepad_poll_thread = None
         with self._gamepad_poll_lock:
             self._overlay_gp_latched_buttons = 0
+            self._kit_gp_latched_buttons = 0
             self._overlay_gp_raw_buttons = 0
 
     def _consume_gamepad_state(self) -> tuple[int, int, int, int, int, int]:
@@ -1033,6 +1044,39 @@ class OverlayMixin:
             # this edge.
             self._overlay_gp_latched_buttons = raw_buttons
         return edge_buttons, raw_buttons, rx, ry, ly, lx
+
+    def _consume_kit_gamepad_state(self) -> tuple[int, int]:
+        """(edge_buttons, raw_buttons) for the kit hotkeys — the same latch
+        as _consume_gamepad_state, kept separately (_kit_gp_latched_buttons)
+        because that one belongs to _sync_d3d_menu_input, which consumes it
+        every tick before _sync_kit_hotkeys runs (and doesn't run at all
+        with the overlay disabled)."""
+        if self._gamepad_poll_thread is None or not self._gamepad_poll_thread.is_alive():
+            raw = self._get_gamepad_buttons()
+            return raw, raw
+        with self._gamepad_poll_lock:
+            edge_buttons = self._kit_gp_latched_buttons
+            raw_buttons = self._overlay_gp_raw_buttons
+            self._kit_gp_latched_buttons = raw_buttons
+        return edge_buttons, raw_buttons
+
+    @staticmethod
+    def _update_pad_tracker(trackers: dict, action: str, bindings, edge_buttons: int, raw_buttons: int,
+                            now: float) -> bool:
+        """One input tick of `action`'s gamepad binding: True when it fires
+        (pressed, held long enough, or tapped — its pad_mode)."""
+        seen, held = bindings.pad_state(action, edge_buttons, raw_buttons)
+        return trackers.setdefault(action, BindingTracker()).update(bindings.pad_mode(action), seen, held, now)
+
+    def _update_key_tracker(self, trackers: dict, action: str, bindings, edge_vks: set[int], now: float) -> bool:
+        """The same for `action`'s key: `edge_vks` are the bound keys whose
+        press was latched since the last tick (already consumed — a key two
+        actions share has only one latch)."""
+        vk = bindings.key(action).vk
+        held = bool(vk) and self._is_hotkey_down(vk)
+        return trackers.setdefault(action, BindingTracker()).update(
+            bindings.key_mode(action), held or vk in edge_vks, held, now,
+        )
 
     def _set_overlay_tab(self, index: int, source: str) -> None:
         if not self._overlay_tab_names:
@@ -3120,19 +3164,11 @@ class OverlayMixin:
     def _keyboard_hook_thread_func(self) -> None:
         """Dedicated Win32 message-pump thread for WH_KEYBOARD_LL."""
         hook_type = ctypes.WINFUNCTYPE(ctypes.c_longlong, ctypes.c_int, wintypes.WPARAM, wintypes.LPARAM)
-        blocked_keys = {
-            VK_F12,
-            VK_ESCAPE,
-            VK_RETURN,
-            VK_LEFT,
-            VK_RIGHT,
-            VK_UP,
-            VK_DOWN,
-            VK_PRIOR,
-            VK_NEXT,
-            VK_HOME,
-            VK_END,
-        }
+        # Blocked (eaten from FIFA and tracked here): the menu's navigation
+        # keys plus its own keys from Settings > Controls (the overlay key,
+        # F12 by default, and the Team Kits key) — read from
+        # self.input_bindings on every keystroke, so a change made while the
+        # menu is open applies at once.
         key_messages = {WM_KEYDOWN, WM_KEYUP, WM_SYSKEYDOWN, WM_SYSKEYUP}
 
         def _keyboard_proc(n_code: int, w_param: int, l_param: int) -> int:
@@ -3149,7 +3185,7 @@ class OverlayMixin:
                     try:
                         info = ctypes.cast(l_param, ctypes.POINTER(KBDLLHOOKSTRUCT)).contents
                         vk = int(info.vkCode)
-                        if vk in blocked_keys:
+                        if vk in MENU_NAV_VKS or vk in self.input_bindings.menu_hook_vks:
                             # Only steal the keystroke from FIFA/the overlay itself —
                             # otherwise (user alt-tabbed to another window while the
                             # overlay is still open) let it through untouched instead
@@ -3167,6 +3203,21 @@ class OverlayMixin:
                                     self._overlay_key_edge_pending.add(vk)
                                 elif msg in (WM_KEYUP, WM_SYSKEYUP):
                                     self._overlay_blocked_key_down.discard(vk)
+                                    # The release goes where its press went.
+                                    # A key the system saw go down before
+                                    # this hook was in — the overlay key's
+                                    # press that opened the menu — is passed
+                                    # on: eating its WM_KEYUP left
+                                    # GetAsyncKeyState reporting it down
+                                    # until a later real release, even with
+                                    # the hook gone (checked on Windows 10),
+                                    # so after closing the menu with Esc,
+                                    # F12 read as still held and "F12 held"
+                                    # reopened it on Team Kits 0.6s later.
+                                    # Inside the hook GetAsyncKeyState still
+                                    # gives the state before this event.
+                                    if self.user32.GetAsyncKeyState(vk) & 0x8000:
+                                        return int(self.user32.CallNextHookEx(self._keyboard_hook or 0, n_code, w_param, l_param))
                                 return 1
                             elif msg in (WM_KEYUP, WM_SYSKEYUP):
                                 # Keep the "held" set from getting stuck if focus
@@ -3186,11 +3237,11 @@ class OverlayMixin:
         self._keyboard_hook_thread_id = self.kernel32.GetCurrentThreadId()
         # Seed state for keys already held when the hook is installed —
         # BEFORE publishing self._keyboard_hook: from then on
-        # _is_overlay_key_down reads only this set, and the F12-hold check in
-        # _sync_d3d_menu_input would take a not-yet-seeded F12 for a release.
-        # The hook only runs once the GetMessageW loop below pumps, so no
-        # keystroke is missed meanwhile.
-        for vk in blocked_keys:
+        # _is_overlay_key_down reads only this set, and the overlay-key-hold
+        # check in _sync_d3d_menu_input would take a not-yet-seeded overlay
+        # key for a release. The hook only runs once the GetMessageW loop
+        # below pumps, so no keystroke is missed meanwhile.
+        for vk in MENU_NAV_VKS | self.input_bindings.menu_hook_vks:
             if bool(self.user32.GetAsyncKeyState(vk) & 0x8000):
                 self._overlay_blocked_key_down.add(vk)
         self._keyboard_hook = hook
@@ -3223,9 +3274,10 @@ class OverlayMixin:
         self._overlay_key_edge_pending.clear()
 
     def _install_hotkey_poll_thread(self) -> None:
-        """Reliability fix for F12 (opens the overlay) and the F7-F11 Kit
-        Mixer hotkeys, which — unlike navigation once the menu is already
-        open — need to be read while the menu is CLOSED, so they can't use
+        """Reliability fix for the overlay key (F12 by default) and the kit
+        hotkeys (F7-F11 by default) — every key bound in Settings >
+        Controls — which, unlike navigation once the menu is already
+        open, need to be read while the menu is CLOSED, so they can't use
         the WH_KEYBOARD_LL hook above (that hook only runs while the
         menu/picker is open, by design — see its own docstring history).
 
@@ -3262,7 +3314,12 @@ class OverlayMixin:
         self._hotkey_poll_thread = t
 
     def _hotkey_poll_thread_func(self) -> None:
-        vks = (VK_F12, VK_F7, VK_F8, VK_F9, VK_F10, VK_F11)
+        # The bound keys are re-read every iteration (Settings > Controls
+        # swaps self.input_bindings). A key that only joins later starts
+        # from its current state instead of "up": it was most likely bound
+        # a moment ago by pressing it in the capture dialog, and that press
+        # must not be latched as a hotkey.
+        vks = self.input_bindings.hotkey_poll_vks
         # Per-key "was it down on the LAST poll iteration" state, local to
         # this thread. Bug fixed 2026-09-15 (see _consume_hotkey_edge's own
         # docstring for the full live report/repro): this loop used to add a
@@ -3285,17 +3342,24 @@ class OverlayMixin:
         # all.
         prev_down = {vk: False for vk in vks}
         while not self._hotkey_poll_stop.is_set():
-            for vk in vks:
+            bindings = self.input_bindings
+            for vk in bindings.hotkey_poll_vks:
                 try:
                     down = bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
-                    if down and not prev_down[vk]:
+                    if down and not prev_down.get(vk, down):
                         # Latched, never cleared here -- only
-                        # _consume_hotkey_edge clears it. A tap that fully
-                        # completes between two ~40ms Tk ticks would
-                        # otherwise never be observed as "down" by a plain
-                        # once-per-tick level check, even though this thread
-                        # (polling every ~10ms) saw it happen.
-                        self._overlay_hotkey_edge_pending.add(vk)
+                        # _consume_hotkey_edge / _consume_kit_hotkey_edge
+                        # clear it. A tap that fully completes between two
+                        # ~40ms Tk ticks would otherwise never be observed
+                        # as "down" by a plain once-per-tick level check,
+                        # even though this thread (polling every ~10ms) saw
+                        # it happen. One latch per consumer: a key the
+                        # overlay and a kit hotkey share (F11 / F11 held)
+                        # must reach both.
+                        if vk in bindings.menu_hook_vks:
+                            self._overlay_hotkey_edge_pending.add(vk)
+                        if vk in bindings.kit_vks:
+                            self._kit_hotkey_edge_pending.add(vk)
                     prev_down[vk] = down
                 except Exception:
                     pass
@@ -3308,11 +3372,16 @@ class OverlayMixin:
             t.join(timeout=1.0)
             self._hotkey_poll_thread = None
         self._overlay_hotkey_edge_pending = set()
+        self._kit_hotkey_edge_pending = set()
 
     def _consume_hotkey_edge(self, vk: int) -> bool:
-        """Edge-triggered check for F12/F7-F11: True the first time `vk` is
-        checked after being seen pressed, even if it's already been
-        released again by then.
+        """Edge-triggered check for the overlay menu's own keys bound in
+        Settings > Controls (input_bindings.menu_hook_vks: the overlay key
+        and the Team Kits key, F12 by default): True the first time `vk` is
+        checked after being seen pressed, even if it's already been released
+        again by then. The kit hotkeys (F7-F11 by default) have the same
+        latch of their own, _consume_kit_hotkey_edge. Everything below about
+        F12 holds for whichever keys the overlay menu itself is bound to.
 
         F12/kit-hotkey presses need reliable detection while the D3D menu
         is CLOSED — the one state the WH_KEYBOARD_LL hook never runs in
@@ -3336,8 +3405,9 @@ class OverlayMixin:
         this whole feature exists to work around, so routing F12-to-close
         through it too was a straight downgrade from the hook it used to
         use. Hook state takes priority whenever it's actually tracking this
-        key (F7-F11 are never in the hook's blocked_keys, so this never
-        applies to them — they always use the poll thread's latch).
+        key (the kit hotkeys never come through here: they always use their
+        own poll-thread latch, _consume_kit_hotkey_edge — and drop presses
+        while the menu is open anyway).
 
         Bug fixed 2026-09-15 (reported live: closing the menu via Escape or
         the on-screen Close button made it reopen itself moments later):
@@ -3373,7 +3443,7 @@ class OverlayMixin:
         poll-based set fresh and is still caught correctly, since the poll
         thread never stops running."""
         if (
-            vk == VK_F12
+            vk in self.input_bindings.menu_hook_vks
             and (self._d3d_menu_visible or self._stadium_picker_pending)
             and self._keyboard_hook is not None
         ):
@@ -3384,6 +3454,26 @@ class OverlayMixin:
             pending.discard(vk)
             return True
         return False
+
+    def _consume_kit_hotkey_edge(self, vk: int) -> bool:
+        """The kit hotkeys' copy of _consume_hotkey_edge's poll-thread latch
+        (_kit_hotkey_edge_pending): a key they share with the overlay
+        (F11 / F11 held) reaches both, whichever consumes first."""
+        pending = self._kit_hotkey_edge_pending
+        if vk in pending:
+            pending.discard(vk)
+            return True
+        return False
+
+    def _is_hotkey_down(self, vk: int) -> bool:
+        """Whether a key bound in Settings > Controls is down right now: the
+        keyboard hook's view while it eats that key (the menu's own keys
+        with the menu open, see _consume_hotkey_edge), GetAsyncKeyState
+        otherwise — not _is_overlay_key_down's hook view for every key,
+        which takes a kit key held across the menu's close for a new press."""
+        if vk in self.input_bindings.menu_hook_vks and (self._d3d_menu_visible or self._stadium_picker_pending):
+            return self._is_overlay_key_down(vk, True)
+        return bool(self.user32.GetAsyncKeyState(vk) & 0x8000)
 
     def _is_overlay_key_down(self, vk: int, menu_input_fg: bool) -> bool:
         # The stadium picker (see _open_stadium_picker in stadium_runtime.py)
@@ -3410,65 +3500,124 @@ class OverlayMixin:
         return False
 
     def _sync_kit_hotkeys(self) -> None:
-        """F7/F8 = home prev/next, F9/F10 = away prev/next — cycles the
-        currently-selected Simple Mode kit type (self.kitmix_kittype) for
-        whichever team is loaded. F11 cycles that shared kit type itself
-        (Home->Away->Keeper->Third->Home...) so it can be changed without
-        switching to the CGFS window — both sides always cycle within
-        whatever type F11 last selected, matching the single shared
-        combobox Simple Mode already has. Fires whenever FIFA is detected,
-        same global-poll semantics as the F12 toggle (self._fifa_hwnd != 0,
-        regardless of OS foreground) — but unlike F12, only while the D3D
-        menu is closed, and only on pages where a kit change is meaningful
-        (team/kit-selection screens, same set as _page_can_have_match_context):
-        confirmed live that FIFA does not re-read kit textures mid-match
-        (same limitation documented for stadium assignment, CLAUDE.md §5.1),
-        so the hotkeys are simply inert during actual play rather than
-        silently applying a change nobody will see."""
-        if not self.kit_hotkeys_var.get():
+        """Home kit previous/next, away kit previous/next (F7/F8, F9/F10 by
+        default; keys and gamepad buttons from Settings > Controls) — cycles
+        the currently-selected Simple Mode kit type (self.kitmix_kittype)
+        for whichever team is loaded. The kit type hotkey (F11) cycles that
+        shared kit type itself (Home->Away->Keeper->Third->Team combination->
+        Home...) so it can be changed without switching to the CGFS window —
+        both sides always cycle within whatever type it last selected,
+        matching the single shared combobox Simple Mode already has. On Team
+        combination, which has no kit type, they step each team's Kits > Team
+        combination instead (_trigger_team_combination_cycle).
+
+        Fires only while FIFA (or the overlay) is the foreground window,
+        like the overlay key: with keys bindable to letters, a press typed
+        into another window (a chat, a browser) must not change the kit.
+        Also only while the D3D menu is closed, and only on pages where a
+        kit change is meaningful (team/kit-selection screens, same set as
+        _page_can_have_match_context): confirmed live that FIFA does not
+        re-read kit textures mid-match (same limitation documented for
+        stadium assignment, CLAUDE.md §5.1), so the hotkeys are simply inert
+        during actual play rather than silently applying a change nobody
+        will see. A press in any of those states is dropped, not kept for
+        later: it used to stay latched and fire on reaching the kit screen.
+
+        Each key and each gamepad combination goes through a BindingTracker
+        (press / hold / tap, Settings > Controls' Hold switches), fed every
+        tick even while presses are dropped, so a hold or a tap is timed from
+        the real press."""
+        bindings = self.input_bindings
+        if not self.kit_hotkeys_var.get() or not self._fifa_hwnd:
+            self._kit_input_primed = False
             return
-        if self._d3d_menu_visible:
-            return
-        if not self._fifa_hwnd:
-            return
-        # Independent of show_overlay_var's own install call in
+        # Independent of show_overlay_var's own install calls in
         # _sync_d3d_menu_input — kit hotkeys work even with the general
         # overlay disabled, so they need their own guarantee the poll
-        # thread exists. Idempotent no-op if already running either way.
-        self._install_hotkey_poll_thread()
-        if not self._page_can_have_match_context(self.lastpagename):
+        # threads exist. Idempotent no-ops if already running either way.
+        if bindings.kit_keys_bound:
+            self._install_hotkey_poll_thread()
+        if bindings.kit_pads_bound:
+            self._install_gamepad_poll_thread()
+        now = time.monotonic()
+        # Latched edges (_consume_kit_hotkey_edge), not only a level
+        # comparison — see _consume_hotkey_edge's docstring: a plain "down
+        # this tick, not down last tick" check can miss a press whose whole
+        # down+up cycle completes inside one Tk gap. Every key is consumed
+        # once, even one two actions share (F7 / F7 held).
+        edge_vks = {vk for vk in bindings.kit_vks if self._consume_kit_hotkey_edge(vk)}
+        held_vks = {vk for vk in bindings.kit_vks if self._is_hotkey_down(vk)}
+        edge_buttons, raw_buttons = self._consume_kit_gamepad_state() if bindings.kit_pads_bound else (0, 0)
+        pressed: set[str] = set()
+        for action, _side, _direction in _KIT_HOTKEY_ACTIONS:
+            vk = bindings.key(action).vk
+            key_tracker = self._kit_key_trackers.setdefault(action, BindingTracker())
+            pad_tracker = self._kit_pad_trackers.setdefault(action, BindingTracker())
+            pad_seen, pad_held = bindings.pad_state(action, edge_buttons, raw_buttons)
+            if not self._kit_input_primed:
+                # First tick after a pause (kit hotkeys off, FIFA not found,
+                # bindings just changed): the poll threads kept latching
+                # meanwhile, so the latches hold presses from any time back,
+                # and whatever is held right now was pressed before this
+                # tick too. Neither may fire.
+                key_tracker.prime(vk in held_vks, now)
+                pad_tracker.prime(pad_held, now)
+                continue
+            key_fired = key_tracker.update(bindings.key_mode(action), vk in (edge_vks | held_vks), vk in held_vks, now)
+            pad_fired = pad_tracker.update(bindings.pad_mode(action), pad_seen, pad_held, now)
+            if key_fired or pad_fired:
+                pressed.add(action)
+        self._kit_input_primed = True
+
+        if (
+            self._d3d_menu_visible
+            or not self._is_overlay_input_foreground()
+            or not self._page_can_have_match_context(self.lastpagename)
+        ):
+            self._kit_hotkey_pending.clear()
             return
 
-        now = time.monotonic()
-        if now >= self._kit_hotkey_ready_at:
-            # Latched edges (_consume_hotkey_edge), not a level comparison —
-            # see that method's docstring: a plain "down this tick, not down
-            # last tick" check can miss a press whose whole down+up cycle
-            # completes inside one Tk gap. Each call only touches its own
-            # vk's entry in the shared pending set, so chaining them in one
-            # if/elif (rather than combining with `or`) is safe here, unlike
-            # the keyboard-nav edges in _sync_d3d_menu_input.
-            if self._consume_hotkey_edge(VK_F7):
-                self._trigger_kit_cycle("home", -1)
-                self._kit_hotkey_ready_at = now + 0.25
-            elif self._consume_hotkey_edge(VK_F8):
-                self._trigger_kit_cycle("home", 1)
-                self._kit_hotkey_ready_at = now + 0.25
-            elif self._consume_hotkey_edge(VK_F9):
-                self._trigger_kit_cycle("away", -1)
-                self._kit_hotkey_ready_at = now + 0.25
-            elif self._consume_hotkey_edge(VK_F10):
-                self._trigger_kit_cycle("away", 1)
-                self._kit_hotkey_ready_at = now + 0.25
-            elif self._consume_hotkey_edge(VK_F11):
+        # A press inside the 0.25s cooldown still counts, one step later
+        # (one action per step: the rest wait in _kit_hotkey_pending).
+        self._kit_hotkey_pending |= pressed
+        if now < self._kit_hotkey_ready_at:
+            return
+        for action, side, direction in _KIT_HOTKEY_ACTIONS:
+            if action not in self._kit_hotkey_pending:
+                continue
+            self._kit_hotkey_pending.discard(action)
+            if side is None:
                 self._cycle_kit_type()
-                self._kit_hotkey_ready_at = now + 0.25
+            else:
+                self._trigger_kit_cycle(side, direction)
+            self._kit_hotkey_ready_at = now + 0.25
+            break
+
+    def _kit_hotkeys_need_key_poll(self) -> bool:
+        """Whether the kit hotkeys still read keys through the hotkey poll
+        thread, so it must stay up with the overlay disabled."""
+        return bool(self.kit_hotkeys_var.get() and self.input_bindings.kit_keys_bound)
+
+    def _kit_hotkeys_need_pad_poll(self) -> bool:
+        return bool(self.kit_hotkeys_var.get() and self.input_bindings.kit_pads_bound)
 
     def _cycle_kit_type(self) -> None:
+        """F11: Home -> Away -> Keeper -> Third -> Team combination -> Home.
+        Team combination leaves self.kitmix_kittype alone (the Kits tab keeps
+        showing Third) and only sets _kit_hotkey_team_mode; writing the kit
+        type again clears it (the trace set up in app_ui.py)."""
         keys = list(KIT_TYPES.keys())  # ["home", "away", "keeper", "third"], stable insertion order
-        current_code = self._kitsimple_current_kittype_code()
-        current_key = next((k for k, v in KIT_TYPES.items() if v == current_code), keys[0])
-        next_key = keys[(keys.index(current_key) + 1) % len(keys)]
+        if self._kit_hotkey_team_mode:
+            next_key = keys[0]
+        else:
+            current_code = self._kitsimple_current_kittype_code()
+            current_key = next((k for k, v in KIT_TYPES.items() if v == current_code), keys[0])
+            if current_key == keys[-1]:
+                self._kit_hotkey_team_mode = True
+                self._show_kit_type_notification(_KIT_TYPE_TEAM)
+                return
+            next_key = keys[keys.index(current_key) + 1]
+        self._kit_hotkey_team_mode = False
         self.kitmix_kittype.set(self.kitmix_kittype_labels.get(next_key, next_key.capitalize()))
         self._show_kit_type_notification(next_key)
 
@@ -3479,7 +3628,10 @@ class OverlayMixin:
         if inj is None or not inj.is_injected():
             return
         title = self.tr("dialog.kitmix.kit_type")
-        detail = self.kitmix_kittype_labels.get(kittype_key, kittype_key.capitalize())
+        if kittype_key == _KIT_TYPE_TEAM:
+            detail = self.tr("kitsimple.hotkey_type_team")
+        else:
+            detail = self.kitmix_kittype_labels.get(kittype_key, kittype_key.capitalize())
         if self._kit_type_hide_job is not None:
             try:
                 self.after_cancel(self._kit_type_hide_job)
@@ -3499,6 +3651,9 @@ class OverlayMixin:
 
     def _trigger_kit_cycle(self, side: str, direction: int) -> None:
         if self._kit_cycle_task_running:
+            return
+        if self._kit_hotkey_team_mode:
+            self._trigger_team_combination_cycle(side, direction)
             return
         team_id = (self.HID if side == "home" else self.AID) or ""
         if not team_id:
@@ -3547,6 +3702,101 @@ class OverlayMixin:
 
         threading.Thread(target=worker, daemon=True).start()
         self._schedule_worker_poll()
+
+    def _trigger_team_combination_cycle(self, side: str, direction: int) -> None:
+        """F7-F10 with F11 on Team combination: the side's Kits > Team
+        combination (KM_HOME / KM_AWAY in team_<id>.lua) steps through the
+        original kits and the team's saved combinations, saved at once like
+        the F12 editor's Combination row — and like it on the Tk thread,
+        since KitClassicRuntime.save logs. Read from disk on every press, so
+        whatever the main window or the F12 editor saved meanwhile counts.
+        Only the carousel's drawings (prev / current / next choice, each as
+        kit_classic_editor.preview_parts draws it: the kit the side usually
+        asks for, 0 home / 1 away, or the one the combination changes) are
+        made on a worker thread."""
+        team_id = str((self.HID if side == "home" else self.AID) or "").strip()
+        if getattr(self, "fifaEXE", "default") == "default" or not team_id.isdigit() or int(team_id) <= 0:
+            return
+        runtime = self.kit_classic
+        try:
+            kit_side = TeamKitSide(runtime, int(team_id), HOME if side == "home" else AWAY)
+            saved = kit_side.step_saved_combination(direction)
+        except Exception as exc:
+            self.log(f"Kit hotkey: could not change the combination of team {team_id} ({side})", exc, exc_info=sys.exc_info())
+            slot = self._show_toast_notification(
+                self.tr("kitsimple.hotkey_type_team"), self.tr("kitclassic.status.save_failed", error=exc),
+                style=1, icon="problem",
+            )
+            if slot != -1:
+                self.after(5000, lambda s=slot: self._hide_toast_notification(s))
+            return
+        label = self._team_kit_value(kit_side, ROW_COMBINATION)
+        if saved:
+            self.log(f"Kit hotkey: team {team_id} ({side}) now uses {label}")
+            self._team_kit_saved(kit_side)
+
+        def sources(choice):
+            combo = kit_side.tc.items[choice] if choice is not None else None
+            tourn, *parts = preview_parts(combo, kit_side.tourn, usual_slot(kit_side.side))
+            return runtime.kit_sources(kit_side.team, tourn, *parts)
+
+        # Previous, current, next choice. With two choices the other one is
+        # both neighbours: drawn once, below (it used to show twice); with
+        # nothing to step to, only the current one.
+        choices = [None, *range(len(kit_side.tc.items))]
+        count = len(choices)
+        index = choices.index(kit_side.selection)
+        jobs = [
+            sources(choices[(index - 1) % count]) if count > 2 else None,
+            sources(choices[index]),
+            sources(choices[(index + 1) % count]) if count > 1 else None,
+        ]
+        if not kit_side.editable:
+            detail = self.tr("kitsimple.hotkey_team_unsupported")
+        elif not kit_side.tc.items:
+            detail = self.tr("kitsimple.hotkey_team_none")
+        else:
+            detail = label
+
+        self._kit_cycle_task_running = True
+
+        def worker() -> None:
+            try:
+                art, lock = runtime.art, runtime.art_lock
+                placeholder = str(kit_ui_placeholder_path())
+                images = []
+                for job in jobs:
+                    if job is None:
+                        images.append("")
+                        continue
+                    try:
+                        with lock:
+                            path = art.render_path(*job, size=_KIT_CAROUSEL_ART_SIZE)
+                    except Exception:
+                        path = None
+                    images.append(str(path) if path else placeholder)
+                self._worker_queue.put(("team_combo_cycled", side, team_id, direction, detail, images))
+            except Exception as exc:
+                self._worker_queue.put(("kit_cycle_error", side, team_id, str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self._schedule_worker_poll()
+
+    def _show_team_combination_notification(self, side: str, team_id: str, direction: int, detail: str, images: list[str]) -> None:
+        """The kit carousel for one Team combination step: the side's previous,
+        current and next choice drawn as kits (_trigger_team_combination_cycle)."""
+        if self._stadium_task_running:
+            self.log(f"Kit hotkey: combination saved but skipped overlay notification (stadium loading in progress) team={team_id}")
+            return
+        inj = self._d3d_injector
+        if inj is None or not inj.is_injected():
+            return
+        team_name = self._resolve_team_name(team_id) or team_id
+        side_label = self.tr("team.a") if side == "home" else self.tr("team.b")
+        # All three drawings are final: no neighbour refresh may land on them
+        # (_push_kit_carousel_refresh, still pending for a kit set shown before).
+        self._kit_carousel_ctx = None
+        self._present_kit_carousel(f"{side_label}: {team_name}", detail, images[0], images[1], images[2], direction)
 
     def _kit_cycle_cache_key(self, team_id: str, kittype_code: str, entry: dict | None) -> tuple[str | None, str | None]:
         """Resolves (kitui_source_path, cache_key) for one kit-cycle carousel
@@ -3680,16 +3930,23 @@ class OverlayMixin:
         _, prev_key = self._kit_cycle_cache_key(team_id, kittype_code, prev_entry)
         _, next_key = self._kit_cycle_cache_key(team_id, kittype_code, next_entry)
         self._kit_carousel_ctx = (prev_key, current_key, next_key)
+        self._present_kit_carousel(title, detail, prev_thumb, str(png_path) if png_path else "", next_thumb, direction)
 
-        hint = self.tr("kitsimple.hotkey_hint")
-
+    def _present_kit_carousel(self, title: str, detail: str, image_prev: str, image_current: str,
+                              image_next: str, direction: int) -> None:
+        """Shows the kit carousel (with the kit hotkeys' legend) for 4 s,
+        restarting the hide timer of one already showing."""
+        inj = self._d3d_injector
+        if inj is None:
+            return
+        hint = kit_hotkey_hint(self.input_bindings, self.tr)
         if self._kit_carousel_hide_job is not None:
             try:
                 self.after_cancel(self._kit_carousel_hide_job)
             except Exception:
                 pass
             self._kit_carousel_hide_job = None
-        inj.show_kit_carousel(title, detail, hint, prev_thumb, str(png_path) if png_path else "", next_thumb, direction=direction)
+        inj.show_kit_carousel(title, detail, hint, image_prev, image_current, image_next, direction=direction)
         self._kit_carousel_shown_at = time.monotonic()
         self._kit_carousel_hide_job = self.after(4000, self._hide_kit_hotkey_notification)
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .input_bindings import InputBindings
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN
 
 # UI zoom range for app_ui.py's zoom buttons/popup, applied on top of the
@@ -44,6 +45,10 @@ class SettingsStore:
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
         "SHOW_OVERLAY": True,
         "KIT_HOTKEYS_ENABLED": True,
+        # Settings tab > Controls: keys and gamepad buttons for the overlay
+        # shortcuts and the kit hotkeys (input_bindings.py; read back through
+        # InputBindings.from_dict, which repairs a hand-edited block).
+        "INPUT_BINDINGS": InputBindings.defaults().to_dict(),
         "KEEP_OPEN_ON_GAME_CLOSE": True,
         # Settings tab, next to Clean Cache: on every launch, delete in the
         # background the generated caches left by earlier sessions
@@ -159,6 +164,15 @@ class SettingsStore:
     @kit_hotkeys_enabled.setter
     def kit_hotkeys_enabled(self, value: bool) -> None:
         self.data["KIT_HOTKEYS_ENABLED"] = bool(value)
+        self.save()
+
+    @property
+    def input_bindings(self) -> InputBindings:
+        return InputBindings.from_dict(self.data.get("INPUT_BINDINGS"))
+
+    @input_bindings.setter
+    def input_bindings(self, value: InputBindings) -> None:
+        self.data["INPUT_BINDINGS"] = value.to_dict()
         self.save()
 
     @property

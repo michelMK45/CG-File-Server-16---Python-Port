@@ -87,6 +87,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
+        # Settings tab > Controls (input_bindings.py). Swapped whole, never
+        # changed in place: the hotkey poll thread and the keyboard hook read
+        # it from their own threads (see _set_input_bindings).
+        self.input_bindings = self.settings.input_bindings
         self.keep_open_var = tk.BooleanVar(value=self.settings.keep_open_on_game_close)
         self.auto_clean_cache_var = tk.BooleanVar(value=self.settings.auto_clean_cache_on_startup)
         self.overlay_performance_mode_var = tk.BooleanVar(value=self.settings.overlay_performance_mode)
@@ -193,6 +197,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._kit_hotkey_ready_at = 0.0
         self._kit_cycle_index: dict[tuple[str, str], int] = {}
         self._kit_cycle_task_running = False
+        # F11's fifth step, "Team combination": F7-F10 then step the teams'
+        # Kits > Team combinations instead of kit sets of self.kitmix_kittype
+        # (see _cycle_kit_type in app_overlay.py). Picking a kit type in the
+        # Kits tab turns it off again.
+        self._kit_hotkey_team_mode = False
         # F7-F10 (kit-cycle carousel) and F11 (kit-type change) notifications
         # now render as two independent, stackable panels (see CLAUDE.md's
         # kit-cycling carousel section) — each needs its own hide-timer job
@@ -242,8 +251,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._hotkey_poll_stop = threading.Event()
         # Same edge-latch reasoning as _overlay_key_edge_pending above, fed
         # by the poll thread instead of the keyboard hook — see
-        # _consume_hotkey_edge.
+        # _consume_hotkey_edge. One latch per consumer: the overlay's keys
+        # and the kit hotkeys' (_consume_kit_hotkey_edge), which may share
+        # a key (Settings > Controls, one on the press, one held).
         self._overlay_hotkey_edge_pending: set[int] = set()
+        self._kit_hotkey_edge_pending: set[int] = set()
         self._overlay_b_close_pending = False
         self._overlay_toggle_ready_at = 0.0
         self._overlay_tab_ready_at = 0.0
@@ -263,18 +275,24 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._overlay_gp_raw_ry = 0
         self._overlay_gp_raw_ly = 0
         self._overlay_gp_raw_lx = 0
-        self._overlay_gp_start_pressed_at = 0.0
-        self._overlay_gp_back_pressed_at = 0.0
         self._overlay_gp_left_pressed_at = 0.0
         self._overlay_gp_right_pressed_at = 0.0
-        self._overlay_gp_start_hold_latched = False
-        # Select (Back) held 0.6s opens the menu straight on Kits > Team Kits;
-        # F12 held 0.6s does the same from the keyboard: the press opens the
-        # menu as usual and _overlay_f12_held_since remembers when, until F12
-        # is released (see _sync_d3d_menu_input).
-        self._overlay_gp_back_hold_latched = False
-        self._overlay_f12_held_since = 0.0
-        self._overlay_f12_hold_latched = False
+        # Press/hold/tap state of each key and gamepad binding
+        # (input_bindings.BindingTracker, by action): the menu's (F12 / F12
+        # held, Start-hold / Select-hold by default) and the kit hotkeys'.
+        # Reset whenever the bindings change.
+        self._overlay_key_trackers: dict = {}
+        self._overlay_pad_trackers: dict = {}
+        self._kit_key_trackers: dict = {}
+        self._kit_pad_trackers: dict = {}
+        # The kit hotkeys' own gamepad latch, fed by the same poll thread as
+        # _overlay_gp_latched_buttons (one consumer per latch), and the kit
+        # presses waiting out _kit_hotkey_ready_at.
+        self._kit_gp_latched_buttons = 0
+        self._kit_hotkey_pending: set[str] = set()
+        # False until _sync_kit_hotkeys has primed its trackers with the
+        # current state of the keys and the pad after a pause in its reads.
+        self._kit_input_primed = False
         # Gamepad Y on the Stadiums tab: tap toggles the filter bubble
         # (_toggle_stadium_filter_panel), a 0.6s hold clears the active
         # filter (_clear_stadium_filter) instead — same press/hold-latch
@@ -447,6 +465,12 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.overlay_switch = None
         self.performance_mode_switch = None
         self.random_stadium_switch = None
+        self._settings_canvas = None
+        self._settings_canvas_body = None
+        # Settings tab > Controls card: per action, its widgets (see
+        # _build_controls_card), plus the card's own labels/buttons.
+        self._controls_rows: dict = {}
+        self._controls_texts: list = []
         self._setup_canvas = None
         self._setup_canvas_body = None
         self._gamepads_canvas = None

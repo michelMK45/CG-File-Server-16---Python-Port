@@ -44,6 +44,7 @@ class FakeOverlayApp(OverlayMixin):
         self._gamepad_poll_stop = threading.Event()
         self._gamepad_poll_lock = threading.Lock()
         self._overlay_gp_latched_buttons = 0
+        self._kit_gp_latched_buttons = 0
         self._overlay_gp_raw_buttons = 0
         self._overlay_gp_raw_rx = 0
         self._overlay_gp_raw_ry = 0
