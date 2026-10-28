@@ -358,6 +358,55 @@ class FindIsolatedOccurrencesPriorityRangeTests(unittest.TestCase):
         self.assertEqual(addresses, [memory.base_address + 16])
         self.assertEqual(len(full_scan_calls), 1)  # the ordinary unrestricted scan did run
 
+    def test_falls_back_to_the_full_scan_when_no_priority_hit_is_isolated(self) -> None:
+        # bugs-scoreboardstdname.md Part 26 (FIP 9.2 report, 2026-10-26): the
+        # configured window held only the loaded DB record "_Waldstadion
+        # (Fussballstadion)" -- a raw hit that always fails isolation -- and
+        # that raw hit used to skip the full scan on all 20 attempts, so the
+        # real isolated copy elsewhere was never even looked for.
+        text = "Waldstadion".encode("utf-8")
+        decoy = b"\xcc_Waldstadion (Fussballstadion)\x00"
+        data = b"\x00" * 16 + decoy + b"\x00" * 64 + text + b"\x00" * 16
+        memory = FakeMemory(data, base_address=0x94000000)
+        app = make_db_app(memory)
+        decoy_addr = memory.base_address + 16 + 2
+        real_addr = memory.base_address + 16 + len(decoy) + 64
+        full_scan_calls = []
+
+        def fake_scan(app_arg, pattern, start_addr=0, end_addr=0x7FFFFFFFFFFF):
+            if start_addr == 0x94000000 and end_addr == 0x94000040:
+                return [decoy_addr]
+            full_scan_calls.append((start_addr, end_addr))
+            return [decoy_addr, real_addr]
+
+        with patch("server16_py.match_string_patcher._scan_memory", side_effect=fake_scan):
+            addresses = _find_isolated_occurrences(
+                app, text, term_width=1, priority_ranges=[(0x94000000, 0x94000040)]
+            )
+        self.assertEqual(addresses, [real_addr])
+        self.assertEqual(len(full_scan_calls), 1)
+        self.assertTrue(any("falling back to the full scan" in line for line in app.logs))
+
+    def test_priority_only_still_never_runs_the_full_scan(self) -> None:
+        # The fast watch polls every ~150ms; a non-isolated hit in its window
+        # must not turn a probe into a full-process scan.
+        text = "Waldstadion".encode("utf-8")
+        data = b"\x00" * 16 + b"_" + text + b" (X)\x00" + b"\x00" * 16
+        memory = FakeMemory(data, base_address=0x94000000)
+        app = make_db_app(memory)
+
+        def fake_scan(app_arg, pattern, start_addr=0, end_addr=0x7FFFFFFFFFFF, **kwargs):
+            if start_addr == 0x94000000:
+                return [memory.base_address + 17]
+            raise AssertionError("priority_only must never fall back to the full scan")
+
+        with patch("server16_py.match_string_patcher._scan_memory", side_effect=fake_scan):
+            addresses = _find_isolated_occurrences(
+                app, text, term_width=1, priority_ranges=[(0x94000000, 0x94800000)],
+                priority_only=True, quiet=True,
+            )
+        self.assertEqual(addresses, [])
+
     def test_no_priority_ranges_goes_straight_to_the_full_scan(self) -> None:
         # priority_ranges=None (the default) must behave exactly as before
         # this feature existed -- no behavior change for every other caller.
@@ -1320,6 +1369,119 @@ class StadiumDbNamePatchCoordinatorTests(unittest.TestCase):
         self.assertEqual(coordinator._cache, {})
         self.assertEqual(coordinator._scan_attempts, {})
         self.assertEqual(coordinator._pending, {})
+
+
+class StadiumDbNameAnchorRangeTests(unittest.TestCase):
+    """bugs-scoreboardstdname.md Part 26: the STDNAMEBASE chains land in FIFA's
+    stadium display-name table, and the isolated slot name lives in that same
+    table -- wherever this install's heap put it. Layout below is the FIP 9.2
+    report scaled down: the configured window holds only the loaded DB record
+    (a decoy), the chain-anchored window holds the real name."""
+
+    CONFIGURED = (0x2C0000, 0x540000)
+    CHAIN_176 = 0x200100
+    REAL_ADDR = 0x201100
+    TEXT = "Waldstadion".encode("utf-8")
+    DECOY = b"\xcc_Waldstadion (Fussballstadion)\x00"
+
+    def make(self, chain_addresses: dict[str, int]):
+        base = 0x200000
+        data = bytearray(0x210000)
+        chain_off = self.CHAIN_176 - base
+        data[chain_off:chain_off + 11] = b"Villa Park\x00"
+        real_off = self.REAL_ADDR - base
+        data[real_off:real_off + len(self.TEXT)] = self.TEXT
+        decoy_off = 0x400100 - base
+        data[decoy_off:decoy_off + len(self.DECOY)] = self.DECOY
+        memory = FakeMemory(bytes(data), base_address=base)
+        chains = {
+            name: [408, 48, index] for index, name in enumerate(StadiumDbNamePatchCoordinator.ANCHOR_CHAIN_OFFSETS)
+        }
+
+        def resolve_pointer(static_ptr, offsets):
+            for name, chain in chains.items():
+                if chain == offsets and name in chain_addresses:
+                    return chain_addresses[name]
+            raise RuntimeError("Null pointer while resolving chain")
+
+        memory.resolve_pointer = resolve_pointer
+        app = make_db_app(memory)
+        app.offsets = SimpleNamespace(STDNAMEBASE=57964392, STDNAME_SAFE_EXTEND_PRIORITY_RANGES=[self.CONFIGURED], **chains)
+        return memory, app
+
+    def fake_scan(self, memory, full_scans):
+        def scan(app_arg, pattern, start_addr=0, end_addr=0x7FFFFFFFFFFF, **kwargs):
+            if pattern == self.TEXT and (start_addr, end_addr) == (0, 0x7FFFFFFFFFFF):
+                full_scans.append(pattern)
+            found, start = [], 0
+            while (idx := memory.buffer.find(pattern, start)) != -1:
+                found.append(memory.base_address + idx)
+                start = idx + 1
+            return [addr for addr in found if start_addr <= addr < end_addr]
+        return scan
+
+    def test_window_follows_the_chains_and_skips_ones_inside_the_configured_range(self) -> None:
+        memory, app = self.make({"STDNAMEOFFSET176": self.CHAIN_176, "STDNAMEOFFSET261": 0x400200})
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        coordinator._refresh_anchor_ranges(memory.process_id)
+        margin = StadiumDbNamePatchCoordinator.ANCHOR_RANGE_MARGIN
+        self.assertEqual(
+            coordinator._priority_ranges(memory.process_id),
+            [self.CONFIGURED, (self.CHAIN_176 - margin, self.CHAIN_176 + margin)],
+        )
+        self.assertTrue(any("name-table chains" in line for line in app.logs))
+
+    def test_no_window_when_every_chain_is_inside_the_configured_range(self) -> None:
+        # The maintainer's install: chains at 0x9421xxxx, configured window
+        # 0x94000000-0x94800000 -- nothing new to scan, nothing logged.
+        memory, app = self.make({"STDNAMEOFFSET176": 0x400200, "STDNAMEOFFSET176B": 0x400300})
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        coordinator._refresh_anchor_ranges(memory.process_id)
+        self.assertEqual(coordinator._priority_ranges(memory.process_id), [self.CONFIGURED])
+        self.assertFalse(any("name-table chains" in line for line in app.logs))
+
+    def test_unresolvable_chains_keep_the_earlier_window(self) -> None:
+        memory, app = self.make({"STDNAMEOFFSET176": self.CHAIN_176})
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        coordinator._refresh_anchor_ranges(memory.process_id)
+        before = coordinator._priority_ranges(memory.process_id)
+        memory.resolve_pointer = lambda *a: (_ for _ in ()).throw(RuntimeError("Null pointer"))
+        coordinator._refresh_anchor_ranges(memory.process_id)
+        self.assertEqual(coordinator._priority_ranges(memory.process_id), before)
+        coordinator.reset()
+        self.assertEqual(coordinator._priority_ranges(memory.process_id), [self.CONFIGURED])
+
+    def test_scan_finds_the_name_in_the_chain_window_without_a_full_scan(self) -> None:
+        memory, app = self.make({"STDNAMEOFFSET176": self.CHAIN_176})
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        key = coordinator._key("176")
+        full_scans: list[bytes] = []
+        new_name = "Stadio Diego Armando Maradona"
+        decoy_before = memory.read_process_memory(0x400100, len(self.DECOY))
+        # The pipe-field search runs its own full scan; only the isolated search is counted.
+        with patch("server16_py.match_string_patcher._scan_memory", side_effect=self.fake_scan(memory, full_scans)), \
+                patch("server16_py.match_string_patcher._find_pipe_bounded_occurrences", return_value=[]):
+            result = coordinator._scan_and_patch(key, "Waldstadion", new_name)
+        self.assertIsNotNone(result)
+        self.assertEqual([entry[0] for entry in result], [self.REAL_ADDR])
+        written = memory.read_process_memory(self.REAL_ADDR, len(new_name) + 1)
+        self.assertEqual(written, new_name.encode("utf-8") + b"\x00")
+        self.assertEqual(memory.read_process_memory(0x400100, len(self.DECOY)), decoy_before)
+        self.assertEqual(full_scans, [])
+
+    def test_without_the_chains_the_full_scan_fallback_still_finds_it(self) -> None:
+        # No STDNAMEBASE chain resolves (e.g. a build where they are null):
+        # the configured window only has the decoy, so the full scan runs.
+        memory, app = self.make({})
+        coordinator = StadiumDbNamePatchCoordinator(app)
+        key = coordinator._key("176")
+        full_scans: list[bytes] = []
+        # The pipe-field search runs its own full scan; only the isolated search is counted.
+        with patch("server16_py.match_string_patcher._scan_memory", side_effect=self.fake_scan(memory, full_scans)), \
+                patch("server16_py.match_string_patcher._find_pipe_bounded_occurrences", return_value=[]):
+            result = coordinator._scan_and_patch(key, "Waldstadion", "Anfield")
+        self.assertEqual([entry[0] for entry in result], [self.REAL_ADDR])
+        self.assertEqual(len(full_scans), 1)
 
 
 if __name__ == "__main__":

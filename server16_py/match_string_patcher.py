@@ -237,6 +237,44 @@ def _looks_like_text_byte(b: int) -> bool:
     return 0x20 <= b < 0x7F or b in (0x09, 0x0A, 0x0D)
 
 
+def _check_isolation(
+    app: "Server16App", addresses: list[int], pattern: bytes, term_width: int
+) -> tuple[list[int], list[int], int]:
+    """Split raw hits into (isolated, rejected, unreadable count) -- see
+    _find_isolated_occurrences for what counts as an isolated string."""
+    isolated: list[int] = []
+    rejected: list[int] = []
+    unreadable = 0
+    zero = b"\x00" * term_width
+    for addr in addresses:
+        try:
+            after = app.memory.read_process_memory(addr + len(pattern), term_width)
+            if after != zero:
+                rejected.append(addr)
+                continue
+            if addr >= term_width:
+                before = app.memory.read_process_memory(addr - term_width, term_width)
+                if before != zero and (term_width != 1 or _looks_like_text_byte(before[0])):
+                    rejected.append(addr)
+                    continue
+            isolated.append(addr)
+        except Exception:
+            # A raw hit whose surrounding bytes can't even be read (most
+            # likely sitting right at the edge of its memory region, so the
+            # read for the byte(s) just past it crosses into unmapped
+            # memory) used to vanish with zero trace: not isolated, not
+            # rejected, no diagnostic dump -- "0 isolated occurrence(s)"
+            # looked identical whether nothing matched at all or several raw
+            # hits existed but none could be examined. Found live 2026-09-10
+            # searching for "Sanderson Park": several raw hits, zero isolated,
+            # and the "every raw hit failed isolation" dump below never fired
+            # because `rejected` was empty too -- this counter is what
+            # revealed that gap.
+            unreadable += 1
+            continue
+    return isolated, rejected, unreadable
+
+
 def _find_isolated_occurrences(
     app: "Server16App",
     pattern: bytes,
@@ -277,15 +315,21 @@ def _find_isolated_occurrences(
     around the known cluster first (milliseconds, not the ~0.5-1s+ a full
     scan costs) makes finding it nearly instant instead of a race against a
     limited per-match time budget. If nothing is found there, falls back to
-    the ordinary unrestricted scan exactly as before -- this never narrows
-    what gets found, only tries a fast, likely spot first.
+    the ordinary unrestricted scan -- this never narrows what gets found,
+    only tries a fast, likely spot first. "Nothing found" means no ISOLATED
+    hit: until 2026-10-26 any raw hit in the window skipped the full scan,
+    and on a FIP 9.2 install the window held only the loaded DB record
+    "_Waldstadion (Fussballstadion)" (always rejected) while the real name
+    table sat ~16MB lower -- 20 attempts, full scan never run, name never
+    found (bugs-scoreboardstdname.md Part 26).
 
     ``priority_only`` (added 2026-09-21) never falls back to the full scan:
-    with no hits in ``priority_ranges`` it just returns ``[]``. ``quiet`` and
-    ``max_scan`` bound the cost/noise of each probe. All three exist for
-    StadiumDbNamePatchCoordinator's fast watch, which polls the narrow window
-    every ~150ms while waiting for FIFA to allocate the name buffer -- a
-    full-process fallback (or a log line per poll) would defeat the point.
+    with no isolated hit in ``priority_ranges`` it just returns ``[]``.
+    ``quiet`` and ``max_scan`` bound the cost/noise of each probe. All three
+    exist for StadiumDbNamePatchCoordinator's fast watch, which polls the
+    narrow window every ~150ms while waiting for FIFA to allocate the name
+    buffer -- a full-process fallback (or a log line per poll) would defeat
+    the point.
     """
     addresses: list[int] = []
     scan_kwargs: dict = {}
@@ -293,49 +337,35 @@ def _find_isolated_occurrences(
         scan_kwargs["quiet"] = True
     if max_scan is not None:
         scan_kwargs["max_scan"] = max_scan
+    isolated: list[int] = []
+    rejected: list[int] = []
+    unreadable = 0
     if priority_ranges:
         for start, end in priority_ranges:
             addresses.extend(_scan_memory(app, pattern, start_addr=start, end_addr=end, **scan_kwargs))
         addresses = list(dict.fromkeys(addresses))
+        isolated, rejected, unreadable = _check_isolation(app, addresses, pattern, term_width)
         if addresses and not quiet:
-            app.log(
-                f"Stadium DB name patcher: found {len(addresses)} raw hit(s) in the "
-                f"priority address range(s), skipping the full scan"
-            )
-    if not addresses:
+            if isolated:
+                app.log(
+                    f"Stadium DB name patcher: found {len(addresses)} raw hit(s) in the "
+                    f"priority address range(s), skipping the full scan"
+                )
+            elif not priority_only:
+                app.log(
+                    f"Stadium DB name patcher: found {len(addresses)} raw hit(s) in the "
+                    f"priority address range(s) but none is an isolated string -- "
+                    f"falling back to the full scan"
+                )
+    if not isolated:
         if priority_only:
             return []
-        addresses = _scan_memory(app, pattern)
-    isolated: list[int] = []
-    rejected: list[int] = []
-    unreadable = 0
-    zero = b"\x00" * term_width
-    for addr in addresses:
-        try:
-            after = app.memory.read_process_memory(addr + len(pattern), term_width)
-            if after != zero:
-                rejected.append(addr)
-                continue
-            if addr >= term_width:
-                before = app.memory.read_process_memory(addr - term_width, term_width)
-                if before != zero and (term_width != 1 or _looks_like_text_byte(before[0])):
-                    rejected.append(addr)
-                    continue
-            isolated.append(addr)
-        except Exception:
-            # A raw hit whose surrounding bytes can't even be read (most
-            # likely sitting right at the edge of its memory region, so the
-            # read for the byte(s) just past it crosses into unmapped
-            # memory) used to vanish with zero trace: not isolated, not
-            # rejected, no diagnostic dump -- "0 isolated occurrence(s)"
-            # looked identical whether nothing matched at all or several raw
-            # hits existed but none could be examined. Found live 2026-09-10
-            # searching for "Sanderson Park": several raw hits, zero isolated,
-            # and the "every raw hit failed isolation" dump below never fired
-            # because `rejected` was empty too -- this counter is what
-            # revealed that gap.
-            unreadable += 1
-            continue
+        already_checked = set(addresses)
+        full = [addr for addr in _scan_memory(app, pattern) if addr not in already_checked]
+        more_isolated, more_rejected, more_unreadable = _check_isolation(app, full, pattern, term_width)
+        isolated.extend(more_isolated)
+        rejected.extend(more_rejected)
+        unreadable += more_unreadable
 
     if unreadable and not quiet:
         app.log(
@@ -645,6 +675,14 @@ class StadiumDbNamePatchCoordinator:
     FAST_WATCH_MAX_SCAN_BYTES = 96 * 1024 * 1024
     # Half-width of the window learned around each successful patch.
     LEARNED_RANGE_MARGIN = 8 * 1024 * 1024
+    # Half-width of the window searched around each address the STDNAMEBASE
+    # pointer chains resolve to (see _refresh_anchor_ranges).
+    ANCHOR_RANGE_MARGIN = 1 * 1024 * 1024
+    # Chain slots whose resolved address anchors that window (offsets.py names).
+    ANCHOR_CHAIN_OFFSETS = (
+        "STDNAMEOFFSET176", "STDNAMEOFFSET176B", "STDNAMEOFFSET176C",
+        "STDNAMEOFFSET261", "STDNAMEOFFSET261B", "STDNAMEOFFSET261C",
+    )
 
     def __init__(self, app: "Server16App") -> None:
         self.app = app
@@ -694,6 +732,9 @@ class StadiumDbNamePatchCoordinator:
         # captured session, ~9KB apart), so slot B's first-ever discovery in
         # the session no longer has to depend on a multi-second full scan.
         self._learned_ranges: dict[int, list[tuple[int, int]]] = {}
+        # Windows around the STDNAMEBASE chain addresses, per FIFA pid (see
+        # _refresh_anchor_ranges).
+        self._anchor_ranges: dict[int, list[tuple[int, int]]] = {}
         # Fast watch (see fast_watch): keys currently being polled, their
         # latest (old_name, new_name) target, and each watch's own deadline.
         self._fast_watching: set[tuple[int, str]] = set()
@@ -709,6 +750,7 @@ class StadiumDbNamePatchCoordinator:
             self._current_name.clear()
             self._request_seq.clear()
             self._learned_ranges.clear()
+            self._anchor_ranges.clear()
             self._fast_targets.clear()
             self._fast_deadline.clear()
 
@@ -938,11 +980,73 @@ class StadiumDbNamePatchCoordinator:
                 self.request(key[1], pending[0], pending[1], allow_scan=False)
 
     def _priority_ranges(self, pid: int) -> list[tuple[int, int]]:
-        """Configured priority windows plus any learned in this process."""
+        """Configured priority windows plus the chain-anchored and learned ones
+        for this process."""
         configured = getattr(getattr(self.app, "offsets", None), "STDNAME_SAFE_EXTEND_PRIORITY_RANGES", None) or []
         with self._state_lock:
+            anchored = list(self._anchor_ranges.get(pid, []))
             learned = list(self._learned_ranges.get(pid, []))
-        return list(configured) + learned
+        return list(configured) + anchored + learned
+
+    def _refresh_anchor_ranges(self, pid: int) -> None:
+        """Search first around wherever the STDNAMEBASE pointer chains land.
+
+        Found 2026-10-26 (bugs-scoreboardstdname.md Part 26) by comparing two
+        FIP installs: the chains land inside FIFA's packed table of stadium
+        display names ('Villa Park', 'Stadion Olympik', ... -- other entries
+        than the slot's, which is why StadiumRuntime.write_active_stad_name
+        rejects them), and the isolated "Waldstadion" that the patch needs sits
+        in that same table (0x9421F7D9 chain -> 0x9422077D name, 4KB apart). On
+        the maintainer's install the table is inside the configured
+        STDNAME_SAFE_EXTEND_PRIORITY_RANGES window; on the reporter's it was at
+        0x9317xxxx, ~16MB lower (same 0x2418 spacing between the 176 and 176B
+        chains), so the configured window never saw it. Resolving the chains
+        follows the table wherever this install's heap put it.
+
+        Read-only: no offset is changed and nothing is written here. It only
+        changes WHERE scans look first; every hit still goes through the same
+        isolation and capacity checks. Windows already inside a configured
+        range are dropped (no point scanning them twice).
+        """
+        app = self.app
+        offsets = getattr(app, "offsets", None)
+        resolve = getattr(app.memory, "resolve_pointer", None)
+        base = getattr(offsets, "STDNAMEBASE", None)
+        if offsets is None or resolve is None or not base:
+            return
+        configured = getattr(offsets, "STDNAME_SAFE_EXTEND_PRIORITY_RANGES", None) or []
+        margin = self.ANCHOR_RANGE_MARGIN
+        windows: list[tuple[int, int]] = []
+        for name in self.ANCHOR_CHAIN_OFFSETS:
+            chain = getattr(offsets, name, None)
+            if not chain:
+                continue
+            try:
+                address = int(resolve(base, chain))
+            except Exception:
+                continue
+            if address < 0x10000:
+                continue
+            window = (max(0, address - margin), address + margin)
+            if any(start <= window[0] and window[1] <= end for start, end in configured):
+                continue
+            windows.append(window)
+        merged: list[tuple[int, int]] = []
+        for start, end in sorted(windows):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        if not merged:
+            # Nothing resolved this time (a chain can be null mid-load): keep
+            # whatever an earlier call found.
+            return
+        with self._state_lock:
+            changed = self._anchor_ranges.get(pid) != merged
+            self._anchor_ranges[pid] = merged
+        if changed:
+            listed = ", ".join(f"0x{start:X}-0x{end:X}" for start, end in merged)
+            app.log(f"Stadium DB name patcher: searching first around the name-table chains: {listed}")
 
     def _learn_range(self, pid: int, address: int) -> None:
         """Remember a window around a successfully patched address, unless an
@@ -1004,6 +1108,7 @@ class StadiumDbNamePatchCoordinator:
         key = self._key(injid)
         if key is None:
             return False
+        self._refresh_anchor_ranges(key[0])
         if not self._priority_ranges(key[0]):
             return False
         deadline = time.monotonic() + (max_seconds if max_seconds is not None else self.FAST_WATCH_MAX_SECONDS)
@@ -1216,6 +1321,7 @@ class StadiumDbNamePatchCoordinator:
         """
         app = self.app
         app.log(f"Stadium DB name patcher: background scan for '{old_name}' (slot {key[1]})")
+        self._refresh_anchor_ranges(key[0])
         found: list[tuple[int, int, str]] = []
         # UTF-16LE scanning was dropped 2026-09-10: across this entire
         # investigation (dozens of live scan attempts, multiple sessions,
