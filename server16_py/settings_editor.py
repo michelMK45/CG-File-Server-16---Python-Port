@@ -17,6 +17,7 @@ from .asset_grid_items import (
     goalpost_texture_items,
     make_picker_button,
     match_asset_items,
+    net_mesh_items,
     png_items,
 )
 from .asset_grid_picker_dialog import AssetGridPickerDialog
@@ -29,6 +30,7 @@ from .file_tools import (
     resolve_stadium_preview_path,
     stadium_preview_fallback_path,
 )
+from .net_mesh import resolve_net_mesh_preview_path
 from .rx3_texture_preview import Rx3TexturePreview
 from .stadium_picker_dialog import StadiumPickerDialog
 from .stadium_runtime import StadiumRuntime
@@ -534,6 +536,9 @@ class SettingsSectionFrame(tk.Frame):
         # StadiumRuntime.resolve_entrance_cam_sources) -- same name-keyed,
         # separately-persisted convention as the two goalpost dicts above.
         self._stadium_entrance_cam: dict[str, str] = {}
+        # [stadiumnetmesh] (FSW/NetMesh/<name>/ packs, see net_mesh) -- same
+        # convention again.
+        self._stadium_net_mesh: dict[str, str] = {}
         self._active_stadium_name: str | None = None
         self.body.grid_columnconfigure(0, weight=1)
         self.body.grid_columnconfigure(1, weight=1)
@@ -712,10 +717,13 @@ class SettingsSectionFrame(tk.Frame):
         self.goalpost_texture_var = tk.StringVar(value="None")
         self.goalpost_texture_var.trace_add("write", lambda *_: self._on_stadium_param_changed("goalposttexture"))
         self.goalpost_texture_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.goalpost_texture"), self.goalpost_texture_var, self._available_goalpost_choices("GoalpostColor"), picker=lambda: self._pick_stadium_asset("goalposttexture"))
+        self.net_mesh_var = tk.StringVar(value="None")
+        self.net_mesh_var.trace_add("write", lambda *_: self._on_stadium_param_changed("netmesh"))
+        self.net_mesh_combo = self._add_combo_row(self.body, 7, self.tr("dialog.editor.field.net_mesh"), self.net_mesh_var, self._available_net_mesh_choices(), picker=lambda: self._pick_stadium_asset("netmesh"))
         self.entrance_cam_var = tk.StringVar(value="None")
         self.entrance_cam_var.trace_add("write", lambda *_: self._on_stadium_param_changed("entrancecam"))
-        self.entrance_cam_combo = self._add_combo_row(self.body, 7, self.tr("dialog.editor.field.entrance_cam"), self.entrance_cam_var, self._available_entrance_cam_choices(), picker=lambda: self._pick_stadium_asset("entrancecam"))
-        self._add_entrance_cam_hint(8)
+        self.entrance_cam_combo = self._add_combo_row(self.body, 8, self.tr("dialog.editor.field.entrance_cam"), self.entrance_cam_var, self._available_entrance_cam_choices(), picker=lambda: self._pick_stadium_asset("entrancecam"))
+        self._add_entrance_cam_hint(9)
         self._refresh_stadium_assigned_state()
 
     def _add_entrance_cam_hint(self, row: int) -> None:
@@ -773,8 +781,24 @@ class SettingsSectionFrame(tk.Frame):
             return self.app.settings_ini.read(name, "stadiumentrancecam").strip() or "None"
         return "None"
 
+    def _net_mesh_dir(self) -> Path:
+        return self.app.exedir / "FSW" / "NetMesh"
+
+    def _available_net_mesh_choices(self) -> list[str]:
+        base = self._net_mesh_dir()
+        choices = ["None"]
+        if base.exists():
+            choices.extend(sorted(path.name for path in base.iterdir() if path.is_dir()))
+        return choices
+
+    def _lookup_existing_net_mesh(self, name: str) -> str:
+        """name's CURRENT [stadiumnetmesh] value, same reason as _lookup_existing_entrance_cam."""
+        if self.app.settings_ini.key_exists(name, "stadiumnetmesh"):
+            return self.app.settings_ini.read(name, "stadiumnetmesh").strip() or "None"
+        return "None"
+
     def _set_stadium_param_controls_state(self, state: str) -> None:
-        for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo, self.entrance_cam_combo):
+        for combo in (self.police_combo, self.pitch_combo, self.net_combo, self.goalpost_combo, self.goalpost_texture_combo, self.net_mesh_combo, self.entrance_cam_combo):
             combo.configure(state=state)
             # The picker button (see _add_combo_row) follows its combo: with no
             # single Assigned row selected there's nothing for a pick to write into.
@@ -814,6 +838,9 @@ class SettingsSectionFrame(tk.Frame):
             color_dir = self.app.exedir / "FSW" / "Goalpost" / "GoalpostColor"
             items = goalpost_texture_items(color_dir, self._available_goalpost_choices("GoalpostColor"), self.app.stadium_runtime)
             return self.goalpost_texture_var, "dialog.editor.field.goalpost_texture", items
+        if field == "netmesh":
+            items = net_mesh_items(self._net_mesh_dir(), self._available_net_mesh_choices())
+            return self.net_mesh_var, "dialog.editor.field.net_mesh", items
         if field == "entrancecam":
             # Same preview.<ext>-inside-the-pack convention as GoalpostModel.
             items = goalpost_model_items(self._entrance_cam_dir(), self._available_entrance_cam_choices())
@@ -835,6 +862,7 @@ class SettingsSectionFrame(tk.Frame):
             self.net_var.set(net)
             self.goalpost_var.set(self._stadium_goalpost.get(name, "None"))
             self.goalpost_texture_var.set(self._stadium_goalpost_texture.get(name, "None"))
+            self.net_mesh_var.set(self._stadium_net_mesh.get(name, "None"))
             self.entrance_cam_var.set(self._stadium_entrance_cam.get(name, "None"))
             self._set_stadium_param_controls_state("normal")
             self.stadium_params_label.configure(text=self.tr("dialog.editor.stadium_multi.editing_params", name=name))
@@ -855,6 +883,8 @@ class SettingsSectionFrame(tk.Frame):
             self._update_goalpost_model_preview()
         elif field == "goalposttexture":
             self._update_goalpost_texture_preview()
+        elif field == "netmesh":
+            self._update_net_mesh_preview()
         elif field == "entrancecam":
             self._update_entrance_cam_preview()
         if self._active_stadium_name is None:
@@ -863,6 +893,8 @@ class SettingsSectionFrame(tk.Frame):
             self._stadium_goalpost[self._active_stadium_name] = self.goalpost_var.get().strip() or "None"
         elif field == "goalposttexture":
             self._stadium_goalpost_texture[self._active_stadium_name] = self.goalpost_texture_var.get().strip() or "None"
+        elif field == "netmesh":
+            self._stadium_net_mesh[self._active_stadium_name] = self.net_mesh_var.get().strip() or "None"
         elif field == "entrancecam":
             self._stadium_entrance_cam[self._active_stadium_name] = self.entrance_cam_var.get().strip() or "None"
         else:
@@ -910,6 +942,8 @@ class SettingsSectionFrame(tk.Frame):
                 self._stadium_goalpost_texture[name] = texture
             if name not in self._stadium_entrance_cam:
                 self._stadium_entrance_cam[name] = self._lookup_existing_entrance_cam(name)
+            if name not in self._stadium_net_mesh:
+                self._stadium_net_mesh[name] = self._lookup_existing_net_mesh(name)
             existing.add(name)
             last_added_index = self.assigned_stadium_list.size() - 1
         if last_added_index is not None:
@@ -968,6 +1002,9 @@ class SettingsSectionFrame(tk.Frame):
             if new_name not in self._stadium_entrance_cam:
                 self._stadium_entrance_cam[new_name] = self._lookup_existing_entrance_cam(new_name)
             self._stadium_entrance_cam.pop(current_name, None)
+            if new_name not in self._stadium_net_mesh:
+                self._stadium_net_mesh[new_name] = self._lookup_existing_net_mesh(new_name)
+            self._stadium_net_mesh.pop(current_name, None)
         self.assigned_stadium_list.delete(index)
         self.assigned_stadium_list.insert(index, new_name)
         self.assigned_stadium_list.selection_set(index)
@@ -1007,7 +1044,7 @@ class SettingsSectionFrame(tk.Frame):
         container = tk.Frame(scroll_content, bg=self.app.card)
         container.grid(row=1, column=0, sticky="nsew", padx=12, pady=(0, 8))
         container.grid_columnconfigure(0, weight=1)
-        container.grid_rowconfigure(2, weight=1)
+        container.grid_rowconfigure(3, weight=1)
 
         small_row = tk.Frame(container, bg=self.app.card)
         small_row.grid(row=0, column=0, sticky="nsew", pady=(0, 8))
@@ -1025,10 +1062,17 @@ class SettingsSectionFrame(tk.Frame):
         goalpost_row.grid_columnconfigure(2, weight=1)
         self._build_stadium_preview_box(goalpost_row, 0, self.tr("dialog.stadium.preview.goalpost_model"), "goalpost_model", image_size=(170, 140))
         self._build_stadium_preview_box(goalpost_row, 1, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(170, 140))
-        self._build_stadium_preview_box(goalpost_row, 2, self.tr("dialog.stadium.preview.entrance_cam"), "entrance_cam", image_size=(170, 140))
+        self._build_stadium_preview_box(goalpost_row, 2, self.tr("dialog.stadium.preview.net_mesh"), "net_mesh", image_size=(170, 140))
+
+        entrance_cam_row = tk.Frame(container, bg=self.app.card)
+        entrance_cam_row.grid(row=2, column=0, sticky="nsew", pady=(0, 8))
+        entrance_cam_row.grid_columnconfigure(0, weight=1)
+        entrance_cam_row.grid_columnconfigure(1, weight=1)
+        entrance_cam_row.grid_columnconfigure(2, weight=1)
+        self._build_stadium_preview_box(entrance_cam_row, 0, self.tr("dialog.stadium.preview.entrance_cam"), "entrance_cam", image_size=(170, 140))
 
         stadium_wrap = tk.Frame(container, bg=self.app.card)
-        stadium_wrap.grid(row=2, column=0, sticky="nsew")
+        stadium_wrap.grid(row=3, column=0, sticky="nsew")
         stadium_wrap.grid_columnconfigure(0, weight=1)
         self._build_stadium_preview_box(stadium_wrap, 0, self.tr("dialog.stadium.preview.stadium"), "stadium", image_size=(520, 300))
 
@@ -1038,6 +1082,7 @@ class SettingsSectionFrame(tk.Frame):
         self._update_police_preview()
         self._update_goalpost_model_preview()
         self._update_goalpost_texture_preview()
+        self._update_net_mesh_preview()
         self._update_entrance_cam_preview()
 
     def _build_stadium_preview_box(
@@ -1169,6 +1214,13 @@ class SettingsSectionFrame(tk.Frame):
         if name and name != "None":
             image_path = resolve_goalpost_model_preview_path(self._entrance_cam_dir(), name)
         self._set_preview_image("entrance_cam", image_path, self.tr("placeholder.no_preview"))
+
+    def _update_net_mesh_preview(self) -> None:
+        # The pack's own pattern image (or preview.<ext>), see resolve_net_mesh_preview_path.
+        if "net_mesh" not in self._preview_labels:
+            return
+        image_path = resolve_net_mesh_preview_path(self._net_mesh_dir(), self.net_mesh_var.get().strip())
+        self._set_preview_image("net_mesh", image_path, self.tr("placeholder.no_preview"))
 
     def _update_goalpost_texture_preview(self) -> None:
         # Unlike every other preview in this panel (all plain image files), a
@@ -1621,6 +1673,7 @@ class SettingsSectionFrame(tk.Frame):
         "stadiumgoalpost": ("goalpost_model", "dialog.stadium.preview.goalpost_model"),
         "stadiumgoalposttexture": ("goalpost_texture", "dialog.stadium.preview.goalpost_texture"),
         "stadiumentrancecam": ("entrance_cam", "dialog.stadium.preview.entrance_cam"),
+        "stadiumnetmesh": ("net_mesh", "dialog.stadium.preview.net_mesh"),
     }
 
     def _build_pack_preview_panel(self, scroll_content: tk.Misc) -> None:
@@ -1644,7 +1697,9 @@ class SettingsSectionFrame(tk.Frame):
             self._show_goalpost_texture_preview(name)
             return
         image_path = None
-        if name and name != "None" and self.spec.directory:
+        if key == "net_mesh":
+            image_path = resolve_net_mesh_preview_path(self.app.exedir / self.spec.directory, name)
+        elif name and name != "None" and self.spec.directory:
             image_path = resolve_goalpost_model_preview_path(self.app.exedir / self.spec.directory, name)
         self._set_preview_image(key, image_path, self.tr("placeholder.no_preview"))
 
@@ -1910,6 +1965,7 @@ class SettingsSectionFrame(tk.Frame):
             self._stadium_goalpost = {}
             self._stadium_goalpost_texture = {}
             self._stadium_entrance_cam = {}
+            self._stadium_net_mesh = {}
             self._refresh_stadium_assigned_state()
         elif self.spec.kind == "net":
             self.down_var.set(self.NET_DEFAULTS["down"])
@@ -1969,6 +2025,7 @@ class SettingsSectionFrame(tk.Frame):
         self._stadium_goalpost = {}
         self._stadium_goalpost_texture = {}
         self._stadium_entrance_cam = {}
+        self._stadium_net_mesh = {}
         if value and value != "None":
             entries = StadiumRuntime._parse_stadium_entries(value)
             if not entries:
@@ -1995,6 +2052,7 @@ class SettingsSectionFrame(tk.Frame):
                 self._stadium_goalpost[name] = model
                 self._stadium_goalpost_texture[name] = texture
                 self._stadium_entrance_cam[name] = self._lookup_existing_entrance_cam(name)
+                self._stadium_net_mesh[name] = self._lookup_existing_net_mesh(name)
         if self.assigned_stadium_list.size() > 0:
             self.assigned_stadium_list.selection_set(0)
             self.assigned_stadium_list.activate(0)
@@ -2138,6 +2196,8 @@ class SettingsSectionFrame(tk.Frame):
         original_key = self.selected_key
         if original_key and original_key != key:
             self.app.settings_ini.delete_key(original_key, self.spec.section)
+            # Saved now: the next delete_key() reloads from disk and would undo it.
+            self.app.settings_ini.save()
         # All delete_key() calls for this save cycle MUST run before ANY
         # write() -- IniFile/SessionIniFile.delete_key() unconditionally
         # reloads from disk first (see ini_file.py's own "Force reload from
@@ -2181,15 +2241,18 @@ class SettingsSectionFrame(tk.Frame):
         session (_lookup_existing_goalpost_overrides), so a plain "None"
         reaching this loop for an untouched entry reflects a real absence,
         not a stale default about to clobber someone else's override."""
-        for name, goalpost in self._stadium_goalpost.items():
-            if not goalpost or goalpost == "None":
-                self.app.settings_ini.delete_key(name, "stadiumgoalpost")
-        for name, texture in self._stadium_goalpost_texture.items():
-            if not texture or texture == "None":
-                self.app.settings_ini.delete_key(name, "stadiumgoalposttexture")
-        for name, entrance_cam in self._stadium_entrance_cam.items():
-            if not entrance_cam or entrance_cam == "None":
-                self.app.settings_ini.delete_key(name, "stadiumentrancecam")
+        for picks, section in (
+            (self._stadium_goalpost, "stadiumgoalpost"),
+            (self._stadium_goalpost_texture, "stadiumgoalposttexture"),
+            (self._stadium_entrance_cam, "stadiumentrancecam"),
+            (self._stadium_net_mesh, "stadiumnetmesh"),
+        ):
+            for name, value in picks.items():
+                if (not value or value == "None") and self.app.settings_ini.key_exists(name, section):
+                    # Saved one by one: each delete_key() reloads from disk, so an
+                    # unsaved earlier delete would be undone by the next one.
+                    self.app.settings_ini.delete_key(name, section)
+                    self.app.settings_ini.save()
 
     def _write_stadium_goalpost_overrides(self) -> None:
         """The write() half -- see _clear_stale_stadium_goalpost_overrides,
@@ -2204,6 +2267,9 @@ class SettingsSectionFrame(tk.Frame):
         for name, entrance_cam in self._stadium_entrance_cam.items():
             if entrance_cam and entrance_cam != "None":
                 self.app.settings_ini.write(name, entrance_cam, "stadiumentrancecam")
+        for name, net_mesh in self._stadium_net_mesh.items():
+            if net_mesh and net_mesh != "None":
+                self.app.settings_ini.write(name, net_mesh, "stadiumnetmesh")
 
     def delete_entry(self) -> None:
         key = self.key_var.get().strip() or self.selected_key
@@ -2291,6 +2357,7 @@ def stadium_specs() -> list[SectionSpec]:
         SectionSpec("scoreboardstdname", "dialog.editor.choice.scoreboard_stadium_name", kind="scoreboardstdname", directory="StadiumGBD", key_stadium_picker=True),
         SectionSpec("stadiumgoalpost", "dialog.editor.choice.goalpost_models_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostModel", key_stadium_picker=True),
         SectionSpec("stadiumgoalposttexture", "dialog.editor.choice.goalpost_textures_by_stadium_name", kind="simple", directory="FSW\\Goalpost\\GoalpostColor", key_stadium_picker=True),
+        SectionSpec("stadiumnetmesh", "dialog.editor.choice.net_meshes_by_stadium_name", kind="simple", directory="FSW\\NetMesh", key_stadium_picker=True),
         SectionSpec("stadiumentrancecam", "dialog.editor.choice.entrance_cams_by_stadium_name", kind="simple", directory="FSW\\Camera\\EntranceScene", key_stadium_picker=True),
         SectionSpec("exclude", "dialog.editor.choice.excluded_competitions", kind="exclude", key_is_round_id=True, key_is_tournament_id=True),
     ]
@@ -2338,7 +2405,7 @@ def stadium_tab_groups() -> list[SpecGroup]:
         [
             ("dialog.editor.group.stadiums", ("stadium", "comp")),
             ("dialog.editor.group.nets", ("stadiumnetname", "stadiumnetid")),
-            ("dialog.editor.group.goalposts", ("stadiumgoalpost", "stadiumgoalposttexture")),
+            ("dialog.editor.group.goalposts", ("stadiumgoalpost", "stadiumgoalposttexture", "stadiumnetmesh")),
             ("", ("scoreboardstdname",)),
             ("", ("stadiumentrancecam",)),
             ("", ("exclude",)),

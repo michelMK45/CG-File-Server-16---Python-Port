@@ -648,6 +648,7 @@ def copy_goalpost_sources(
     manifest_path: Path,
     fsw_goalnet_dir: Path | None = None,
     stadium_id: str | None = None,
+    extra_files: Collection[tuple[Path, str]] = (),
 ) -> list[str]:
     """Like copy_goalpost, but merges files from several independent source
     directories (e.g. a GoalpostModel pack and a separate GoalpostColor/
@@ -662,8 +663,13 @@ def copy_goalpost_sources(
     files are installed under their slot-specific name instead (see
     slot_specific_goalpost_name); the manifest lists the names actually written.
     Leave it None for a stadium's own legacy GoalpostGBD, whose filenames are
-    deliberate overrides of the vanilla names and must keep them. Returns the
-    destination names written (relative to dst_dir), in copy order."""
+    deliberate overrides of the vanilla names and must keep them.
+
+    extra_files are (source file, destination name) pairs copied after the
+    source directories under that exact name and tracked in the same manifest --
+    the net mesh's specificgoalnet_0_{slot}.rx3 (see net_mesh), so the same
+    clear_goalpost evicts it. Returns the destination names written (relative
+    to dst_dir), in copy order."""
     clear_goalpost(dst_dir, manifest_path, fsw_goalnet_dir)
     copied: list[str] = []
     for src_dir in src_dirs:
@@ -681,6 +687,12 @@ def copy_goalpost_sources(
             rel_str = str(rel)
             if rel_str not in copied:
                 copied.append(rel_str)
+    for src_file, dest_name in extra_files:
+        if not src_file.is_file():
+            continue
+        _copy_file_if_needed(src_file, dst_dir / dest_name)
+        if dest_name not in copied:
+            copied.append(dest_name)
     if copied:
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         manifest_path.write_text("\n".join(copied), encoding="utf-8")

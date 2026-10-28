@@ -9,8 +9,9 @@ from tkinter import messagebox, ttk
 
 from PIL import Image, ImageTk
 
-from .asset_grid_items import goalpost_model_items, goalpost_texture_items, make_picker_button, png_items
+from .asset_grid_items import goalpost_model_items, goalpost_texture_items, make_picker_button, net_mesh_items, png_items
 from .input_bindings import PAD_ALL_BUTTONS
+from .net_mesh import resolve_net_mesh_preview_path
 from .file_tools import (
     discover_stadium_names,
     resolve_asset_thumbnail_path,
@@ -396,6 +397,8 @@ class StadiumDialog(BaseDialog):
         # [stadiumentrancecam]: a shared FSW/Camera/EntranceScene/<name>/ pack of
         # bcstadiumcams_176/261.dat -- see StadiumRuntime.resolve_entrance_cam_sources.
         self.selectedentrancecam = tk.StringVar(value="None")
+        # [stadiumnetmesh]: a FSW/NetMesh/<name>/ goal net pattern pack -- see net_mesh.
+        self.selectednetmesh = tk.StringVar(value="None")
         self.selectedstadium = tk.StringVar()
         # Which (comp, section) assignment targets this dialog session has
         # already pre-loaded the existing selection for (see
@@ -417,6 +420,7 @@ class StadiumDialog(BaseDialog):
         self.goalpost_model_source = exedir / "FSW" / "Goalpost" / "GoalpostModel"
         self.goalpost_texture_source = exedir / "FSW" / "Goalpost" / "GoalpostColor"
         self.entrance_cam_source = exedir / "FSW" / "Camera" / "EntranceScene"
+        self.net_mesh_source = exedir / "FSW" / "NetMesh"
         self._all_stadiums = ["None"]
         self._country_group_labels = {"All Countries": self.tr("dialog.stadium.all_countries")}
         self._all_stadiums.extend(discover_stadium_names(self.stadium_source))
@@ -619,12 +623,32 @@ class StadiumDialog(BaseDialog):
         )
         self._build_preview(goalpost_texture_wrap, 0, self.tr("dialog.stadium.preview.goalpost_texture"), "goalpost_texture", image_size=(155, 135), row=2)
 
+        # [stadiumnetmesh]: the goal net's hole pattern (see net_mesh), previewed by the
+        # pack's own pattern image. Same two-column grid as goalpost_row.
+        net_mesh_row = tk.Frame(preview_bottom, bg=self.card)
+        net_mesh_row.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        net_mesh_row.grid_columnconfigure(0, weight=1)
+        net_mesh_row.grid_columnconfigure(1, weight=1)
+        net_mesh_wrap = tk.Frame(net_mesh_row, bg=self.card)
+        net_mesh_wrap.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
+        net_mesh_wrap.grid_columnconfigure(0, weight=1)
+        self._combo(
+            net_mesh_wrap,
+            0,
+            self.tr("dialog.stadium.net_mesh"),
+            self._folder_names(self.net_mesh_source),
+            self.selectednetmesh,
+            self._on_net_mesh_changed,
+            picker=lambda: self._pick_asset("netmesh"),
+        )
+        self._build_preview(net_mesh_wrap, 0, self.tr("dialog.stadium.preview.net_mesh"), "net_mesh", image_size=(155, 135), row=2)
+
         # Same two-column grid as goalpost_row so the combo and preview line up with theirs.
         # The preview is the pack's optional static preview.<ext> (same convention as
         # GoalpostModel); the right-hand column holds the priority note (pack vs. the
         # stadium's own camera).
         entrance_cam_row = tk.Frame(preview_bottom, bg=self.card)
-        entrance_cam_row.grid(row=4, column=0, sticky="nsew", pady=(12, 0))
+        entrance_cam_row.grid(row=5, column=0, sticky="nsew", pady=(12, 0))
         entrance_cam_row.grid_columnconfigure(0, weight=1)
         entrance_cam_row.grid_columnconfigure(1, weight=1)
         entrance_cam_wrap = tk.Frame(entrance_cam_row, bg=self.card)
@@ -672,6 +696,7 @@ class StadiumDialog(BaseDialog):
         self._on_police_changed()
         self._on_goalpost_model_changed()
         self._on_goalpost_texture_changed()
+        self._on_net_mesh_changed()
         self._on_entrance_cam_changed()
 
     def _combo(self, parent: tk.Misc, row: int, label: str, values: list[str], variable: tk.StringVar, callback=None, picker=None) -> None:
@@ -724,6 +749,9 @@ class StadiumDialog(BaseDialog):
                 self.goalpost_texture_source, self._folder_names(self.goalpost_texture_source), self.app.stadium_runtime,
             )
             return self.selectedgoalposttexture, "dialog.stadium.goalpost_texture", items, self._on_goalpost_texture_changed
+        if field == "netmesh":
+            items = net_mesh_items(self.net_mesh_source, self._folder_names(self.net_mesh_source))
+            return self.selectednetmesh, "dialog.stadium.net_mesh", items, self._on_net_mesh_changed
         if field == "entrancecam":
             # Same preview.<ext>-inside-the-pack convention as GoalpostModel.
             items = goalpost_model_items(self.entrance_cam_source, self._folder_names(self.entrance_cam_source))
@@ -960,12 +988,16 @@ class StadiumDialog(BaseDialog):
         if self.app.settings_ini.key_exists(stadiums[0], "stadiumentrancecam"):
             existing_entrance_cam = self.app.settings_ini.read(stadiums[0], "stadiumentrancecam").strip()
             self.selectedentrancecam.set(existing_entrance_cam or "None")
+        if self.app.settings_ini.key_exists(stadiums[0], "stadiumnetmesh"):
+            existing_net_mesh = self.app.settings_ini.read(stadiums[0], "stadiumnetmesh").strip()
+            self.selectednetmesh.set(existing_net_mesh or "None")
         # .set() alone doesn't fire <<ComboboxSelected>> -- refresh the
         # override previews explicitly, same as pitch/net/police already
         # need to right after this same preload elsewhere in this class.
         if getattr(self, "_ui_ready", False):
             self._on_goalpost_model_changed()
             self._on_goalpost_texture_changed()
+            self._on_net_mesh_changed()
             self._on_entrance_cam_changed()
         self._update_stadium_preview()
 
@@ -1095,6 +1127,10 @@ class StadiumDialog(BaseDialog):
         image_path = resolve_goalpost_model_preview_path(self.entrance_cam_source, name) if name and name != "None" else None
         self._update_preview("entrance_cam", image_path, self.tr("placeholder.no_preview"))
 
+    def _on_net_mesh_changed(self, _event=None) -> None:
+        image_path = resolve_net_mesh_preview_path(self.net_mesh_source, self.selectednetmesh.get().strip())
+        self._update_preview("net_mesh", image_path, self.tr("placeholder.no_preview"))
+
     def _on_goalpost_texture_changed(self, _event=None) -> None:
         # Unlike every other preview in this dialog (all plain image files),
         # a GoalpostColor pack has no preview image convention -- the
@@ -1146,6 +1182,7 @@ class StadiumDialog(BaseDialog):
             "selectedgoalpost": self.selectedgoalpost.get(),
             "selectedgoalposttexture": self.selectedgoalposttexture.get(),
             "selectedentrancecam": self.selectedentrancecam.get(),
+            "selectednetmesh": self.selectednetmesh.get(),
         }
         self.close_ok(payload)
 

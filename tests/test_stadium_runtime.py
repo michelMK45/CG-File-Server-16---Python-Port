@@ -8,6 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
+from PIL import Image
+
 from server16_py.stadium_runtime import StadiumRuntime, _clean_db_display_name
 
 
@@ -405,6 +407,7 @@ class StadiumCopyJobToastHarness(unittest.TestCase):
         module_on: bool = True,
         extra_ini: dict[str, dict[str, str]] | None = None,
         goalposts_on: bool = False,
+        net_mesh_on: bool = False,
     ) -> list[tuple]:
         ini = {"stadium": {"Team1": "Anfield,4,1,1"}}
         if pack:
@@ -419,7 +422,7 @@ class StadiumCopyJobToastHarness(unittest.TestCase):
             _worker_queue=queue_,
             log=lambda *_a, **_k: None,
             tr=lambda key, **_kw: key,
-            module_enabled=lambda name: {"EntranceCam": module_on, "Goalposts": goalposts_on}.get(name, False),
+            module_enabled=lambda name: {"EntranceCam": module_on, "Goalposts": goalposts_on, "NetMesh": net_mesh_on}.get(name, False),
             Stadiumtype="",
             PoliceNum="0",
             Nsource=self.exedir / "FSW" / "Net", Ndest=self.exedir / "data" / "net",
@@ -519,6 +522,76 @@ class GoalpostToastTests(StadiumCopyJobToastHarness):
         toasts = self.run_job(None, extra_ini={"stadiumgoalpost": {"Anfield": "Round"}}, goalposts_on=True)
         self.assertNotIn(self.WARNING, toasts)
         self.assertEqual([t[1] for t in toasts], ["notify.goalpost_model_loaded"])
+
+
+class NetMeshCopyJobTests(StadiumCopyJobToastHarness):
+    """[stadiumnetmesh] installs the pack's goalnet .rx3 as specificgoalnet_0_{injid}.rx3
+    (the first path goalnet.lua's GetRMNetShape checks), tracked in the goalpost manifest,
+    gated by its own NetMesh module, independent of Goalposts."""
+
+    WARNING = ("toast", "notify.warn.net_mesh_off", "notify.warn.assets_skipped", 5000, "goalpost", 1)
+    LOADED = ("toast", "notify.net_mesh_loaded", "Hex", 3500, "goalpost")
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pack = self.exedir / "FSW" / "NetMesh" / "Hex"
+        self.pack.mkdir(parents=True)
+        self.installed = self.exedir / "data" / "sceneassets" / "goalnet" / "specificgoalnet_0_176.rx3"
+        self.manifest = self.exedir / "FSW" / ".goalpost_manifest"
+
+    def run_net_mesh_job(self, net_mesh_on: bool = True, goalposts_on: bool = False) -> list[tuple]:
+        # Goalposts off by default: the net mesh must not depend on it.
+        return self.run_job(
+            None, extra_ini={"stadiumnetmesh": {"Anfield": "Hex"}}, goalposts_on=goalposts_on, net_mesh_on=net_mesh_on,
+        )
+
+    def test_ready_made_rx3_pack_is_installed_under_the_slot_name(self) -> None:
+        (self.pack / "goalnet_1.rx3").write_bytes(b"hex-net")
+        toasts = self.run_net_mesh_job()
+        self.assertEqual(toasts, [self.LOADED])
+        self.assertEqual(self.installed.read_bytes(), b"hex-net")
+        self.assertIn("specificgoalnet_0_176.rx3", self.manifest.read_text(encoding="utf-8").splitlines())
+
+    def test_pattern_pack_is_built_by_the_worker_then_installed(self) -> None:
+        Image.new("RGBA", (8, 8), (255, 255, 255, 255)).save(self.pack / "net.png")
+        template = self.exedir / "FSW" / "GoalNet" / "goalnet_0.rx3"
+        template.parent.mkdir(parents=True)
+        template.write_bytes(b"RX3l-template")
+
+        def fake_worker(config: dict, worker_name: str = "") -> dict:
+            Path(config["output"]).write_bytes(b"built-net")
+            return {"ok": True, "output": config["output"]}
+
+        with mock.patch("server16_py.stadium_runtime.run_fifalibrary_worker", side_effect=fake_worker) as worker:
+            toasts = self.run_net_mesh_job()
+        self.assertEqual(worker.call_count, 1)
+        self.assertEqual(toasts, [self.LOADED])
+        self.assertEqual(self.installed.read_bytes(), b"built-net")
+
+    def test_failed_build_installs_nothing_and_shows_no_toast(self) -> None:
+        Image.new("RGBA", (8, 8)).save(self.pack / "net.png")  # no FSW/GoalNet template
+        self.assertEqual(self.run_net_mesh_job(), [])
+        self.assertFalse(self.installed.exists())
+
+    def test_module_off_warns_and_installs_nothing(self) -> None:
+        (self.pack / "goalnet_1.rx3").write_bytes(b"hex-net")
+        self.assertEqual(self.run_net_mesh_job(net_mesh_on=False, goalposts_on=True), [self.WARNING])
+        self.assertFalse(self.installed.exists())
+
+    def test_module_off_warns_nothing_without_an_installable_pack(self) -> None:
+        self.assertEqual(self.run_net_mesh_job(net_mesh_on=False), [])
+
+    def test_goalposts_off_does_not_warn_about_the_net_mesh(self) -> None:
+        (self.pack / "goalnet_1.rx3").write_bytes(b"hex-net")
+        toasts = self.run_net_mesh_job(net_mesh_on=True, goalposts_on=False)
+        self.assertEqual(toasts, [self.LOADED])
+
+    def test_previous_stadium_s_net_mesh_is_evicted_when_the_next_has_none(self) -> None:
+        (self.pack / "goalnet_1.rx3").write_bytes(b"hex-net")
+        self.run_net_mesh_job()
+        self.assertTrue(self.installed.exists())
+        self.run_job(None, net_mesh_on=True)
+        self.assertFalse(self.installed.exists())
 
 
 class StadiumNameOffToastTests(unittest.TestCase):

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from . import file_tools as _ft_mod
 from .file_tools import apply_specific_net_color, clear_bcgameplay, clear_entrance_cams, clear_goalpost, copy, copy_bcgameplay, copy_first_or_clear, copy_glares, copy_goalpost_sources, copy_if_exists, extra_setup, inc_count, restore_stadium_inj_files, set_inj_id, is_archive, extract_archive
 from .kit_mixer import run_fifalibrary_worker
+from .net_mesh import NET_MESH_TEMPLATE_NAME, build_net_mesh_rx3, pack_has_net_mesh, slot_net_mesh_name
 
 if TYPE_CHECKING:
     from .app import Server16App
@@ -297,6 +298,47 @@ class StadiumRuntime:
         if not app.module_enabled("Goalposts"):
             return "", ""
         return StadiumRuntime._read_goalpost_override_names(app, stad_name)
+
+    @staticmethod
+    def _read_net_mesh_override_name(app, stad_name: str) -> str:
+        """The raw [stadiumnetmesh] pack name for stad_name, empty when unset, regardless of
+        whether the NetMesh module is on (same split as _read_goalpost_override_names)."""
+        if app.settings_ini.key_exists(stad_name, "stadiumnetmesh"):
+            return app.settings_ini.read(stad_name, "stadiumnetmesh").strip()
+        return ""
+
+    @staticmethod
+    def _read_active_net_mesh_override_name(app, stad_name: str) -> str:
+        """_read_net_mesh_override_name, but empty when the NetMesh module is off. Its own
+        switch, independent of Goalposts: either can be used without the other."""
+        if not app.module_enabled("NetMesh"):
+            return ""
+        return StadiumRuntime._read_net_mesh_override_name(app, stad_name)
+
+    @staticmethod
+    def net_mesh_pack_skipped(app, stad_name: str) -> bool:
+        """True when the NetMesh module is off but this stadium has an installable net mesh
+        pack assigned -- the "(OFF)" warning toast's condition."""
+        if app.module_enabled("NetMesh"):
+            return False
+        net_mesh = StadiumRuntime._read_net_mesh_override_name(app, stad_name)
+        return bool(net_mesh) and pack_has_net_mesh(StadiumRuntime.net_mesh_pack_dir(app, net_mesh))
+
+    @staticmethod
+    def net_mesh_pack_dir(app, name: str) -> Path:
+        return app.exedir / "FSW" / "NetMesh" / name
+
+    def build_net_mesh(self, name: str) -> Path:
+        """The goalnet .rx3 for net mesh pack `name` (see net_mesh.build_net_mesh_rx3),
+        built from FSW/GoalNet's vanilla goalnet_0.rx3 when the pack is a loose image and
+        cached under runtime/net_mesh_cache/. Blocking; raises on failure."""
+        app = self.app
+        return build_net_mesh_rx3(
+            self.net_mesh_pack_dir(app, name),
+            app.exedir / "FSW" / "GoalNet" / NET_MESH_TEMPLATE_NAME,
+            app.base_dir / "runtime" / "net_mesh_cache",
+            run_fifalibrary_worker,
+        )
 
     @staticmethod
     def resolve_goalpost_sources(app, stad: Path, stad_name: str) -> list[Path]:
@@ -926,20 +968,34 @@ class StadiumRuntime:
                 app.log(f"Goalpost pack not found for {stad_name}: {_gp_src}")
         _goalpost_manifest = app.exedir / "FSW" / ".goalpost_manifest"
         _fsw_goalnet_dir = app.exedir / "FSW" / "GoalNet"
+        net_mesh = self._read_active_net_mesh_override_name(app, stad_name)
+        net_mesh_installed = False
         def _apply_goalposts() -> None:
+            nonlocal net_mesh_installed
             # An explicit [stadiumgoalpost]/[stadiumgoalposttexture] pick is installed under
             # the per-slot names goalnet.lua checks first (see slot_specific_goalpost_name):
             # the packs' own fixed filenames are shared by every stadium, and the engine
             # only ever loads a given path once per session, same as the net color case
             # above. A stadium's own legacy GoalpostGBD keeps its filenames as-is.
+            # The [stadiumnetmesh] pick always goes to specificgoalnet_0_{injid}.rx3 (see
+            # net_mesh), in the same manifest so the next clear evicts it too.
+            extra_files: list[tuple[Path, str]] = []
+            if net_mesh:
+                try:
+                    extra_files.append((self.build_net_mesh(net_mesh), slot_net_mesh_name(injid)))
+                except Exception as exc:
+                    app.log(f"Net mesh NOT applied for {stad_name}: pack [{net_mesh}]: {exc}")
             slot_id = injid if (goalpost_model or goalpost_texture) else None
-            copied = copy_goalpost_sources(goalpost_sources, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir, stadium_id=slot_id)
+            copied = copy_goalpost_sources(goalpost_sources, dest / "goalnet", _goalpost_manifest, _fsw_goalnet_dir, stadium_id=slot_id, extra_files=extra_files)
             if slot_id is not None:
                 picks = f"model [{goalpost_model or '-'}] texture [{goalpost_texture or '-'}]"
                 if copied:
                     app.log(f"Goalposts applied for {stad_name}: {picks} -> {copied}")
                 else:
                     app.log(f"Goalposts NOT applied for {stad_name}: {picks}, no installable files found in the selected pack(s)")
+            if extra_files:
+                net_mesh_installed = slot_net_mesh_name(injid) in copied
+                app.log(f"Net mesh applied for {stad_name}: pack [{net_mesh}] -> {slot_net_mesh_name(injid)}")
 
         steps.append(("Applying goalpost models", _apply_goalposts))
         if no_seats.exists():
@@ -990,6 +1046,10 @@ class StadiumRuntime:
             # Legacy: goalpost assets bundled with the stadium pack's own GoalpostGBD folder --
             # keep the original single notification naming the stadium.
             app._worker_queue.put(("toast", app.tr("notify.goalpost_loaded"), stad_name, 3500, "goalpost"))
+        if net_mesh_installed:
+            app._worker_queue.put(("toast", app.tr("notify.net_mesh_loaded"), net_mesh, 3500, "goalpost"))
+        elif self.net_mesh_pack_skipped(app, stad_name):
+            app._worker_queue.put(("toast", app.tr("notify.warn.net_mesh_off"), app.tr("notify.warn.assets_skipped"), 5000, "goalpost", 1))
 
         stadmovie = (stad / "StadiumMovie.vp8").exists() and (stad / "StadiumBumper.big").exists()
         if stadmovie:

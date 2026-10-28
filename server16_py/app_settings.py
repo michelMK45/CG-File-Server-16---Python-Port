@@ -167,7 +167,7 @@ class SettingsMixin:
         return False
 
     def _load_module_states(self) -> None:
-        for late_module in ("TeamEntrance", "TournamentEntrance", "EntranceCam", "Goalposts", "StadiumName"):
+        for late_module in ("TeamEntrance", "TournamentEntrance", "EntranceCam", "Goalposts", "NetMesh", "StadiumName"):
             if self.settings_ini.read(late_module, "Modules") not in {"0", "1"}:
                 # Existing installations predate these modules (StadiumName: the switch only
                 # started controlling anything after the stadium-name patch was built, so an
@@ -452,7 +452,10 @@ class SettingsMixin:
                 team_count = db.load_all_teams()
                 self.after(0, lambda: _apply_success(db, team_count))
             except Exception as exc:
-                self.after(0, lambda: _apply_error(str(exc)))
+                # `exc` is unbound when the except block ends, so bind the message now: a lambda
+                # reading `exc` later (on the Tk thread) raised NameError and hid the real error.
+                message = str(exc)
+                self.after(0, lambda: _apply_error(message))
 
         threading.Thread(target=_worker, daemon=True).start()
 

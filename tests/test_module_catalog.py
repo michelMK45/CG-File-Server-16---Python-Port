@@ -41,7 +41,7 @@ class ModuleCatalogTests(unittest.TestCase):
         self.assertEqual(
             [(category, list(names)) for category, names in MODULE_CATEGORIES],
             [
-                ("stadium", ["Stadium", "EntranceCam", "Goalposts", "StadiumNet"]),
+                ("stadium", ["Stadium", "EntranceCam", "Goalposts", "NetMesh", "StadiumNet"]),
                 ("ui", ["TvLogo", "ScoreBoard", "StadiumName", "Movies"]),
                 ("sound", ["Chants", "AwayChants", "AwayClubSong", "TeamEntrance", "TournamentEntrance"]),
                 ("game", ["Ball", "Adboard", "Referee", "Wipe"]),
@@ -91,6 +91,12 @@ class LoadModuleStatesTests(unittest.TestCase):
             SettingsMixin._load_module_states(app)
             self.assertTrue(app.module_states["Goalposts"])
             self.assertEqual(app.settings_ini.read("Goalposts", "Modules"), "1")
+
+    def test_net_mesh_defaults_to_on_when_the_ini_has_no_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(Path(tmp) / "settings.ini")
+            SettingsMixin._load_module_states(app)
+            self.assertTrue(app.module_states["NetMesh"])
 
     def test_an_explicit_off_is_kept(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

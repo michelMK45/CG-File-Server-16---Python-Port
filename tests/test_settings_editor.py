@@ -198,6 +198,67 @@ class StadiumEditorSaveGoalpostOverridesTests(unittest.TestCase):
         self.assertEqual(frame._stadium_entrance_cam, {"Anfield": "Aerial"})
         self.assertEqual(frame.entrance_cam_var.get(), "Aerial")
 
+    def test_net_mesh_override_persists_and_none_deletes_it(self) -> None:
+        frame = self.make_stadium_frame()
+        frame.key_var.set("176")
+        frame.assigned_stadium_list.insert("end", "Anfield")
+        frame._stadium_params["Anfield"] = ("4", "0", "0")
+        frame._stadium_goalpost["Anfield"] = "None"
+        frame._stadium_goalpost_texture["Anfield"] = "None"
+        frame._stadium_net_mesh["Anfield"] = "Hex 1"
+        frame.save_entry()
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
+        self.assertEqual(reloaded.read("Anfield", "stadiumnetmesh"), "Hex 1")
+
+        frame._stadium_net_mesh["Anfield"] = "None"
+        frame.save_entry()
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumnetmesh"))
+
+    def test_clearing_several_overrides_at_once_deletes_every_one(self) -> None:
+        # Each delete_key() reloads from disk: unsaved, an earlier delete was
+        # undone by the next one and only the last "None" ever took effect.
+        for value, section in (("1", "stadiumgoalpost"), ("Azul", "stadiumgoalposttexture"),
+                               ("Aerial", "stadiumentrancecam"), ("Hex", "stadiumnetmesh")):
+            self.ini.write("Anfield", value, section)
+        self.ini.save()
+        frame = self.make_stadium_frame()
+        frame.key_var.set("176")
+        frame.assigned_stadium_list.insert("end", "Anfield")
+        frame._stadium_params["Anfield"] = ("4", "0", "0")
+        for picks in (frame._stadium_goalpost, frame._stadium_goalpost_texture, frame._stadium_entrance_cam, frame._stadium_net_mesh):
+            picks["Anfield"] = "None"
+        frame.save_entry()
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertEqual(reloaded.read("176", "stadium"), "Anfield,4,0,0")
+        for section in ("stadiumgoalpost", "stadiumgoalposttexture", "stadiumentrancecam", "stadiumnetmesh"):
+            self.assertFalse(reloaded.key_exists("Anfield", section), section)
+
+    def test_renaming_the_key_removes_the_old_one_even_when_overrides_are_cleared(self) -> None:
+        self.ini.write("176", "Anfield,4,0,0", "stadium")
+        self.ini.write("Anfield", "1", "stadiumgoalpost")
+        self.ini.save()
+        frame = self.make_stadium_frame()
+        frame.load_entry("176")
+        frame.key_var.set("261")
+        frame._stadium_goalpost["Anfield"] = "None"
+        frame.save_entry()
+        reloaded = SessionIniFile(self.ini.path)
+        self.assertFalse(reloaded.key_exists("176", "stadium"))
+        self.assertEqual(reloaded.read("261", "stadium"), "Anfield,4,0,0")
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumgoalpost"))
+
+    def test_loading_an_entry_reads_the_existing_net_mesh(self) -> None:
+        self.ini.write("176", "Anfield,4,0,0", "stadium")
+        self.ini.write("Anfield", "Hex 1", "stadiumnetmesh")
+        self.ini.save()
+        frame = self.make_stadium_frame()
+        frame.load_entry("176")
+        self.assertEqual(frame._stadium_net_mesh, {"Anfield": "Hex 1"})
+        self.assertEqual(frame.net_mesh_var.get(), "Hex 1")
+
 
 @unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
 class CurrentRoundIdKeyButtonTests(unittest.TestCase):
@@ -489,6 +550,8 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
             "Goalpost/GoalpostColor/Azul/specificnetsupportpost_0_0_textures.rx3",
             "Camera/EntranceScene/Aerial/preview.png",
             "Camera/EntranceScene/Plain/bcstadiumcams_176.dat",
+            "NetMesh/Hex/net.png",
+            "NetMesh/Ready/goalnet_1.rx3",
         ):
             path = fsw / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -565,6 +628,16 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
         self.assertEqual(by_value["Aerial"].image_path, self.exedir / "FSW" / "Camera" / "EntranceScene" / "Aerial" / "preview.png")
         self.assertIsNone(by_value["Plain"].image_path)
 
+    def test_net_mesh_offers_none_first_and_the_pattern_image(self) -> None:
+        frame = self.make_frame()
+        variable, label_key, items = frame._stadium_picker_setup("netmesh")
+        self.assertIs(variable, frame.net_mesh_var)
+        self.assertEqual(label_key, "dialog.editor.field.net_mesh")
+        self.assertEqual([item.value for item in items], ["None", "Hex", "Ready"])
+        by_value = {item.value: item for item in items}
+        self.assertEqual(by_value["Hex"].image_path, self.exedir / "FSW" / "NetMesh" / "Hex" / "net.png")
+        self.assertIsNone(by_value["Ready"].image_path)  # .rx3-only pack
+
     def test_goalpost_texture_previews_are_rendered_from_the_rx3_reusing_the_cache(self) -> None:
         rendered = self.exedir / "azul.png"
         calls = []
@@ -631,7 +704,7 @@ class StadiumEditorAssetPickerTests(unittest.TestCase):
 
     def test_every_preview_combo_has_a_picker_button_that_follows_the_combo_state(self) -> None:
         frame = self.make_frame()
-        combos = (frame.police_combo, frame.pitch_combo, frame.net_combo, frame.goalpost_combo, frame.goalpost_texture_combo, frame.entrance_cam_combo)
+        combos = (frame.police_combo, frame.pitch_combo, frame.net_combo, frame.goalpost_combo, frame.goalpost_texture_combo, frame.net_mesh_combo, frame.entrance_cam_combo)
         for combo in combos:
             self.assertTrue(combo.picker_button.instate(["disabled"]), "no stadium row selected yet")
         self.select_stadium(frame)
@@ -693,7 +766,7 @@ class PackByStadiumNamePreviewTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         exedir = Path(self._tmp.name)
-        for rel in ("FSW/Camera/EntranceScene/Aerial/preview.png", "FSW/Goalpost/GoalpostModel/1/preview.png"):
+        for rel in ("FSW/Camera/EntranceScene/Aerial/preview.png", "FSW/Goalpost/GoalpostModel/1/preview.png", "FSW/NetMesh/Hex/net.png"):
             path = exedir / rel
             path.parent.mkdir(parents=True, exist_ok=True)
             Image.new("RGBA", (40, 30), "red").save(path)
@@ -722,6 +795,10 @@ class PackByStadiumNamePreviewTests(unittest.TestCase):
     def test_goalpost_model_tab_shows_the_packs_preview(self) -> None:
         frame = self.make_frame("stadiumgoalpost", "FSW\\Goalpost\\GoalpostModel")
         self.assert_preview_follows_value(frame, "goalpost_model", "1")
+
+    def test_net_mesh_tab_shows_the_pattern_image(self) -> None:
+        frame = self.make_frame("stadiumnetmesh", "FSW\\NetMesh")
+        self.assert_preview_follows_value(frame, "net_mesh", "Hex")
 
     def test_goalpost_texture_tab_renders_through_the_shared_texture_preview(self) -> None:
         frame = self.make_frame("stadiumgoalposttexture", "FSW\\Goalpost\\GoalpostColor")
@@ -967,6 +1044,14 @@ class GroupedSettingsEditorTests(unittest.TestCase):
         self.assertEqual(
             self.tab_texts(self.sub_notebook(editor, 0)),
             ["dialog.editor.choice.team_stadiums", "dialog.editor.choice.competition_stadiums"],
+        )
+        self.assertEqual(
+            self.tab_texts(self.sub_notebook(editor, 2)),
+            [
+                "dialog.editor.choice.goalpost_models_by_stadium_name",
+                "dialog.editor.choice.goalpost_textures_by_stadium_name",
+                "dialog.editor.choice.net_meshes_by_stadium_name",
+            ],
         )
 
     def test_a_lone_spec_is_a_plain_tab_without_a_sub_notebook(self) -> None:

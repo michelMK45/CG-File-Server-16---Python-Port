@@ -153,6 +153,7 @@ class AssignmentRuntime:
         selected_goalpost = dialog.result["selectedgoalpost"]
         selected_goalpost_texture = dialog.result["selectedgoalposttexture"]
         selected_entrance_cam = dialog.result.get("selectedentrancecam", "None")
+        selected_net_mesh = dialog.result.get("selectednetmesh", "None")
         multi = dialog.result["multistadium"]
         if not selected_stadium or selected_stadium == "None":
             payload = "None"
@@ -197,6 +198,7 @@ class AssignmentRuntime:
                     "stadiumgoalpost": selected_goalpost,
                     "stadiumgoalposttexture": selected_goalpost_texture,
                     "stadiumentrancecam": selected_entrance_cam,
+                    "stadiumnetmesh": selected_net_mesh,
                 },
             )
 
@@ -226,7 +228,10 @@ class AssignmentRuntime:
         for name in valid_names:
             for section, value in overrides.items():
                 if not value or value == "None":
+                    # Saved one by one: each delete_key() reloads from disk, so an
+                    # unsaved earlier delete would be undone by the next one.
                     app.settings_ini.delete_key(name, section)
+                    app.settings_ini.save()
         for name in valid_names:
             for section, value in overrides.items():
                 if value and value != "None":

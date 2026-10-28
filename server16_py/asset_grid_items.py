@@ -16,6 +16,7 @@ from typing import Callable, Iterable
 import tkinter as tk
 
 from .file_tools import match_asset_rx3_files, resolve_goalpost_model_preview_path, resolve_goalpost_texture_rx3_path
+from .net_mesh import resolve_net_mesh_preview_path
 
 # Glyph on the small button beside a combo that opens the grid picker.
 PICKER_ICON = "▦"
@@ -55,6 +56,12 @@ def goalpost_model_items(model_dir: Path, names: Iterable[str]) -> list[AssetGri
     (see resolve_goalpost_model_preview_path). "None" and packs without one
     resolve to no image and show the placeholder."""
     return [AssetGridItem(name, name, resolve_goalpost_model_preview_path(model_dir, name)) for name in names]
+
+
+def net_mesh_items(net_mesh_dir: Path, names: Iterable[str]) -> list[AssetGridItem]:
+    """Net mesh packs: preview.<ext> or the pack's own pattern image (see
+    resolve_net_mesh_preview_path). "None" and .rx3-only packs show the placeholder."""
+    return [AssetGridItem(name, name, resolve_net_mesh_preview_path(net_mesh_dir, name)) for name in names]
 
 
 def goalpost_texture_items(color_dir: Path, names: Iterable[str], stadium_runtime) -> list[AssetGridItem]:

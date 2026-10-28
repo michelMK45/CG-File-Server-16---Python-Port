@@ -125,6 +125,8 @@ class FakeOverlayApp(OverlayMixin):
             "stadium": on_disk.read("456", "stadium"),
             "model": on_disk.read("Anfield", "stadiumgoalpost"),
             "texture": on_disk.read("Anfield", "stadiumgoalposttexture"),
+            "netmesh": on_disk.read("Anfield", "stadiumnetmesh"),
+            "entrancecam": on_disk.read("Anfield", "stadiumentrancecam"),
         })
 
     def _render_goalpost_texture_preview(self, source_rx3, cache_key, max_size=220, reuse_cached=False) -> Path:
@@ -161,8 +163,23 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
             folder = fsw / "Goalpost" / "GoalpostColor" / color
             folder.mkdir(parents=True)
             (folder / "specificnetsupportpost_0_0_textures.rx3").write_bytes(b"rx3")
+        for mesh in ("Hex", "Square"):
+            (fsw / "NetMesh" / mesh).mkdir(parents=True)
+        (fsw / "NetMesh" / "Hex" / "net.png").write_bytes(b"png")
+        for cam in ("Aerial", "Plain"):
+            (fsw / "Camera" / "EntranceScene" / cam).mkdir(parents=True)
+        (fsw / "Camera" / "EntranceScene" / "Aerial" / "preview.png").write_bytes(b"png")
         self.ini_path = root / "settings.ini"
         self.app = FakeOverlayApp(self.exedir, self.ini_path)
+
+    def finish(self, model: str, texture: str, net_mesh: str = "None", entrance_cam: str = "None") -> None:
+        """From the goalpost model step, pick every remaining step; the last one applies."""
+        self.app.pick(model)
+        self.app.pick(texture)
+        self.assertEqual(self.app._overlay_wizard_phase, "netmesh")
+        self.app.pick(net_mesh)
+        self.assertEqual(self.app._overlay_wizard_phase, "entrancecam")
+        self.app.pick(entrance_cam)
 
     def start_wizard(self) -> None:
         self.app.pick("Anfield")
@@ -204,20 +221,48 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
         self.assertEqual(self.app._overlay_items, ["None"])
 
     # ----------------------------------------------------------- applying
-    def test_finishing_writes_stadium_and_both_goalpost_overrides_before_applying(self) -> None:
+    def test_texture_step_now_leads_to_net_mesh_then_entrance_camera(self) -> None:
         self.run_to_goalpost_model_step()
-        self.app.pick("B")
-        self.app.pick("Rojo")
+        self.app.pick("A")
+        self.app.pick("Azul")
+        self.assertEqual(self.app._overlay_wizard_phase, "netmesh")
+        self.assertEqual(self.app._overlay_items, ["None", "Hex", "Square"])
+        self.assertEqual(self.app.inj.header, "Texture: Azul  ->  Net Mesh")
+        self.assertEqual(self.app.applied, [])
+        self.app.pick("Hex")
+        self.assertEqual(self.app._overlay_wizard_phase, "entrancecam")
+        self.assertEqual(self.app._overlay_items, ["None", "Aerial", "Plain"])
+        self.assertEqual(self.app.inj.header, "Net Mesh: Hex  ->  Entrance Camera")
+        self.assertEqual(self.app.applied, [])
+
+    def test_finishing_writes_stadium_and_every_pack_override_before_applying(self) -> None:
+        self.run_to_goalpost_model_step()
+        self.finish("B", "Rojo", "Hex", "Aerial")
 
         self.assertIsNone(self.app._overlay_wizard_phase)
         self.assertEqual(len(self.app.applied), 1)
-        # The apply is what reads [stadiumgoalpost*] back, so they must already
-        # be on disk at that moment -- and the assignment written before it.
-        self.assertEqual(self.app.applied[0], {"stadium": "Anfield,4,0,1", "model": "B", "texture": "Rojo"})
+        # The apply is what reads the overrides back, so they must already be
+        # on disk at that moment -- and the assignment written before it.
+        self.assertEqual(self.app.applied[0], {
+            "stadium": "Anfield,4,0,1", "model": "B", "texture": "Rojo", "netmesh": "Hex", "entrancecam": "Aerial",
+        })
         reloaded = SessionIniFile(self.ini_path)
         self.assertEqual(reloaded.read("456", "stadium"), "Anfield,4,0,1")
         self.assertEqual(reloaded.read("Anfield", "stadiumgoalpost"), "B")
         self.assertEqual(reloaded.read("Anfield", "stadiumgoalposttexture"), "Rojo")
+        self.assertEqual(reloaded.read("Anfield", "stadiumnetmesh"), "Hex")
+        self.assertEqual(reloaded.read("Anfield", "stadiumentrancecam"), "Aerial")
+
+    def test_picking_none_clears_an_existing_net_mesh_and_entrance_camera(self) -> None:
+        self.app.settings_ini.write("Anfield", "Hex", "stadiumnetmesh")
+        self.app.settings_ini.write("Anfield", "Aerial", "stadiumentrancecam")
+        self.app.settings_ini.save()
+        self.run_to_goalpost_model_step()
+        self.finish("None", "None", "None", "None")
+        reloaded = SessionIniFile(self.ini_path)
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumnetmesh"))
+        self.assertFalse(reloaded.key_exists("Anfield", "stadiumentrancecam"))
+        self.assertEqual(reloaded.read("456", "stadium"), "Anfield,4,0,1")
 
     def test_picking_none_clears_an_existing_override_but_keeps_the_other(self) -> None:
         self.app.settings_ini.write("Anfield", "A", "stadiumgoalpost")
@@ -225,8 +270,7 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
         self.app.settings_ini.save()
 
         self.run_to_goalpost_model_step()
-        self.app.pick("None")   # model: clear
-        self.app.pick("Rojo")   # texture: change
+        self.finish("None", "Rojo")   # model: clear, texture: change
 
         reloaded = SessionIniFile(self.ini_path)
         self.assertFalse(reloaded.key_exists("Anfield", "stadiumgoalpost"))
@@ -239,8 +283,7 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
 
         self.app.assignment_runtime._write_stadium_goalpost_overrides = boom
         self.run_to_goalpost_model_step()
-        self.app.pick("B")
-        self.app.pick("Rojo")
+        self.finish("B", "Rojo")
 
         self.assertEqual(SessionIniFile(self.ini_path).read("456", "stadium"), "Anfield,4,0,1")
         self.assertEqual(len(self.app.applied), 1)
@@ -249,29 +292,35 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
     def test_back_walks_every_step_in_reverse_then_leaves_the_wizard(self) -> None:
         self.run_to_goalpost_model_step()
         self.app.pick("A")
+        self.app.pick("Azul")
+        self.app.pick("Hex")
         seen = [self.app._overlay_wizard_phase]
-        for _ in range(4):
+        for _ in range(6):
             self.app._wizard_back()
             seen.append(self.app._overlay_wizard_phase)
-        self.assertEqual(seen, ["goalposttexture", "goalpost", "net", "pitch", "police"])
+        self.assertEqual(seen, ["entrancecam", "netmesh", "goalposttexture", "goalpost", "net", "pitch", "police"])
         self.app._wizard_back()
         self.assertIsNone(self.app._overlay_wizard_phase)
         self.assertIsNone(self.app._overlay_wizard_stadium)
         self.assertIsNone(self.app._overlay_wizard_net)
         self.assertIsNone(self.app._overlay_wizard_goalpost)
+        self.assertIsNone(self.app._overlay_wizard_goalpost_texture)
+        self.assertIsNone(self.app._overlay_wizard_net_mesh)
 
-    def test_restarting_the_wizard_forgets_the_previous_runs_goalpost_picks(self) -> None:
+    def test_restarting_the_wizard_forgets_the_previous_runs_pack_picks(self) -> None:
         self.run_to_goalpost_model_step()
         self.app.pick("B")
-        self.app._wizard_back()
-        self.app._wizard_back()
-        self.app._wizard_back()
-        self.app._wizard_back()
-        self.app._wizard_back()   # out of the wizard, back on the stadium list
+        self.app.pick("Azul")
+        self.app.pick("Hex")
+        for _ in range(7):
+            self.app._wizard_back()   # the last one leaves the wizard, back on the stadium list
+        self.assertIsNone(self.app._overlay_wizard_phase)
         self.app._overlay_items = ["Anfield"]
         self.start_wizard()
         self.assertIsNone(self.app._overlay_wizard_net)
         self.assertIsNone(self.app._overlay_wizard_goalpost)
+        self.assertIsNone(self.app._overlay_wizard_goalpost_texture)
+        self.assertIsNone(self.app._overlay_wizard_net_mesh)
 
     # ------------------------------------------------------- preselection
     def test_goalpost_steps_start_on_the_stadiums_current_pack(self) -> None:
@@ -283,6 +332,17 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
         self.assertEqual(self.app._overlay_selected_index, self.app._overlay_items.index("B"))
         self.app.pick("B")
         self.assertEqual(self.app._overlay_selected_index, self.app._overlay_items.index("Rojo"))
+
+    def test_net_mesh_and_entrance_camera_steps_start_on_the_stadiums_current_pack(self) -> None:
+        self.app.settings_ini.write("Anfield", "Square", "stadiumnetmesh")
+        self.app.settings_ini.write("Anfield", "Plain", "stadiumentrancecam")
+        self.app.settings_ini.save()
+        self.run_to_goalpost_model_step()
+        self.app.pick("A")
+        self.app.pick("Azul")
+        self.assertEqual(self.app._overlay_selected_index, self.app._overlay_items.index("Square"))
+        self.app.pick("Square")
+        self.assertEqual(self.app._overlay_selected_index, self.app._overlay_items.index("Plain"))
 
     def test_goalpost_steps_start_on_none_when_nothing_is_configured(self) -> None:
         self.run_to_goalpost_model_step()
@@ -302,22 +362,46 @@ class OverlayGoalpostWizardTests(unittest.TestCase):
         lines = self.app.inj.dashboard
         self.assertLessEqual(len(lines), _MAX_DASH_ITEMS)
         self.assertIn("Net:     1", lines)
-        self.assertIn("Goalpost model:   [selecting...]", lines)
-        self.assertIn("Goalpost texture: -", lines)
+        self.assertIn("Goalpost: [selecting...] / -", lines)
 
         self.app.pick("B")
         lines = self.app.inj.dashboard
         self.assertLessEqual(len(lines), _MAX_DASH_ITEMS)
-        self.assertIn("Goalpost model:   B", lines)
-        self.assertIn("Goalpost texture: [selecting...]", lines)
+        self.assertIn("Goalpost: B / [selecting...]", lines)
         self.assertIn(">> Select Goalpost Texture <<", lines)
+
+        self.app.pick("Rojo")
+        self.app.pick("Hex")
+        lines = self.app.inj.dashboard
+        self.assertLessEqual(len(lines), _MAX_DASH_ITEMS)
+        self.assertIn("Goalpost: B / Rojo", lines)
+        self.assertIn("Net mesh: Hex", lines)
+        self.assertIn("Entrance cam: [selecting...]", lines)
+        self.assertIn(">> Select Entrance Camera <<", lines)
 
     def test_dashboard_marks_later_steps_as_not_chosen_yet(self) -> None:
         self.start_wizard()
         lines = self.app.inj.dashboard
         self.assertIn("Police:  [selecting...]", lines)
-        for label in ("Pitch:   -", "Net:     -", "Goalpost model:   -", "Goalpost texture: -"):
+        for label in ("Pitch:   -", "Net:     -", "Goalpost: - / -", "Net mesh: -", "Entrance cam: -"):
             self.assertIn(label, lines)
+
+    def test_net_mesh_and_entrance_camera_previews_are_the_packs_images(self) -> None:
+        self.run_to_goalpost_model_step()
+        self.app.pick("A")
+        self.app.pick("Azul")
+        self.app._overlay_selected_index = self.app._overlay_items.index("Hex")
+        self.app._update_d3d_preview_image()
+        self.assertEqual(self.app.inj.preview_paths[-1], str(self.exedir / "FSW" / "NetMesh" / "Hex" / "net.png"))
+        self.app._overlay_selected_index = self.app._overlay_items.index("Square")   # empty pack
+        self.app._update_d3d_preview_image()
+        self.assertEqual(self.app.inj.preview_paths[-1], "")
+        self.app.pick("Hex")
+        self.app._overlay_selected_index = self.app._overlay_items.index("Aerial")
+        self.app._update_d3d_preview_image()
+        self.assertEqual(
+            self.app.inj.preview_paths[-1], str(self.exedir / "FSW" / "Camera" / "EntranceScene" / "Aerial" / "preview.png"),
+        )
 
     # ------------------------------------------------------------ previews
     def test_goalpost_model_preview_is_the_packs_preview_image(self) -> None:

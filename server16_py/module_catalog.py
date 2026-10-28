@@ -5,7 +5,7 @@ from __future__ import annotations
 # layout (app_ui), the translated labels (app_localization) and the names loaded
 # from settings.ini (app_settings), so a new module only has to be added here.
 MODULE_CATEGORIES: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("stadium", ("Stadium", "EntranceCam", "Goalposts", "StadiumNet")),
+    ("stadium", ("Stadium", "EntranceCam", "Goalposts", "NetMesh", "StadiumNet")),
     ("ui", ("TvLogo", "ScoreBoard", "StadiumName", "Movies")),
     ("sound", ("Chants", "AwayChants", "AwayClubSong", "TeamEntrance", "TournamentEntrance")),
     ("game", ("Ball", "Adboard", "Referee", "Wipe")),
@@ -18,6 +18,7 @@ MODULE_SLUGS: dict[str, str] = {
     "Stadium": "stadium",
     "EntranceCam": "entrance_cam",
     "Goalposts": "goalposts",
+    "NetMesh": "net_mesh",
     "StadiumNet": "stadiumnet",
     "TvLogo": "tvlogo",
     "ScoreBoard": "scoreboard",

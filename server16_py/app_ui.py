@@ -4723,12 +4723,19 @@ class UIMixin:
             status_lbl.pack(side="right", padx=(4, 4))
             self._setup_status_vars[item_key] = (dot, status_lbl)
 
-        # Left column: prerequisites + FSW sources + user folders
+        # Left column: prerequisites + everything with an install checkbox (FSW
+        # sources, the two optional extras). Right column: status-only info (user
+        # folders, destination folders).
         section(left_col, "setup.section.prerequisites")
         status_row(left_col, "setup.item.fifa_exe", "fifa_exe")
 
         section(left_col, "setup.section.fsw_sources")
         source_row(left_col, "setup.item.settings_ini", "settings_ini")
+        # Unchecked unless the file is missing: installing it replaces the user's
+        # assignments with the bundled template. refresh_setup_tab re-derives the
+        # default whenever the file appears/disappears (e.g. FIFA linked later).
+        self._setup_install_vars["settings_ini"].set(False)
+        self._setup_settings_ini_existed: bool | None = None
         source_row(left_col, "setup.item.fsw_police", "fsw_police")
         source_row(left_col, "setup.item.fsw_nets", "fsw_nets")
         source_row(left_col, "setup.item.fsw_pitch", "fsw_pitch")
@@ -4738,13 +4745,12 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
         source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
 
-        section(left_col, "setup.section.user_folders")
-        status_row(left_col, "setup.item.gbd_stadium", "gbd_stadium")
-        status_row(left_col, "setup.item.gbd_tvlogo", "gbd_tvlogo")
-        status_row(left_col, "setup.item.gbd_scoreboard", "gbd_scoreboard")
-        status_row(left_col, "setup.item.gbd_movies", "gbd_movies")
+        section(right_col, "setup.section.user_folders")
+        status_row(right_col, "setup.item.gbd_stadium", "gbd_stadium")
+        status_row(right_col, "setup.item.gbd_tvlogo", "gbd_tvlogo")
+        status_row(right_col, "setup.item.gbd_scoreboard", "gbd_scoreboard")
+        status_row(right_col, "setup.item.gbd_movies", "gbd_movies")
 
-        # Right column: destination folders
         section(right_col, "setup.section.dest_folders")
         status_row(right_col, "setup.item.dest_slc", "dest_slc")
         status_row(right_col, "setup.item.dest_goalnet", "dest_goalnet")
@@ -4759,44 +4765,38 @@ class UIMixin:
         status_row(right_col, "setup.item.dest_nav", "dest_nav")
         status_row(right_col, "setup.item.dest_movies", "dest_movies")
         status_row(right_col, "setup.item.dest_camera", "dest_camera")
+        # Where the optional Rev Mod Lua (left column) lands; optional, so never flagged red.
+        status_row(right_col, "setup.item.dest_lua", "dest_lua")
 
-        # "Extra" section: everything here is optional and never required for a
-        # working install — a clean install loads stadiums fine through CGFS's
-        # own injection without any of this. Total-conversion mods (e.g. FIFA
-        # Infinity) ship their own data/fifarna/lua and don't need ours, and
-        # installing ours over a mod's lua can overwrite a working config — so
-        # it's grouped separately and starts unchecked, unlike the source_row
-        # items above.
-        section(right_col, "setup.section.extra")
-        source_row(right_col, "setup.item.revmod_lua", "revmod_lua")
-        _revmod_var = self._setup_install_vars.get("revmod_lua")
-        if _revmod_var is not None:
-            _revmod_var.set(False)
+        # The two "Extra" sections: everything there is optional, never required
+        # for a working install, and starts unchecked, unlike the source_row items
+        # above.
+        #
+        # Sample asset packs (install_data/FSW/Goalpost, FSW/Camera/EntranceScene,
+        # FSW/NetMesh) — bundled example content for the [stadiumgoalpost*],
+        # [stadiumentrancecam] and [stadiumnetmesh] pickers. Each merges in beside
+        # (never over) the user's own packs, but there's no reason to force it on
+        # everyone by default.
+        section(left_col, "setup.section.extra_assets")
+        for label_key, item_key in (
+            ("setup.item.fsw_goalpost", "fsw_goalpost"),
+            ("setup.item.fsw_camera", "fsw_camera"),
+            ("setup.item.fsw_netmesh", "fsw_netmesh"),
+        ):
+            source_row(left_col, label_key, item_key)
+            self._setup_install_vars[item_key].set(False)
 
-        # Sample Goalpost packs (install_data/FSW/Goalpost) — bundled example
-        # content for the [stadiumgoalpost]/[stadiumgoalposttexture] feature
-        # (CLAUDE.md §7), not required for a working install. Starts unchecked
-        # like revmod_lua above, for the same reason: merging it in would sit
-        # alongside (not overwrite) a user's own FSW/Goalpost packs, but there's
-        # no reason to force it on everyone by default.
-        source_row(right_col, "setup.item.fsw_goalpost", "fsw_goalpost")
-        _goalpost_var = self._setup_install_vars.get("fsw_goalpost")
-        if _goalpost_var is not None:
-            _goalpost_var.set(False)
-
-        # Sample Entrance Camera packs (install_data/FSW/Camera/EntranceScene) —
-        # bundled example content for the [stadiumentrancecam] feature (see
-        # StadiumRuntime.resolve_entrance_cam_sources). Optional and unchecked by
-        # default, same reasoning as the Goalpost packs above: it merges in beside
-        # a user's own FSW/Camera packs rather than replacing them.
-        source_row(right_col, "setup.item.fsw_camera", "fsw_camera")
-        _camera_var = self._setup_install_vars.get("fsw_camera")
-        if _camera_var is not None:
-            _camera_var.set(False)
+        # Rev Mod: a clean install loads stadiums fine through CGFS's own
+        # injection without its Lua. Total-conversion mods (e.g. FIFA Infinity)
+        # ship their own data/fifarna/lua and don't need ours, and installing ours
+        # over a mod's lua can overwrite a working config.
+        section(left_col, "setup.section.extra_revmod")
+        source_row(left_col, "setup.item.revmod_lua", "revmod_lua")
+        self._setup_install_vars["revmod_lua"].set(False)
 
         _kit_numbers_var = tk.BooleanVar(value=self.settings.custom_kit_numbers)
         self._setup_install_vars["custom_kit_numbers"] = _kit_numbers_var
-        _kit_numbers_row = tk.Frame(right_col, bg=self.card)
+        _kit_numbers_row = tk.Frame(left_col, bg=self.card)
         _kit_numbers_row.pack(fill="x", pady=2)
         tk.Checkbutton(
             _kit_numbers_row, variable=_kit_numbers_var,
@@ -4807,9 +4807,10 @@ class UIMixin:
             highlightthickness=0,
         ).pack(side="left")
         tk.Label(_kit_numbers_row, text="  ", bg=self.card, width=2).pack(side="left")
-        tk.Label(_kit_numbers_row, text=self.tr("setup.item.custom_kit_numbers"), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w").pack(side="left", fill="x", expand=True)
-
-        status_row(right_col, "setup.item.dest_lua", "dest_lua")
+        _kit_numbers_label = tk.Label(_kit_numbers_row, text=self.tr("setup.item.custom_kit_numbers"), bg=self.card, fg=self.fg, font=("Bahnschrift", 10), anchor="w", justify="left")
+        _kit_numbers_label.pack(side="left", fill="x", expand=True)
+        # The longest label in the column: wrap it to the column's width instead of clipping it.
+        _kit_numbers_label.bind("<Configure>", lambda e: e.widget.configure(wraplength=max(1, e.width - 4)))
 
     def _build_setup_assets_tab(self, parent: tk.Frame) -> None:
         card = self._card(parent, "card.setup_assets.title", "card.setup_assets.subtitle")
@@ -5201,7 +5202,13 @@ class UIMixin:
 
         # FSW sources
         ini_path = exedir / "FSW" / "settings.ini"
-        _set("settings_ini", ini_path.exists(), ok_text if ini_path.exists() else missing)
+        ini_exists = ini_path.exists()
+        _set("settings_ini", ini_exists, ok_text if ini_exists else missing)
+        # Only on a change of state, so a manual tick survives a plain Refresh.
+        ini_var = self._setup_install_vars.get("settings_ini")
+        if ini_var is not None and getattr(self, "_setup_settings_ini_existed", None) != ini_exists:
+            ini_var.set(not ini_exists)
+            self._setup_settings_ini_existed = ini_exists
 
         for key, src in (("fsw_police", self.Psource), ("fsw_nets", self.Nsource), ("fsw_pitch", self.PitchMowsource)):
             count = _count_files(src)
@@ -5309,7 +5316,7 @@ class UIMixin:
             return
 
         install_vars = getattr(self, "_setup_install_vars", {})
-        do_settings    = install_vars.get("settings_ini",  tk.BooleanVar(value=True)).get()
+        do_settings    = install_vars.get("settings_ini",  tk.BooleanVar(value=False)).get()
         do_police      = install_vars.get("fsw_police",     tk.BooleanVar(value=True)).get()
         do_nets        = install_vars.get("fsw_nets",       tk.BooleanVar(value=True)).get()
         do_pitch       = install_vars.get("fsw_pitch",      tk.BooleanVar(value=True)).get()
@@ -5321,6 +5328,7 @@ class UIMixin:
         do_revmod_lua  = install_vars.get("revmod_lua",     tk.BooleanVar(value=True)).get()
         do_goalpost    = install_vars.get("fsw_goalpost",   tk.BooleanVar(value=False)).get()
         do_camera      = install_vars.get("fsw_camera",     tk.BooleanVar(value=False)).get()
+        do_netmesh     = install_vars.get("fsw_netmesh",    tk.BooleanVar(value=False)).get()
         do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
@@ -5358,6 +5366,8 @@ class UIMixin:
                             skipped.add("Goalpost")
                         if not do_camera and p.name == "FSW" and "Camera" in names:
                             skipped.add("Camera")
+                        if not do_netmesh and p.name == "FSW" and "NetMesh" in names:
+                            skipped.add("NetMesh")
                         return skipped
 
                     shutil.copytree(str(src), str(self.exedir), dirs_exist_ok=True, ignore=_ignore)

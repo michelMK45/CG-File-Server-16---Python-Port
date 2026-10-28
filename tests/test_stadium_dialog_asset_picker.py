@@ -52,6 +52,7 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             "Images/Nets/1.png",
             "Goalpost/GoalpostModel/1/preview.png",
             "Camera/EntranceScene/Aerial/preview.png",
+            "NetMesh/Hex/net.png",
         ):
             path = fsw / rel
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,10 +99,10 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
 
     # --------------------------------------------------------------- buttons
 
-    def test_each_of_the_six_visual_combos_has_a_picker_button(self) -> None:
+    def test_each_of_the_seven_visual_combos_has_a_picker_button(self) -> None:
         buttons = [w for w in _walk(self.dialog) if isinstance(w, ttk.Button) and w.cget("text") == PICKER_ICON]
-        self.assertEqual(len(buttons), 6)
-        self.assertEqual([key for _, key in self.tooltips], ["tooltip.asset_grid_picker"] * 6)
+        self.assertEqual(len(buttons), 7)
+        self.assertEqual([key for _, key in self.tooltips], ["tooltip.asset_grid_picker"] * 7)
 
     def test_buttons_sit_beside_their_combo_not_below_it(self) -> None:
         for button in (w for w in _walk(self.dialog) if isinstance(w, ttk.Button) and w.cget("text") == PICKER_ICON):
@@ -134,6 +135,10 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
         self.assertEqual(label_key, "dialog.stadium.entrance_cam")
         self.assertEqual([i.value for i in cams], ["None", "Aerial"])
         self.assertEqual(cams[1].image_path, self.exedir / "FSW" / "Camera" / "EntranceScene" / "Aerial" / "preview.png")
+        _, label_key, meshes, _ = self.dialog._asset_picker_setup("netmesh")
+        self.assertEqual(label_key, "dialog.stadium.net_mesh")
+        self.assertEqual([i.value for i in meshes], ["None", "Hex"])
+        self.assertEqual(meshes[1].image_path, self.exedir / "FSW" / "NetMesh" / "Hex" / "net.png")
 
     def test_each_field_is_bound_to_its_own_variable_and_refresh_callback(self) -> None:
         d = self.dialog
@@ -144,6 +149,7 @@ class StadiumDialogAssetPickerTests(unittest.TestCase):
             "goalpost": (d.selectedgoalpost, d._on_goalpost_model_changed),
             "goalposttexture": (d.selectedgoalposttexture, d._on_goalpost_texture_changed),
             "entrancecam": (d.selectedentrancecam, d._on_entrance_cam_changed),
+            "netmesh": (d.selectednetmesh, d._on_net_mesh_changed),
         }
         for field, (variable, refresh) in expected.items():
             got_variable, _label, _items, got_refresh = d._asset_picker_setup(field)
