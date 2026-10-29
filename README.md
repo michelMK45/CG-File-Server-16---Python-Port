@@ -49,10 +49,12 @@ The ordered step-by-step version, including the Assets Extractor and troubleshoo
 
 - **Live match-aware asset switching** — reads the home team, competition and round from FIFA's memory and applies whatever you assigned by home team, round, tournament, derby (one specific fixture) or default.
 - **In-game interactive overlay** — an RmlUi menu rendered on top of FIFA 16 (even in exclusive fullscreen), navigable with keyboard, controller or mouse, with live previews and a manual in-game stadium picker.
-- **Stadium management** — folders or `.zip`/`.rar` archives, multi-stadium rotations, previews, goalpost model/texture packs, shared entrance cameras, net values, custom pre-match stadium names and per-stadium gameplay cameras.
+- **Stadium management** — folders or `.zip`/`.rar` archives, multi-stadium rotations, previews, goalpost model/texture packs (now with 11 models and extra colors), goal net mesh packs, shared entrance cameras, net values, custom pre-match stadium names and per-stadium gameplay cameras.
 - **Scoreboards, TV logos & movies** — per round, tournament, derby or home team, with embedded video preview for movies.
 - **Chants & audio** — per-team chants, held goal songs, random goal-song/entrance-anthem variants and a Team Entrance walkout anthem (overridable per tournament or round).
-- **Kits** — Kit Sets with F7–F11 in-game hotkeys (Simple) and a full Kit Mixer for jersey/shorts/numbers/thumbnail/name color (Advanced).
+- **Kits** — a **Team** tab that mixes shirt, shorts and socks from a team's own kits (several named combinations per team), Kit Sets with F7–F11 in-game hotkeys (Custom Simple, including the F11 *Team combination* mode) and a full Kit Mixer for jersey/shorts/numbers/thumbnail/name color (Custom Advanced).
+- **Team Kits editor in the overlay** — a PES-style home/away kit editor in the F12 menu, usable with keyboard or gamepad (hold **Select** to open it directly).
+- **Custom input bindings** — rebind the overlay, Team Kits and kit hotkey keys, plus gamepad combos, from Settings > Controls.
 - **Camera packages** — Anth's FIFA 16 AIO Camera Mod presets applied with one click.
 - **Ball, Referee, Wipe & Adboard** modules assignable per round.
 - **Gamepads bridge** — translate up to 4 non-Xbox controllers into virtual Xbox 360 pads.
@@ -105,7 +107,7 @@ The goal is to preserve and evolve the FIFA 16 Server 16 experience in a modern 
 
 ## Release Notes
 
-Each release has its notes in this repository: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) · [v1.6.0](RELEASE_NOTES_v1.6.0.md)
+Each release has its notes in this repository: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) · [v1.6.0](RELEASE_NOTES_v1.6.0.md) · [v1.7.0](RELEASE_NOTES_v1.7.0.md)
 
 ## Credits
 
