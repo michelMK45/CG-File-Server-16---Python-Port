@@ -108,6 +108,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.pagechange = False
         self.skillgamechange = False
         self._left_match_reset_done = False
+        self._match_loading_since_kickoff = False
         self.bumperpagechange = False
         self.matchstarted = False
         self.lastpagename = ""

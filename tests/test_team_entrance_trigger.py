@@ -367,6 +367,70 @@ class LeavingMatchTests(unittest.TestCase):
             self.assertEqual(game.clears, 0, page)
 
 
+class LoadingScreenGame(LeavingMatchGame):
+    """LeavingMatchGame that can also go through a real KickOffHub visit."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.settings = types.SimpleNamespace(auto_apply_substitution_count=False)
+
+    def _schedule_kickoff_retry(self) -> None:
+        pass
+
+
+class SkillGameLoadingScreenTests(unittest.TestCase):
+    """Reported 2026-11-08 ("chants work in 1.5, not in 1.7.1"): with FIFA's
+    skill-game loading screen the match loads behind skillGames/SkillGamePause,
+    which _page_is_outside_match treats as the practice arena. The reset that
+    followed cleared HID/AID mid-loading, so Chants sat on "Awaiting home
+    chants" for the whole match and Team Entrance never started."""
+
+    KICKOFF = "game/screens/playNow/KickOffHub"
+    PAUSE = "game/screens/skillGames/SkillGamePause"
+
+    def _load_match(self) -> LoadingScreenGame:
+        game = LoadingScreenGame()
+        game._handle_page_transition(self.KICKOFF)
+        game.HID = "144"  # read back by refresh_live_context on KickOffHub
+        game.clears = 0
+        game.chants_resets = 0
+        game.sub_resets = 0
+        generation = game._kickoff_generation
+        # Exact sequence of the 2026-11-08 log (and the 2026-10-04/10-26 ones).
+        for page in ("", self.PAUSE, ""):
+            game._handle_page_transition(page)
+        self.assertEqual(game._kickoff_generation, generation)
+        return game
+
+    def test_loading_screen_skill_game_keeps_the_match_context(self) -> None:
+        game = self._load_match()
+        self.assertEqual((game.clears, game.chants_resets, game.sub_resets), (0, 0, 0))
+        self.assertEqual(game.HID, "144")
+        self.assertTrue(game._entrance_pre_match_guard)
+
+    def test_loading_screen_results_page_keeps_it_too(self) -> None:
+        game = self._load_match()
+        game._handle_page_transition("game/screens/skillGames/SkillGameResults")
+        self.assertEqual(game.clears, 0)
+        self.assertEqual(game.HID, "144")
+
+    def test_training_after_the_main_menu_still_resets(self) -> None:
+        # The 2026-09-23 case (abandoned match -> main menu -> arena) is
+        # reached through FluxHub, which ends the loading state.
+        game = self._load_match()
+        game._handle_page_transition("game/screens/fluxHub/FluxHub")
+        game._handle_page_transition("")
+        game._handle_page_transition("game/screens/training/SkillGamesHub")
+        self.assertEqual((game.clears, game.chants_resets), (1, 1))
+        self.assertEqual(game.HID, "")
+
+    def test_skill_game_without_a_kickoff_still_resets(self) -> None:
+        game = LoadingScreenGame()
+        game._handle_page_transition("game/screens/fluxHub/FluxHub")
+        game._handle_page_transition(self.PAUSE)
+        self.assertEqual(game.clears, 1)
+
+
 class SkillGamePagesGame(FastWatchGame, LeavingMatchGame):
     """FastWatchGame (name-patch call sites) + LeavingMatchGame (the state the
     "skillGames/" pages reset), counting every way the name reaches FIFA."""

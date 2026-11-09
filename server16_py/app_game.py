@@ -207,7 +207,8 @@ class GameMixin:
             # currently live, so reflect that immediately instead of
             # waiting on Chants' independently-clocked poll to catch up.
             self.matchstarted = False
-        if self._page_is_outside_match(page_name):
+        self._track_match_loading(page_name)
+        if self._page_is_outside_match(page_name) and not getattr(self, "_match_loading_since_kickoff", False):
             self._reset_for_leaving_match(page_name)
         if page_name == KICKOFF_HUB_PAGE:
             if self._match_prep_applied():
@@ -368,6 +369,28 @@ class GameMixin:
         """
         lowered = (page_name or "").lower()
         return any(token in lowered for token in ("training/", "skillgames/", "misc/arenaplayer"))
+
+    def _track_match_loading(self, page_name: str) -> None:
+        """Keep `_match_loading_since_kickoff` True from KickOffHub until the
+        first page that is not part of loading the match.
+
+        With FIFA's skill-game loading screen the match loads behind
+        `skillGames/SkillGamePause` (KickOffHub -> '' -> SkillGamePause -> '').
+        That page satisfies `_page_is_outside_match`, so from v1.6.0 on
+        `_reset_for_leaving_match` ran in the middle of loading: it cleared
+        HID/AID (Chants stuck on "Awaiting home chants" for the whole match),
+        disarmed Team Entrance and dropped the pre-match guard. Every log from
+        an affected user shows it (2026-10-04, 2026-10-26 x2, 2026-11-08
+        "chants stopped working after 1.5"). A training/arena page reached
+        straight from KickOffHub through loading pages only can only be that
+        loading screen; the abandoned-match arena (2026-09-23) is reached from
+        the main menu, i.e. after FluxHub, which ends this state.
+        """
+        lowered = (page_name or "").lower()
+        if page_name == KICKOFF_HUB_PAGE:
+            self._match_loading_since_kickoff = True
+        elif lowered.strip() and "tv/bumper" not in lowered and not self._page_is_outside_match(page_name):
+            self._match_loading_since_kickoff = False
 
     @staticmethod
     def _page_ends_match_prep(page_name: str) -> bool:
