@@ -24,6 +24,7 @@ from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .gamepad_bridge_runtime import VGAMEPAD_IMPORT_ERROR, GamepadBridgeRuntime
 from .hidhide_runtime import HidHideRuntime
+from .ingame_menu_runtime import InGameMenuRuntime
 from .kit_classic import KitClassicRuntime
 from .kit_mixer import KitMixRuntime
 from .match_string_patcher import MatchStringPatchCoordinator, StadiumDbNamePatchCoordinator
@@ -593,6 +594,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.kit_mixer = KitMixRuntime(self)
         self.kit_classic = KitClassicRuntime(self)
         self.substitution_runtime = SubstitutionRuntime(self)
+        # The CGFS16 menu inside FIFA's own UI (cgfs-ingame): data.big for it, its saves read back.
+        self.ingame_menu = InGameMenuRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)

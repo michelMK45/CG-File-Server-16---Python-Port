@@ -80,11 +80,16 @@ class SettingsMixin:
                 _, side, team_id, direction, detail, images = event
                 self._kit_cycle_task_running = False
                 self._show_team_combination_notification(side, team_id, direction, detail, images)
+            elif kind == "ingame_menu_scan":
+                _, pid, records, found, mb, secs, error = event
+                self.ingame_menu.on_scan_done(pid, records, found, mb, secs, error)
             elif kind == "kit_cycle_error":
                 _, side, team_id, message = event
                 self._kit_cycle_task_running = False
                 self.log(f"Kit hotkey: failed to cycle kit for team {team_id} ({side}): {message}")
-        if self._stadium_task_running or self._kit_cycle_task_running or not self._worker_queue.empty():
+        ingame_menu = getattr(self, "ingame_menu", None)
+        if (self._stadium_task_running or self._kit_cycle_task_running or not self._worker_queue.empty()
+                or (ingame_menu is not None and ingame_menu.busy)):
             self._schedule_worker_poll()
 
     def setuppaths(self, load_team_database: bool = True) -> None:
