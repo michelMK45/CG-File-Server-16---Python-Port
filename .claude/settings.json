@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m pytest:*)",
+      "Bash(python .claude/skills/locales/regen_locales_data.py:*)",
+      "PowerShell(python -m pytest *)",
+      "PowerShell(python .claude/skills/locales/regen_locales_data.py *)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(git tag:*)",
+      "Bash(git ls-files:*)",
+      "Bash(git blame:*)"
+    ],
+    "deny": [
+      "Read(./dist/**)",
+      "Read(./build/**)",
+      "Read(./.venv/**)",
+      "Read(./bin/python32/**)",
+      "Read(./legacy/**)"
+    ]
+  }
+}
