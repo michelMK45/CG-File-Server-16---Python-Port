@@ -1069,6 +1069,12 @@ class GameMixin:
                 self._match_prep_context = signature
                 self._match_prep_ignored_context = None
                 self.apply_all_runtime()
+            ingame_menu = getattr(self, "ingame_menu", None)
+            if ingame_menu is not None:
+                try:
+                    ingame_menu.context_changed()  # its Estadio tab is for the home team
+                except Exception as exc:  # noqa: BLE001 - never break the context reader
+                    self.log(f"In-game menu: context update failed: {exc}")
 
     def _try_read_context_int(self, trace_name: str, static_ptr: int, offsets: list[int], page_name: str) -> str | None:
         try:
