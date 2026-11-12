@@ -149,6 +149,10 @@ class GameMixin:
     def update_page_name(self) -> None:
         try:
             page_name = self.memory.get_string(self.offsets.ORIPGBASE, self.offsets.PG1, size=64)
+            if page_name and self._fifa_page_ready_pid != self.memory.process_id:
+                # First real page for this FIFA process: it is past startup, so
+                # page-read failures from now on are logged in full again.
+                self._fifa_page_ready_pid = int(self.memory.process_id or 0)
             self._sync_page_banner(page_name)
             self._handle_page_transition(page_name)
             if self._page_can_have_match_context(page_name):
@@ -156,6 +160,15 @@ class GameMixin:
         except Exception as exc:
             self._sync_page_banner(f"Offset pending: {exc}")
             self._set_process_status(self.status_text("reading_page"), self.gold)
+            pid = int(self.memory.process_id or 0)
+            if isinstance(exc, MemoryAccessError) and pid != self._fifa_page_ready_pid:
+                # Normal while FIFA is still starting (page-name chain not built
+                # yet): one line per process instead of a traceback every 500 ms,
+                # which forum users kept quoting as "error 0x143809030".
+                if self._page_startup_logged_pid != pid:
+                    self._page_startup_logged_pid = pid
+                    self.log(f"FIFA pid {pid} still starting, page name not readable yet ({exc})")
+                return
             self.log("Failed to read page name", exc, exc_info=sys.exc_info())
 
     def _handle_page_transition(self, page_name: str) -> None:

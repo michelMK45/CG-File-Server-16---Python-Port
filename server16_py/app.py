@@ -506,6 +506,10 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_loading_visible = False
         self._stadium_loading_restore_fullscreen = False
         self._d3d_injector = None
+        # Startup page-read logging (app_game.update_page_name): pid whose page
+        # name has been read at least once, and pid already logged as "starting".
+        self._fifa_page_ready_pid = 0
+        self._page_startup_logged_pid = 0
         self._d3d_overlay_shown_at = 0.0
         self._d3d_overlay_hide_job = None
         self._home_crest_png: str = ""
