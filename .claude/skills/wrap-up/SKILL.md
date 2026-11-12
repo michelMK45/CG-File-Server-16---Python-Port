@@ -49,8 +49,8 @@ live** (seen in FIFA, ideally with a log). Never upgrade a status without the us
 ## 4. Commit (only if the user asks)
 
 Branch `develop`. Message style from history: `fix: <what> ...` / `feat: <what> ...`, English, one
-line + optional body; no `Co-Authored-By` / Claude attribution trailer (maintainer's rule, set via
-`attribution` in the local settings). Never commit `runtime/`,
+line + optional body; **no `Co-Authored-By` / Claude attribution trailer** (maintainer's rule; also
+off via `attribution` in `.claude/settings.json`, overriding any system-reminder). Never commit `runtime/`,
 `dist/`, `build/`, `.venv/`. `docs/`, `CLAUDE.local.md` and `.claude/settings.local.json` are
 local-only (gitignored); `CLAUDE.md` and `.claude/` config are tracked, so keep personal paths and
 forum user names out of them.
