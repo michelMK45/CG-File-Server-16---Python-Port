@@ -42,8 +42,9 @@ class FakeGame(GameMixin):
         # method lives on App, not on GameMixin, so the fake has to supply it.
         return bool(self._stadium_picker_pending and not self._stadium_picker_resolved)
 
-    def _start_team_entrance(self) -> bool:
+    def _start_team_entrance(self, *, wait_for_kickoff_scene: bool = False) -> bool:
         self.entrance_starts += 1
+        self.entrance_scene_waits = getattr(self, "entrance_scene_waits", []) + [wait_for_kickoff_scene]
         return True
 
     def _start_chants_runtime(self) -> None:
@@ -407,6 +408,28 @@ class SkillGameLoadingScreenTests(unittest.TestCase):
         self.assertEqual((game.clears, game.chants_resets, game.sub_resets), (0, 0, 0))
         self.assertEqual(game.HID, "144")
         self.assertTrue(game._entrance_pre_match_guard)
+
+    def test_loading_screen_starts_the_entrance_waiting_for_the_kickoff_scene(self) -> None:
+        # Movies module off (FIFA's own pausemenuflow.nav): the SkillGamePause
+        # page consumes the blank-page arm, but the skill game and the real
+        # walkout then share one blank page, so the worker must wait for the
+        # kick-off scene in memory instead of starting on this page.
+        game = self._load_match()
+        self.assertEqual(game.entrance_starts, 1)
+        self.assertEqual(game.entrance_scene_waits, [True])
+        self.assertFalse(game._entrance_armed)
+        # The skill game's own pages never start a second one.
+        game._handle_page_transition("game/screens/skillGames/SkillGameResults")
+        game._handle_page_transition("")
+        self.assertEqual(game.entrance_starts, 1)
+
+    def test_bumper_flow_starts_the_entrance_without_the_scene_wait(self) -> None:
+        # Movies module on: the loading screen is TV/bumper, unchanged.
+        game = LoadingScreenGame()
+        game._handle_page_transition(self.KICKOFF)
+        for page in ("", "game/screens/TV/bumper", ""):
+            game._handle_page_transition(page)
+        self.assertEqual(game.entrance_scene_waits, [False])
 
     def test_loading_screen_results_page_keeps_it_too(self) -> None:
         game = self._load_match()

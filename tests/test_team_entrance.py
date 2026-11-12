@@ -1126,5 +1126,141 @@ class NumberedEntranceTests(unittest.TestCase):
         self.assertEqual(config.track.parent.name, "Team")
 
 
+class TimelineMemory(FakeMemory):
+    """Match memory as a function of a fake clock, so every reader (scene
+    wait, delay wait, playback loop) sees the same moment. `timeline` is a
+    list of (until_seconds, (started, clock, play state)); the last entry
+    holds forever. Offsets as in FakeApp plus play_state/period."""
+
+    def __init__(self, timeline, now: list[float]) -> None:
+        super().__init__([(0, 0)])
+        self.timeline = timeline
+        self.now = now
+        self.start = now[0]
+
+    def _state(self):
+        elapsed = self.now[0] - self.start
+        for until, state in self.timeline:
+            if elapsed < until:
+                return state
+        return self.timeline[-1][1]
+
+    def get_int(self, base, offsets) -> int:
+        started, clock, play_state = self._state()
+        if offsets == "play_state":
+            return play_state
+        if offsets in ("period", "time"):
+            return clock
+        return started
+
+
+class SkillGameLoadingScreenSceneWaitTests(unittest.TestCase):
+    """Movies module off: FIFA's own pausemenuflow.nav loads the match behind
+    skillGames/SkillGamePause. Pressing A plays the loading skill game (state
+    15, started=1, clock running ~7/s -- 2026-11-08 forum log), pressing Start
+    goes to the real pre-match scene with NO page transition (state 2, clock
+    back to 0). The anthem used to start on the SkillGamePause page and be
+    cut by the skill game's "ball in play"; it must wait for the scene."""
+
+    SKILL_GAME = [(1.0, (0, 0, 13))] + [
+        (1.0 + 0.2 * (i + 1), (1, i, 15)) for i in range(300)
+    ]  # loading, then ~60s of skill game
+
+    def run_worker(self, timeline, *, wait_for_kickoff_scene=True, delay=0.0):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        track = root / "Entrance.mp3"
+        track.write_bytes(b"test")
+        app = FakeApp(root)
+        app.offsets.GAMEPLAYSTATE = "play_state"
+        app.offsets.GAMEPERIODSECONDS = "period"
+        now = [1_000_000.0]
+        memory = TimelineMemory(timeline, now)
+        player = FakePlayer()
+        opened_at: list[float] = []
+
+        def make_player() -> FakePlayer:
+            opened_at.append(now[0] - memory.start)
+            return player
+
+        def fake_sleep(seconds: float) -> None:
+            now[0] += seconds
+
+        runtime = TeamEntranceRuntime(app, player_factory=make_player, memory_factory=lambda: memory)
+        with patch("server16_py.entrance_runtime.time.sleep", side_effect=fake_sleep), \
+             patch("server16_py.entrance_runtime.time.time", side_effect=lambda: now[0]):
+            runtime._run_worker(0, "1", TeamEntranceConfig(track, 0.2, delay), wait_for_kickoff_scene=wait_for_kickoff_scene)
+        return app, player, opened_at
+
+    def scene_after_skill_game(self):
+        end = self.SKILL_GAME[-1][0]
+        scene = [(end + 1.0, (0, 0, 2)), (end + 12.0, (1, 0, 2))]
+        play = [(end + 12.0 + 0.2 * (i + 1), (1, i, 15)) for i in range(100)]
+        return self.SKILL_GAME + scene + play, end
+
+    def test_anthem_waits_through_the_skill_game_for_the_kickoff_scene(self) -> None:
+        timeline, scene_start = self.scene_after_skill_game()
+        app, player, opened_at = self.run_worker(timeline)
+        self.assertTrue(player.played)
+        self.assertEqual(len(opened_at), 1)
+        self.assertGreaterEqual(opened_at[0], scene_start)
+        self.assertLess(opened_at[0], scene_start + 12.0)
+        self.assertTrue(any("kick-off scene detected" in line for line in app.logs))
+        # Still faded by the real kick-off, not by the skill game.
+        self.assertTrue(any("fade-out: ball in play" in line for line in app.logs))
+        self.assertTrue(player.closed)
+
+    def test_without_the_scene_wait_the_skill_game_cuts_it(self) -> None:
+        # The reported bug, as the trigger used to run it: started on the
+        # SkillGamePause page, the skill game's open play ends it at once.
+        timeline, scene_start = self.scene_after_skill_game()
+        app, player, opened_at = self.run_worker(timeline, wait_for_kickoff_scene=False)
+        self.assertLess(opened_at[0], scene_start)
+        self.assertTrue(any("fade-out: ball in play" in line for line in app.logs))
+
+    def test_a_single_stray_kickoff_pending_tick_in_the_skill_game_does_not_count(self) -> None:
+        timeline, scene_start = self.scene_after_skill_game()
+        timeline = [(1.0, (0, 0, 13)), (1.2, (1, 0, 2))] + timeline[1:]
+        app, player, opened_at = self.run_worker(timeline)
+        self.assertGreaterEqual(opened_at[0], scene_start)
+
+    def test_scene_wait_gives_up_without_playing(self) -> None:
+        app, player, opened_at = self.run_worker([(1.0, (0, 0, 13)), (2.0, (1, 0, 15))])
+        self.assertEqual(opened_at, [])
+        self.assertFalse(player.played)
+        self.assertFalse(app._entrance_active)
+        self.assertTrue(any("kick-off scene not detected" in line for line in app.logs))
+
+    def test_scene_wait_stops_on_a_setup_menu(self) -> None:
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        app = FakeApp(Path(temp_dir.name))
+        app.offsets.GAMEPLAYSTATE = "play_state"
+        app.offsets.GAMEPERIODSECONDS = "period"
+        app.lastpagename = "game/screens/playNow/SelectTeam"
+        runtime = TeamEntranceRuntime(app, memory_factory=lambda: FakeMemory([(1, 0)]))
+        with patch("server16_py.entrance_runtime.time.sleep", return_value=None):
+            self.assertFalse(runtime._wait_for_kickoff_scene(FakeMemory([(1, 0)]), 0))
+        self.assertTrue(any("returned to menu" in line for line in app.logs))
+
+    def test_start_for_match_hands_the_flag_to_the_worker(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            track = root / "FSW" / "Chants" / "Arsenal" / "Entrance.mp3"
+            track.parent.mkdir(parents=True)
+            track.write_bytes(b"test")
+            app = FakeApp(root, FakeIni({("1", "chantsid"): "Arsenal"}))
+            runtime = TeamEntranceRuntime(app)
+            with patch("server16_py.entrance_runtime.threading.Thread") as thread_cls:
+                self.assertTrue(runtime.start_for_match(wait_for_kickoff_scene=True))
+            self.assertEqual(thread_cls.call_args.kwargs["kwargs"], {"wait_for_kickoff_scene": True})
+            self.assertTrue(any("skill-game loading screen" in line for line in app.logs))
+            app._kickoff_generation += 1
+            with patch("server16_py.entrance_runtime.threading.Thread") as thread_cls:
+                self.assertTrue(runtime.start_for_match())
+            self.assertEqual(thread_cls.call_args.kwargs["kwargs"], {"wait_for_kickoff_scene": False})
+
+
 if __name__ == "__main__":
     unittest.main()

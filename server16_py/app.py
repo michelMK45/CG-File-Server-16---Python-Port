@@ -943,7 +943,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
     def _start_chants_runtime(self) -> None:
         self.chants_runtime.start_chants_runtime()
 
-    def _start_team_entrance(self) -> bool:
+    def _start_team_entrance(self, *, wait_for_kickoff_scene: bool = False) -> bool:
         # Requested live 2026-09-14: whether or not this call actually spins
         # up a new entrance worker (it can no-op for an already-started
         # match, a disabled module, or a missing per-team track), reaching
@@ -953,7 +953,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # unconditionally rather than waiting on its own confirmation/
         # kick-off-detection/deadline logic to eventually catch up.
         self._hide_scoreboard_name_progress_for_stadium_scene()
-        return self.entrance_runtime.start_for_match()
+        return self.entrance_runtime.start_for_match(wait_for_kickoff_scene=wait_for_kickoff_scene)
 
     def _reset_chants_state(self) -> None:
         self.entrance_runtime.reset()

@@ -8,7 +8,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
-from .chants_runtime import MciAudioPlayer, OpenPlayDetector, pick_numbered_track, read_open_play_inputs
+from .chants_runtime import (
+    LiveMatchTracker,
+    MciAudioPlayer,
+    OpenPlayDetector,
+    pick_numbered_track,
+    read_open_play_inputs,
+)
 from .memory_access import Memory
 
 if TYPE_CHECKING:
@@ -41,6 +47,14 @@ class TeamEntranceRuntime:
     DEFAULT_DELAY_SECONDS = 7.0
     MAX_DELAY_SECONDS = 45.0
     PRESENTATION_WAIT_SECONDS = 30.0
+    # Skill-game loading screen (see _wait_for_kickoff_scene): the player can
+    # keep playing the loading skill game for as long as they like before
+    # pressing Start, so this is generous. KickOffHub cancels it anyway.
+    SKILL_GAME_SCENE_WAIT_SECONDS = 900.0
+    # Consecutive ~0.2s ticks of GAMEPLAYSTATE == KICKOFF_PENDING that count as
+    # the pre-match scene. The scene holds it for 6-11s (docs/history/
+    # bugs-entrance.md Parts 18-19); this only rules out a stray read.
+    KICKOFF_SCENE_TICKS = 3
     MAX_PLAY_SECONDS = 180.0
     # How long the anthem may stay paused before this worker gives up and
     # closes for good instead of waiting for a resume that may never come.
@@ -194,12 +208,16 @@ class TeamEntranceRuntime:
             (getattr(app, "TOURROUNDID", "") or "").strip(),
         )
 
-    def start_for_match(self) -> bool:
+    def start_for_match(self, *, wait_for_kickoff_scene: bool = False) -> bool:
         """Schedule the current home team's entrance track once.
 
         Returns ``True`` only when a worker was scheduled.  The worker itself
         waits for FIFA's pre-kickoff memory state, so returning ``True`` does
         not necessarily mean audio has already begun.
+
+        ``wait_for_kickoff_scene``: the trigger fired on the skill-game
+        loading screen, not after the walkout began -- see
+        `_wait_for_kickoff_scene`.
         """
 
         app = self.app
@@ -260,12 +278,14 @@ class TeamEntranceRuntime:
         threading.Thread(
             target=self._run_worker,
             args=(worker_generation, home_team_id, config),
+            kwargs={"wait_for_kickoff_scene": wait_for_kickoff_scene},
             daemon=True,
             name=f"TeamEntrance-{home_team_id}",
         ).start()
         app.log(
             f"Team entrance armed: HID={home_team_id} source={config.source} track={config.track.parent.name}/{config.track.name} "
             f"delay={config.delay_seconds:.1f}s volume={config.volume:.2f}"
+            + (" (waits for the kick-off scene after the skill-game loading screen)" if wait_for_kickoff_scene else "")
         )
         return True
 
@@ -403,15 +423,65 @@ class TeamEntranceRuntime:
         app.log("Team entrance skipped: 3D presentation memory was not detected")
         return False
 
+    def _wait_for_kickoff_scene(self, memory: Memory, generation: int) -> bool:
+        """Wait out FIFA's skill-game loading screen until the real pre-match
+        scene begins.
+
+        With the Movies module off, FIFA's own pausemenuflow.nav loads the
+        match behind `skillGames/SkillGamePause`: A plays the loading skill
+        game, Start goes to the match. The skill game and the walkout then
+        share ONE blank page (no transition between them), so the page that
+        starts this worker is long before the walkout, and the skill game's
+        open play used to cut the anthem the moment A was pressed (forum
+        report 2026-11-12). The Movies nav shows TV/bumper there instead,
+        whose own end marks the walkout.
+
+        Memory tells them apart: GAMEPLAYSTATE reads KICKOFF_PENDING (2) for
+        the whole pre-match scene, on two installs (docs/history/
+        bugs-entrance.md Parts 18-19), while the loading skill game reads 13
+        then 15 and switches to 2 right as Start is pressed (2026-11-08 forum
+        log, `+5544:15>2` with the clock reset to 0). Read-only.
+        """
+        app = self.app
+        deadline = time.time() + self.SKILL_GAME_SCENE_WAIT_SECONDS
+        pending_ticks = 0
+        while time.time() < deadline and self._is_current(generation):
+            if not app.module_enabled("TeamEntrance"):
+                return False
+            if "playnow" in (getattr(app, "lastpagename", "") or "").lower():
+                app.log("Team entrance skipped: returned to menu before the kick-off scene")
+                return False
+            # attack() walks the process list: only when not attached yet.
+            if not memory.is_open() and not (app.MP and memory.attack(app.MP)):
+                pending_ticks = 0
+                time.sleep(0.2)
+                continue
+            play_state, _period = read_open_play_inputs(memory, app.offsets)
+            if play_state == LiveMatchTracker.KICKOFF_PENDING:
+                pending_ticks += 1
+                if pending_ticks >= self.KICKOFF_SCENE_TICKS:
+                    app.log("Team entrance: kick-off scene detected after the skill-game loading screen")
+                    return True
+            else:
+                pending_ticks = 0
+            time.sleep(0.2)
+        if self._is_current(generation):
+            app.log("Team entrance skipped: kick-off scene not detected after the skill-game loading screen")
+        return False
+
     def _kickoff_started(self, memory: Memory) -> bool:
         state = self._read_match_state(memory)
         return bool(state and state[0] == 1 and state[1] >= 1)
 
-    def _run_worker(self, generation: int, team_id: str, config: TeamEntranceConfig) -> None:
+    def _run_worker(
+        self, generation: int, team_id: str, config: TeamEntranceConfig, *, wait_for_kickoff_scene: bool = False
+    ) -> None:
         app = self.app
         memory = self._memory_factory()
         player: MciAudioPlayer | None = None
         try:
+            if wait_for_kickoff_scene and not self._wait_for_kickoff_scene(memory, generation):
+                return
             if not self._wait_for_presentation(memory, generation):
                 return
             if not self._wait_for_kickoff_or_delay(config.delay_seconds, generation, memory):

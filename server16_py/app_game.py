@@ -275,6 +275,12 @@ class GameMixin:
                 # menu or playNow setup menu can never be the real walkout,
                 # so just drop the arm here instead of starting.
                 self.log(f"Team entrance disarmed: next page was a menu ({page_name!r})")
+            elif self._page_is_skill_game_loading_screen(page_name):
+                # Movies module off: FIFA's own nav loads the match behind the
+                # skill game, which then shares one blank page with the real
+                # walkout -- the worker waits for the kick-off scene in memory
+                # instead (TeamEntranceRuntime._wait_for_kickoff_scene).
+                entrance_just_started = self._start_team_entrance(wait_for_kickoff_scene=True)
             else:
                 entrance_just_started = self._start_team_entrance()
 
@@ -382,6 +388,17 @@ class GameMixin:
         """
         lowered = (page_name or "").lower()
         return any(token in lowered for token in ("training/", "skillgames/", "misc/arenaplayer"))
+
+    def _page_is_skill_game_loading_screen(self, page_name: str) -> bool:
+        """True for the skill-game instructions page FIFA shows while it loads
+        a match (KickOffHub -> '' -> SkillGamePause). That is what the
+        Movies-off pausemenuflow.nav (FSW/Nav/pausemenuflow.nav_Original)
+        loads in its `instructionsOverlay` state; the Movies one loads
+        TV/bumper + the OUTRO video there instead. Not the training menu's
+        skill games: those are reached without a KickOffHub."""
+        return bool(getattr(self, "_match_loading_since_kickoff", False)) and (
+            "skillgames/skillgamepause" in (page_name or "").lower()
+        )
 
     def _track_match_loading(self, page_name: str) -> None:
         """Keep `_match_loading_since_kickoff` True from KickOffHub until the
