@@ -5,8 +5,8 @@ install) and removed (uninstall) without touching anything else in files that FI
 other mods also edit. A tile we change is kept, commented out, inside the markers and
 put back by unpatch.
 
-  layout/mainhubcfg.xml  -> a tile with DESTINATION=<EVENT> (the hub sends it as a nav event)
-  nav/mainfeflow.nav     -> transition <EVENT> -> state <FLOW_STATE> (external flow file)
+  layout/mainhubcfg.xml  -> a tile with DESTINATION=<EVENT> (the hub sends it as a nav event)  [retired]
+  nav/mainfeflow.nav     -> transition <EVENT> -> state <FLOW_STATE> (external flow file)        [retired]
   nav/<FLOW_FILE>        -> our flow: loads the screen, "back" returns to the main menu
   NAVS (kickoffhubflow, careermode/playmatchflow, fut/quicksettingsflow)
                          -> R3 on the pre-match hub: event KICKOFF_EVENT -> a state running our flow
@@ -294,8 +294,13 @@ def entry_patchers(rel):
 
 HUB = 'data/ui/layout/mainhubcfg.xml'
 NAV = 'data/ui/nav/mainfeflow.nav'
-PATCHES = {HUB: (patch_hub, unpatch_hub), NAV: (patch_nav, unpatch_nav),
-           **{rel: entry_patchers(rel) for rel in NAVS}}
+# what is installed: R3 on the pre-match hub
+PATCHES = {rel: entry_patchers(rel) for rel in NAVS}
+# no longer installed, only taken out of a game that still has it: the CGFS16 tile in Customise > Edit Teams
+# (until 2026-11-11; R3 on the match hub is enough, the user)
+RETIRED = {HUB: unpatch_hub, NAV: unpatch_nav}
+# rel -> unpatch of everything an install of ours may have patched (modinstall.install / uninstall)
+UNPATCH = dict(RETIRED, **{rel: unpatch for rel, (_patch, unpatch) in PATCHES.items()})
 
 
 def check_patched(rel, text):

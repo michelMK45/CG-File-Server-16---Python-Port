@@ -644,7 +644,20 @@ class StadiumRuntime:
                     app._hide_stadium_picker()
                 except Exception:
                     pass
-            if picker_branch:
+            menu_choice = self._ingame_menu_choice(section_name, section_id, valid_stadiums)
+            if menu_choice:
+                # "Estadio del partido" in the in-game CGFS16 menu (ingame_menu_runtime): the player already
+                # chose this assignment's stadium for this match, in random and manual mode alike
+                desired_stadium = menu_choice
+                if app._stadium_picker_pending:
+                    app._stadium_picker_pending = False
+                    app._stadium_picker_resolved = False
+                    app._stadium_picker_chosen = None
+                    try:
+                        app._hide_stadium_picker()
+                    except Exception:
+                        pass
+            elif picker_branch:
                 # Manual mode: let the player pick via the in-game stadium
                 # picker instead of rolling randomly. Only one picker session
                 # is ever open at a time — a matching pending signature means
@@ -717,6 +730,16 @@ class StadiumRuntime:
         app._update_audio_overview()
         app._set_progress(100, "Default stadium restored")
         app.log("No stadium assignment found; default stadium restored")
+
+    def _ingame_menu_choice(self, section_name: str, section_id, valid_stadiums: list[str]) -> str | None:
+        """The stadium the in-game menu marked for this match on this assignment (app._ingame_stadium_choice,
+        set by InGameMenuRuntime for the current kickoff generation), if it is still one of its stadiums."""
+        app = self.app
+        choices = getattr(app, "_ingame_stadium_choice", None) or {}
+        got = choices.get((str(section_name), str(section_id)))
+        if not got or got[0] != getattr(app, "_kickoff_generation", 0):
+            return None
+        return got[1] if got[1] in valid_stadiums else None
 
     @staticmethod
     def _random_stadium_choice(current: str, valid_stadiums: list[str]) -> str:

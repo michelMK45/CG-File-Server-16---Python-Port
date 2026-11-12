@@ -1,13 +1,12 @@
 {
   "version": "fase4-pestanas",
-  "installed": "2026-11-11 12:53",
+  "installed": "2026-11-11 17:53",
   "screen": "menu",
   "files": [
     "data/ui/cgfs16/data.big",
     "data/ui/cgfs16/img/logo.dds",
     "data/ui/cgfs16/menudata.big",
     "data/ui/game/screens/cgfs16/cgfs16menu.big",
-    "data/ui/imgassets/tiles/mainhub/cgfs16menu.dds",
     "data/ui/nav/cgfs16menuflow.nav"
   ],
   "variants": {

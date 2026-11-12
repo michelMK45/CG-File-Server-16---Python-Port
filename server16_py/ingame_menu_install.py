@@ -3,8 +3,10 @@
 The menu's files come prebuilt in the release package resources/ingame/mod (cgfs-ingame:
 `python tools/ingame.py release --out ../repository/resources/ingame/mod`): its screens, data movie and
 images, plus one hooked KickOffHub movie (R3 on the pre-match hub) per known original of that file
-(vanilla FIFA 16 and FIP's); a game with another KickOffHub gets the menu without R3. The text patches
-(hub tile, nav flows; between CGFS16-INGAME markers) are applied to whatever files the game has now.
+(vanilla FIFA 16 and FIP's); a game with another KickOffHub gets the menu without R3 (and so without a way in).
+The text patches (the nav flows that load the KickOffHub; between CGFS16-INGAME markers) are applied to
+whatever files the game has now. The old CGFS16 tile in Customise > Edit Teams is no longer installed and is
+taken out of a game that still has it (ingame_hubpatch.RETIRED).
 
 ingame_modinstall.py and ingame_hubpatch.py are byte-identical copies of cgfs-ingame's modinstall.py and
 hubpatch.py (stdlib only), so an install made with either tool is updated or removed by the other: both
@@ -83,7 +85,8 @@ def install(exedir: str | Path, log: Callable[[str], None]) -> MenuStatus:
     info, files = ingame_modinstall.load_package(str(folder))
     info["source"] = SOURCE
     man = ingame_modinstall.install(game, files, ingame_hubpatch.PATCHES, info,
-                                    check=ingame_hubpatch.check_patched, log=lambda m: log(f"In-game menu: {m}"))
+                                    check=ingame_hubpatch.check_patched, log=lambda m: log(f"In-game menu: {m}"),
+                                    unpatch=ingame_hubpatch.UNPATCH)   # also takes out the old hub tile
     log(f"In-game menu: installed (build {info.get('installed')}, {len(man['created'])} files, "
         f"{len(man['patched'])} patched{', no R3: unknown KickOffHub' if man.get('skipped') else ''})")
     return status(exedir)
@@ -94,7 +97,7 @@ def uninstall(exedir: str | Path, log: Callable[[str], None]) -> bool:
     if ingame_modinstall.game_running():
         raise FifaRunning("FIFA 16 is running")
     removed = ingame_modinstall.uninstall(_game(exedir), ingame_hubpatch.PATCHES,
-                                          log=lambda m: log(f"In-game menu: {m}"))
+                                          log=lambda m: log(f"In-game menu: {m}"), unpatch=ingame_hubpatch.UNPATCH)
     shutil.rmtree(Path(exedir) / GENERATED_DIR, ignore_errors=True)
     if removed:
         log("In-game menu: uninstalled")

@@ -390,6 +390,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_picker_signature = None
         self._stadium_picker_resolved = False
         self._stadium_picker_chosen: str | None = None
+        # The in-game CGFS16 menu's "Estadio del partido": (settings.ini section, key) -> (kickoff
+        # generation, stadium); StadiumRuntime._ingame_menu_choice uses it for that match only.
+        self._ingame_stadium_choice: dict[tuple[str, str], tuple[int, str]] = {}
         # Remembers the last stadium_signature actually decided by the
         # picker (picked, or closed/cancelled -> random fallback) plus what
         # was decided for it -- unlike _stadium_picker_pending/_resolved

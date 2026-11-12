@@ -79,14 +79,15 @@ class InGameMenuInstallTests(unittest.TestCase):
         info, files = ingame_modinstall.load_package(str(folder))
         self.assertEqual(info["screen"], "menu")
         for rel in ("data/ui/game/screens/cgfs16/cgfs16menu.big", "data/ui/cgfs16/menudata.big",
-                    "data/ui/cgfs16/img/logo.dds", FLOW, "data/ui/imgassets/tiles/mainhub/cgfs16menu.dds"):
+                    "data/ui/cgfs16/img/logo.dds", FLOW):
             self.assertIn(rel, files)
         self.assertTrue(callable(files[KICKOFF]))
         index = json.loads((folder / ingame_modinstall.PACKAGE_INFO).read_text(encoding="utf-8"))
         self.assertIn(VANILLA_KICKOFF_SHA1, index["variants"][KICKOFF])
-        self.assertEqual(set(REAL_PATCHES), {
-            "data/ui/layout/mainhubcfg.xml", "data/ui/nav/mainfeflow.nav", NAV,
-            "data/ui/nav/careermode/playmatchflow.nav", "data/ui/nav/fut/quicksettingsflow.nav"})
+        self.assertEqual(set(REAL_PATCHES), {   # R3 on the match hub; no hub tile any more
+            NAV, "data/ui/nav/careermode/playmatchflow.nav", "data/ui/nav/fut/quicksettingsflow.nav"})
+        self.assertNotIn("data/ui/imgassets/tiles/mainhub/cgfs16menu.dds", files)
+        self.assertEqual(set(ingame_hubpatch.RETIRED), {"data/ui/layout/mainhubcfg.xml", "data/ui/nav/mainfeflow.nav"})
 
     def test_install_status_uninstall(self) -> None:
         before = self.snapshot()

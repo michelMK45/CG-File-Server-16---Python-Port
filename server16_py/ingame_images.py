@@ -23,6 +23,8 @@ PLACEHOLDER_REL = "cgfs16/img/std/placeholder.dds"   # the app's stadium-placeho
 
 
 MOVIE_PLACEHOLDER_REL = "cgfs16/img/mov/placeholder.dds"   # the app's movie-placeholder.png
+SCOREBOARD_PLACEHOLDER_REL = "cgfs16/img/sb/placeholder.dds"   # the app's scoreboard-placeholder.png
+TVLOGO_PLACEHOLDER_REL = "cgfs16/img/tv/placeholder.dds"       # the app's tv-placeholder.png
 MOVIE_DIR = Path("data/ui/cgfs16/mov")
 
 

@@ -16,19 +16,28 @@ both proven in-game (cgfs-ingame docs/fase3-conexion.md and docs/menu-pestanas.m
                 where records were seen first).
 
 What the rows mean here:
-  Marcador / Logo TV   the Default / Friendly assignments, the [Scoreboard]/[TVLogo] key "0" of
-                       FSW/settings.ini (the F12 menu's "Default / Friendly" scope); index 0 = no assignment.
-  Estadio              with a match context (the menu opened from the KickOffHub) two dependent rows, as the
-                       F12 overlay's stadium wizard: "Asignar a" (the scopes this match has: Home Team ->
-                       [stadium] <HID>, Round -> [comp] <ROUND>, Tournament -> [comp] <TOUR>) and Estadio (every
-                       stadium of StadiumGBD with its preview from ingame_images; per scope the one in use is
-                       selected). The pick is appended to that key's stadiums (each "<stadium>,<police>,<pitch>,
-                       <net>") and pre-chosen for this match; "Por defecto" removes the key. Below it, the
-                       wizard's other steps (STADIUM_OPTIONS): police, pitch pattern, net colour (the entry's
+  Marcador / Logo TV   as the F12's ScoreBoards / TV Logos tabs: "Asignar a" (Home Team -> [HomeTeamScoreBoard] /
+                       [HomeTeamTvLogo] <HID>, Derby -> [DerbyScoreBoard] / [DerbyTvLogo] <HID>vs<AID>, Default /
+                       Friendly -> [Scoreboard] / [TVLogo] key "0", Round / Tournament -> the same sections <id>; the
+                       ones there are, default as default_scope_for_scoreboard; left out with only Default /
+                       Friendly, e.g. opened from the hub tile) and the pack, previewed by its
+                       render/thumbnail/<scoreboard|tvlogo> picture (else the app's placeholder); "Por defecto"
+                       removes the key.
+  Estadio              with a match context (the menu opened from the KickOffHub) a list tab of the menu
+                       (menudata LIST_<tab>, prueba 14a): "Asignar a" (the scopes this match has: Home Team ->
+                       [stadium] <HID>, Round -> [comp] <ROUND>, Tournament -> [comp] <TOUR>; left out with one),
+                       "+ Agregar estadio", one row per stadium assigned to that scope (each entry
+                       "<stadium>,<police>,<pitch>,<net>" of the key) and "Estadio del partido" (Selector/Al azar or one of
+                       them, app._ingame_stadium_choice: StadiumRuntime uses it for this match, before random or
+                       the picker). A on "+ Agregar" or a stadium opens its assets, as the F12 overlay's stadium
+                       wizard: the stadium (every one of StadiumGBD, with its preview from ingame_images; locked
+                       when editing one), then STADIUM_OPTIONS: police, pitch pattern, net colour (the entry's
                        triple, per scope) and goalpost model/texture, net mesh, entrance camera (their own
-                       sections keyed by the stadium), each showing what that stadium has now. With one scope
-                       the "Asignar a" row is left out. Without a context: one value telling to open it from
-                       the match hub.
+                       sections keyed by the stadium), each showing what that stadium has now. "Guardar" adds it
+                       to the list (an assigned one keeps its place), "Quitar" takes an assigned one out (the key
+                       goes with the last); the menu sends every save / removal (SV<n>_<row>) and
+                       every changed match row (M<scope>_STADIUMMATCH). Without a context: one value telling to
+                       open it from the match hub.
   Vídeos               as the F12's Movies tab: "Asignar a" (Home Team / Derby / Round / Tournament, the ones
                        this match has; left out with one) and the MoviesGBD pack, each previewed by its
                        bootflowoutro.vp8 played muted by FIFA's MoviePlayer in the menu (ingame_images links it
@@ -37,6 +46,11 @@ What the rows mean here:
 After a save that changed settings.ini the runtime is applied again (apply_all_runtime): coming back to the
 KickOffHub is a "revisit" that would not reload anything (docs/stadium-slots.md).
 
+Texts: keys, not texts ("{{home~team:FC Barcelona}}", ingame_menu_texts.token): the menu puts them in FIFA's
+language of the moment (it can be chosen in the game, USE_LANGUAGE_SELECT = 1), with the same table
+(ingame_menu_texts, a copy of cgfs-ingame's menutexts.py). Its record says that language (LANG) and what comes
+back is compared with the keys rendered in it (say).
+
 ACK=<seq>: the last save the app processed. Until the app has seen a save, the menu keeps its own choice
 over the app's selection (a quick re-entry used to show the previous one, prueba 6).
 Does nothing unless the menu is installed in the game (data/ui/game/screens/cgfs16/cgfs16menu.big).
@@ -44,11 +58,12 @@ Does nothing unless the menu is installed in the game (data/ui/game/screens/cgfs
 from __future__ import annotations
 
 import datetime
+import re
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import ingame_datafile, ingame_images, ingame_recordscan
+from . import ingame_datafile, ingame_images, ingame_menu_texts, ingame_recordscan
 from .file_tools import _bundled_resource_path, discover_stadium_names
 
 if TYPE_CHECKING:
@@ -58,14 +73,23 @@ MENU_PAGE = "game/screens/cgfs16/CGFS16Menu"
 MENU_MOVIE = Path("data/ui/game/screens/cgfs16/cgfs16menu.big")
 DATA_MOVIE = Path("data/ui/cgfs16/data.big")
 TEMPLATE = "ingame/data_template.big"
+# the texts in Spanish (tests, docs); the menu gets them in the game's language (InGameMenuRuntime.t)
 DEFAULT_LABEL = "Por defecto (FIFA 16)"
 NOT_YET = "Próximamente"
 NO_MATCH = "Ábrelo desde el matchHub (R3)"
-# menu row -> (settings.ini section, attribute of the app with the packs' folder); key "0" = Default/Friendly
-DEFAULT_ROWS = {
-    "SCOREBOARD": ("Scoreboard", "ScoreBoard"),
-    "TVLOGO": ("TVLogo", "TVLogo"),
+# the Marcador / Logo TV tabs, as the F12's scoreboards / tvlogos tabs (app_overlay._get_scope_options_for_tab,
+# _resolve_overlay_assignment_target, the assign step): menu row -> (its scope row, title, attribute of the app with
+# the packs' folder, sections (home team, derby, the rest), thumbnail key, placeholder kind, image kind); the
+# title is an ingame_menu_texts key
+PACK_TABS = {
+    "SCOREBOARD": ("SCOREBOARDSCOPE", "tab_scoreboard", "ScoreBoard", ("HomeTeamScoreBoard", "DerbyScoreBoard", "Scoreboard"),
+                   "scoreboard", "scoreboard", "scoreboard"),
+    "TVLOGO": ("TVLOGOSCOPE", "tab_tvlogo", "TVLogo", ("HomeTeamTvLogo", "DerbyTvLogo", "TVLogo"),
+               "tvlogo", "tv", "tvlogo"),
 }
+DEFAULT_ROWS = tuple(PACK_TABS)   # the rows the log line shows
+DEFAULT_SCOPE_LABEL = "Por defecto / Amistoso"   # Spanish (tests)
+PACK_PLACEHOLDERS = {"SCOREBOARD": ingame_images.SCOREBOARD_PLACEHOLDER_REL, "TVLOGO": ingame_images.TVLOGO_PLACEHOLDER_REL}
 OTHER_ROWS = ("KITS",)
 DEFAULT_KEY = "0"
 STADIUM_SECTION, COMP_SECTION = "stadium", "comp"
@@ -108,6 +132,13 @@ IMAGE_KINDS = {"STADIUMPOLICE": "police", "STADIUMPITCH": "pitch", "STADIUMNET":
                "STADIUMENTRANCECAM": "entrancecam"}
 PICTURE_FOLDERS = {"STADIUMPOLICE": "Police", "STADIUMPITCH": "PitchMowPattern", "STADIUMNET": "Nets"}
 BAD_CHARS = "|=\n"
+RANDOM_LABEL = "Selector/Al azar"   # the match row's first value (STADIUMMATCH_FIRST, Spanish)
+# tab -> its label (ingame_menu_texts key): the menu's tabs (menudata.TABS, model.TOGGLES)
+STAMP_SLOT = "@STAMP@"   # the time in the INFO key, filled in when the data is written
+TAB_TEXTS = {"STADIUM": "tab_stadium", "SCOREBOARD": "tab_scoreboard", "TVLOGO": "tab_tvlogo",
+             "MOVIES": "tab_movies", "KITS": "tab_kits"}
+SAVE_FIELD = re.compile(r"SV(\d+)_([A-Z][A-Z0-9_]*)$")          # the n-th "Guardar" of a list tab
+MATCH_FIELD = re.compile(r"M(\d*)_" + STADIUM_ROW + r"MATCH$")   # the match row of a scope ("" with one scope)
 
 
 class InGameMenuRuntime:
@@ -121,8 +152,26 @@ class InGameMenuRuntime:
         self._template: bytes | None = None
         self._stadium_scopes: list[tuple[str, str, str]] = []   # the Estadio scopes the data was written with
         self._movie_scopes: list[tuple[str, str, str]] = []     # the Vídeos scopes
+        self._pack_scopes: dict[str, list[tuple[str, str, str]]] = {}   # the Marcador / Logo TV scopes
+        self.record_lang: str | None = None   # the language of the menu's last record (its LANG): FIFA's
         self._images_started = False
         self.images_busy = False   # the previews are being made in a worker thread
+
+    # --- language ----------------------------------------------------------------------------
+    def language(self) -> str:
+        """FIFA's language as last seen: the menu's record, else the app's guess (ingame_menu_texts.detect)."""
+        if self.record_lang:
+            return self.record_lang
+        localization = getattr(self.app, "localization", None)
+        return ingame_menu_texts.detect(getattr(self.app, "exedir", None), getattr(localization, "language", None))
+
+    def t(self, key: str, **fields) -> str:
+        """A text for the menu: its key, which the menu puts in FIFA's language when it opens."""
+        return _clean(ingame_menu_texts.token(key, **{k: _clean(str(v)) for k, v in fields.items()}))
+
+    def say(self, value: str) -> str:
+        """A value written with keys, as the menu showed it: in the language of its record (else the app's guess)."""
+        return ingame_menu_texts.render(value, self.language())
 
     # --- state -------------------------------------------------------------------------------
     def installed(self) -> bool:
@@ -141,15 +190,120 @@ class InGameMenuRuntime:
         """(values per row, selected index per row) of the plain rows, from the app's packs and settings.ini."""
         values: dict[str, list[str]] = {}
         selected: dict[str, int] = {}
-        for row, (section, folder_attr) in DEFAULT_ROWS.items():
-            names = [DEFAULT_LABEL] + _pack_names(getattr(self.app, folder_attr, None))
-            values[row] = names
-            current = self.app.settings_ini.read(DEFAULT_KEY, section).strip()
-            selected[row] = names.index(current) if current in names[1:] else 0
         for row in OTHER_ROWS:
-            values[row] = [NOT_YET]
+            values[row] = [self.t("not_yet")]
             selected[row] = 0
         return values, selected
+
+    # --- Marcador / Logo TV ------------------------------------------------------------------------
+    def pack_names(self, row: str) -> list[str]:
+        return _pack_names(getattr(self.app, PACK_TABS[row][2], None))
+
+    def pack_scopes(self, row: str) -> tuple[list[tuple[str, str, str]], int]:
+        """([(label, section, key)] the F12 overlay offers for scoreboards / TV logos in this match context, in its
+        order (Home Team, Derby, Default / Friendly, Round, Tournament), the index of the app's default scope
+        (assignment_runtime.default_scope_for_scoreboard: round, else tournament, else home team, else default)."""
+        app = self.app
+        home_section, derby_section, section = PACK_TABS[row][3]
+        hid, aid = _context(app, "HID"), _context(app, "AID")
+        names = {}
+        for side, team in (("home", hid), ("away", aid)):
+            try:
+                names[side] = (app._resolve_team_name(team) or "") if team else ""
+            except Exception:  # noqa: BLE001
+                names[side] = ""
+        scopes: list[tuple[str, str, str]] = []
+        home = None
+        if hid:
+            home = len(scopes)
+            scopes.append((self.t("home", team=names['home'] or hid), home_section, hid))
+        if hid and aid:
+            scopes.append((self.t("derby", home=names['home'] or hid, away=names['away'] or aid), derby_section,
+                           f"{hid}vs{aid}"))
+        default = len(scopes)
+        scopes.append((self.t("default_scope"), section, DEFAULT_KEY))
+        round_id, tour = _context(app, "TOURROUNDID"), _context(app, "TOURNAME")
+        chosen = None
+        if round_id:
+            chosen = len(scopes)
+            scopes.append((self.t("round", id=round_id), section, round_id))
+        if tour:
+            if chosen is None:
+                chosen = len(scopes)
+            scopes.append((self.t("tour", id=tour), section, tour))
+        if chosen is None:
+            chosen = home if home is not None else default
+        return scopes, chosen
+
+    def pack_lines(self, row: str) -> tuple[list[str], dict[str, list[str]], dict[str, int]]:
+        """Data lines, values and selection for the Marcador / Logo TV tab (see the module docstring)."""
+        scope_row, title_key, _attr, _sections, _thumb, _placeholder, kind = PACK_TABS[row]
+        title = self.t(title_key)
+        scopes, default = self.pack_scopes(row)
+        self._pack_scopes[row] = scopes
+        names = [self.t("default")] + self.pack_names(row)
+        exedir = Path(self.app.exedir)
+        placeholder_rel = PACK_PLACEHOLDERS[row]
+        placeholder = placeholder_rel if (exedir / "data" / "ui" / placeholder_rel).exists() else ""
+        images = [""] + [ingame_images.asset_image_rel(kind, n) if ingame_images.asset_image_file(exedir, kind, n).exists()
+                         else placeholder for n in names[1:]]
+        lines = [f"TITLE_{row}={title}", f"DESC_{row}=" + self.t(f"{title_key[4:]}_desc")]
+        if any(images):
+            lines.append(f"IMG_{row}=" + "|".join(images))
+        ini = self.app.settings_ini
+        selections = []
+        for _label, section, key in scopes:
+            current = ini.read(key, section).strip()
+            selections.append(names.index(current) if current in names[1:] else 0)
+        if len(scopes) == 1:
+            lines[0] = f"TITLE_{row}={title} · {scopes[0][0]}"
+            return lines, {row: names}, {row: selections[0]}
+        lines += [f"ROWS_{row}={scope_row}|{row}", f"PARENT_{row}={scope_row}",
+                  f"TITLE_{scope_row}=" + self.t("scope"), f"DESC_{scope_row}=" + self.t("scope_desc_pack")]
+        lines += [f"{row}_SEL@{g}={sel}" for g, sel in enumerate(selections)]
+        return lines, {scope_row: [label for label, _s, _k in scopes], row: names}, \
+            {scope_row: default, row: selections[default]}
+
+    def _pack_write(self, row: str, fields: dict[str, tuple[int, str]]):
+        """The Marcador / Logo TV tab's save, as the F12 overlay's: [section] key = pack; "Por defecto" removes
+        the key. Returns (key, value, section) to write, True if a delete was saved, or None."""
+        if row not in fields:
+            return None
+        scope_row = PACK_TABS[row][0]
+        written = self._pack_scopes.get(row) or self.pack_scopes(row)[0]
+        if scope_row in fields:
+            scope_index, scope_text = fields[scope_row]
+        elif len(written) == 1:
+            scope_index, scope_text = 0, self.say(written[0][0])
+        else:
+            return None
+        if not (0 <= scope_index < len(written) and self.say(written[scope_index][0]) == scope_text):
+            self.app.log(f"In-game menu: {row} scope '{scope_text}' is not the one written; ignored")
+            return None
+        _label, section, key = written[scope_index]
+        now, _default = self.pack_scopes(row)
+        if (section, key) not in {(s, k) for _l, s, k in now}:
+            self.app.log(f"In-game menu: {row} for [{section}] {key} ignored (the match context changed)")
+            return None
+        index, text = fields[row]
+        names = [self.say(self.t("default"))] + self.pack_names(row)
+        if not (0 <= index < len(names) and names[index] == text):
+            if text in names:
+                index = names.index(text)
+            else:
+                self.app.log(f"In-game menu: {row} '{text}' is not one of the app's packs; ignored")
+                return None
+        ini = self.app.settings_ini
+        if index == 0:
+            if ini.key_exists(key, section):
+                ini.delete_key(key, section)  # reloads from disk: save before any write
+                ini.save()
+                self.app.log(f"In-game menu assignment: [{section}] {key} reset to default")
+                return True
+            return None
+        if ini.read(key, section).strip() == names[index]:
+            return None
+        return key, names[index], section
 
     # --- stadiums ------------------------------------------------------------------------------
     def stadium_names(self) -> list[str]:
@@ -175,14 +329,14 @@ class InGameMenuRuntime:
                 name = app._resolve_team_name(hid) or ""
             except Exception:  # noqa: BLE001
                 name = ""
-            scopes.append((_clean(f"Equipo local ({name or hid})"), STADIUM_SECTION, hid))
+            scopes.append((self.t("home", team=name or hid), STADIUM_SECTION, hid))
         round_id = _context(app, "TOURROUNDID")
         if round_id:
-            scopes.append((f"Ronda ({round_id})", COMP_SECTION, round_id))
+            scopes.append((self.t("round", id=round_id), COMP_SECTION, round_id))
             default = len(scopes) - 1
         tour = _context(app, "TOURNAME")
         if tour:
-            scopes.append((f"Torneo ({tour})", COMP_SECTION, tour))
+            scopes.append((self.t("tour", id=tour), COMP_SECTION, tour))
             if not round_id:
                 default = len(scopes) - 1
         return scopes, default
@@ -200,45 +354,67 @@ class InGameMenuRuntime:
         scopes, default = self.stadium_scopes()
         self._stadium_scopes = scopes
         if not scopes:
-            return [f"DESC_{STADIUM_ROW}=Elige el estadio desde el matchHub, antes del partido (R3)."], \
-                   {STADIUM_ROW: [NO_MATCH]}, {STADIUM_ROW: 0}
-        names = [DEFAULT_LABEL] + self.stadium_names()
+            return [f"TITLE_{STADIUM_ROW}=" + self.t("tab_stadium"), f"DESC_{STADIUM_ROW}=" + self.t("stadium_open_hub")], \
+                   {STADIUM_ROW: [self.t("no_match")]}, {STADIUM_ROW: 0}
+        names = self.stadium_names()
+        if not names:
+            return [f"TITLE_{STADIUM_ROW}=" + self.t("tab_stadium"), f"DESC_{STADIUM_ROW}=" + self.t("no_stadiums")], \
+                   {STADIUM_ROW: ["-"]}, {STADIUM_ROW: 0}
         exedir = Path(self.app.exedir)
         # a stadium without its own preview gets the app's placeholder, as the F12 shows
-        # (_resolve_stadium_preview_path_or_default); "Por defecto" and anything else unknown: the menu's logo
+        # (_resolve_stadium_preview_path_or_default); anything else unknown: the menu's logo
         placeholder = ingame_images.PLACEHOLDER_REL if (exedir / "data" / "ui" / ingame_images.PLACEHOLDER_REL).exists() else ""
-        images = [""] + [ingame_images.stadium_image_rel(n) if ingame_images.stadium_image_file(exedir, n).exists()
-                         else placeholder for n in names[1:]]
-        lines = [f"ROWS_{STADIUM_ROW}=" + "|".join([SCOPE_ROW, STADIUM_ROW] + [row for row, *_ in STADIUM_OPTIONS]),
-                 f"PARENT_{STADIUM_ROW}={SCOPE_ROW}",
-                 f"TITLE_{SCOPE_ROW}=Asignar a", f"TITLE_{STADIUM_ROW}=Estadio",
-                 f"DESC_{SCOPE_ROW}=A quién se asigna el estadio, como en el overlay (F12): equipo local, ronda o torneo.",
-                 f"DESC_{STADIUM_ROW}=El elegido se añade a los de esa asignación y se usa en este partido."
-                 f" Por defecto: quita la asignación (estadio de FIFA)."]
+        images = [ingame_images.stadium_image_rel(n) if ingame_images.stadium_image_file(exedir, n).exists()
+                  else placeholder for n in names]
+        options = [row for row, *_ in STADIUM_OPTIONS]
+        r = STADIUM_ROW
+        lines = [f"ROWS_{r}=" + "|".join([SCOPE_ROW, r] + options), f"PARENT_{r}={SCOPE_ROW}", f"LIST_{r}={r}",
+                 f"TITLE_{SCOPE_ROW}=" + self.t("scope"), f"DESC_{SCOPE_ROW}=" + self.t("scope_desc_stadium"),
+                 f"TITLE_{r}=" + self.t("tab_stadium"), f"DESC_{r}=" + self.t("stadium_desc"),
+                 f"TITLE_{r}ADD=" + self.t("add"), f"DESC_{r}ADD=" + self.t("add_desc"),
+                 f"DESC_{r}ENTRY=" + self.t("entry_desc"),
+                 f"TITLE_{r}SAVE=" + self.t("save"), f"DESC_{r}SAVE=" + self.t("save_desc"),
+                 f"TITLE_{r}DEL=" + self.t("remove"), f"DESC_{r}DEL=" + self.t("remove_desc"),
+                 f"TITLE_{r}MATCH=" + self.t("match"), f"DESC_{r}MATCH=" + self.t("match_desc"),
+                 f"{r}MATCH_FIRST=" + self.t("random")]
         if any(images):
-            lines.append(f"IMG_{STADIUM_ROW}=" + "|".join(images))
-        selections = []
+            lines.append(f"IMG_{r}=" + "|".join(images))
         for g, (_label, section, key) in enumerate(scopes):
-            entries = self.stadium_entries(section, key)
-            current = entries[-1][0] if entries else ""   # the latest added (the F12 appends)
-            sel = names.index(current) if current in names[1:] else 0
-            selections.append(sel)
-            lines.append(f"{STADIUM_ROW}_SEL@{g}={sel}")
+            assigned = self.listed_stadiums(section, key, names)
+            lines.append(f"{r}_LIST@{g}=" + "|".join(str(names.index(n)) for n in assigned))
+            chosen = self.match_choice(section, key)
+            if chosen in assigned:
+                lines.append(f"{r}MATCH_SEL@{g}={assigned.index(chosen) + 1}")
         values_out: dict = {}
-        lines += self.option_lines(scopes, names, selections, values_out)
+        lines += self.option_lines(scopes, names, values_out)
         if len(scopes) == 1:
             # one scope (a friendly: only the home team): no "Asignar a" row -- FIFA greys out a row with a
-            # single value (prueba 9b) -- its scope goes in the stadium row's title instead; the options'
-            # selections are then keyed by the stadium alone ("<g>" instead of "<scope>.<g>")
-            lines = [line for line in lines if not line.startswith((f"ROWS_{STADIUM_ROW}=", f"PARENT_{STADIUM_ROW}=",
-                                                                    f"TITLE_{SCOPE_ROW}=", f"DESC_{SCOPE_ROW}=",
-                                                                    f"TITLE_{STADIUM_ROW}=", f"{STADIUM_ROW}_SEL@"))]
-            lines = [line.replace("_SEL@0.", "_SEL@", 1) if "_SEL@0." in line else line for line in lines]
-            lines.append(f"TITLE_{STADIUM_ROW}=Estadio · {scopes[0][0]}")
-            lines.append(f"ROWS_{STADIUM_ROW}=" + "|".join([STADIUM_ROW] + [row for row, *_ in STADIUM_OPTIONS]))
-            return lines, dict(values_out, **{STADIUM_ROW: names}), {STADIUM_ROW: selections[0]}
-        return lines, dict(values_out, **{SCOPE_ROW: [label for label, _s, _k in scopes], STADIUM_ROW: names}), \
-            {SCOPE_ROW: default, STADIUM_ROW: selections[default]}
+            # single value (prueba 9b) -- its scope goes in the stadium row's title instead; the lists and
+            # selections are then keyed without it ("<g>" instead of "<scope>.<g>", "_LIST" instead of "_LIST@0")
+            drop = (f"ROWS_{r}=", f"PARENT_{r}=", f"TITLE_{SCOPE_ROW}=", f"DESC_{SCOPE_ROW}=", f"TITLE_{r}=")
+            lines = [line for line in lines if not line.startswith(drop)]
+            lines = [line.replace("_SEL@0.", "_SEL@", 1) if "_SEL@0." in line
+                     else line.replace(f"{r}_LIST@0=", f"{r}_LIST=", 1).replace(f"{r}MATCH_SEL@0=", f"{r}MATCH_SEL=", 1)
+                     for line in lines]
+            lines.append(f"TITLE_{r}=" + self.t("tab_stadium") + f" · {scopes[0][0]}")
+            lines.append(f"ROWS_{r}=" + "|".join([r] + options))
+            return lines, dict(values_out, **{r: names}), {r: 0}
+        return lines, dict(values_out, **{SCOPE_ROW: [label for label, _s, _k in scopes], r: names}), \
+            {SCOPE_ROW: default, r: 0}
+
+    def listed_stadiums(self, section: str, key: str, names: list[str]) -> list[str]:
+        """The stadiums assigned to this key that the menu can show (in StadiumGBD), in order, once each."""
+        out: list[str] = []
+        for name, *_rest in self.stadium_entries(section, key):
+            if name in names and name not in out:
+                out.append(name)
+        return out
+
+    def match_choice(self, section: str, key: str) -> str | None:
+        """The stadium "Estadio del partido" chose for this key in this match, or None (random / the picker)."""
+        choices = getattr(self.app, "_ingame_stadium_choice", None) or {}
+        got = choices.get((section, key))
+        return got[1] if got and got[0] == getattr(self.app, "_kickoff_generation", 0) else None
 
     def option_values(self, row: str) -> list[str]:
         """The list of one of the stadium's option rows (STADIUM_OPTIONS), as the F12 wizard offers it."""
@@ -255,7 +431,7 @@ class InGameMenuRuntime:
             return ["0"]
         folder = exedir.joinpath(*where[0])
         packs = sorted(d.name for d in folder.iterdir() if d.is_dir()) if folder.is_dir() else []
-        return [NONE_LABEL] + [n for n in packs if not any(c in n for c in BAD_CHARS)]
+        return [self.t("none")] + [n for n in packs if not any(c in n for c in BAD_CHARS)]
 
     def option_picture(self, row: str, value: str):
         """The picture the F12 wizard previews for this option value (see IMAGE_KINDS), or None."""
@@ -306,25 +482,24 @@ class InGameMenuRuntime:
         return [ingame_images.asset_image_rel(kind, v) if ingame_images.asset_image_file(exedir, kind, v).exists()
                 else "" for v in values]
 
-    def option_lines(self, scopes, names, selections, values_out: dict) -> list[str]:
+    def option_lines(self, scopes, names, values_out: dict) -> list[str]:
         """Data lines of the stadium's option rows: their lists, titles, defaults and, per path
         "<scope>.<stadium>", what is set now -- police/pitch/net from that stadium's entry in the scope's value,
         the packs from their own sections (same for every scope). Fills values_out with the lists."""
         lines: list[str] = []
         ini = self.app.settings_ini
         entries_by_scope = [{e[0]: e for e in self.stadium_entries(section, key)} for _l, section, key in scopes]
-        for n, (row, title, desc, kind, where) in enumerate(STADIUM_OPTIONS):
+        for n, (row, _title, _desc, kind, where) in enumerate(STADIUM_OPTIONS):
             values = self.option_values(row)
             values_out[row] = values
-            lines += [f"PARENT_{row}={STADIUM_ROW}", f"TITLE_{row}={title}", f"DESC_{row}={desc}"]
-            default = OVERLAY_DEFAULTS[n] if kind == "triple" else NONE_LABEL
+            lines += [f"PARENT_{row}={STADIUM_ROW}", f"TITLE_{row}=" + self.t(IMAGE_KINDS[row]),
+                      f"DESC_{row}=" + self.t(IMAGE_KINDS[row] + "_desc")]
+            default = OVERLAY_DEFAULTS[n] if kind == "triple" else self.t("none")
             lines.append(f"{row}_DEF={values.index(default) if default in values else 0}")
             images = self.option_images(row, values)
             if any(images):
                 lines.append(f"IMG_{row}=" + "|".join(images))
             for g, name in enumerate(names):
-                if g == 0:
-                    continue
                 for s, entries in enumerate(entries_by_scope):
                     if kind == "triple":
                         entry = entries.get(name)
@@ -352,16 +527,16 @@ class InGameMenuRuntime:
             except Exception:  # noqa: BLE001
                 names[side] = ""
         if hid:
-            scopes.append((_clean(f"Equipo local ({names['home'] or hid})"), TEAM_MOVIES, hid))
+            scopes.append((self.t("home", team=names['home'] or hid), TEAM_MOVIES, hid))
         if hid and aid:
-            scopes.append((_clean(f"Derbi ({names['home'] or hid} - {names['away'] or aid})"), DERBY_MOVIES,
+            scopes.append((self.t("derby", home=names['home'] or hid, away=names['away'] or aid), DERBY_MOVIES,
                            f"{hid}vs{aid}"))
         round_id, tour = _context(app, "TOURROUNDID"), _context(app, "TOURNAME")
         if round_id:
-            scopes.append((f"Ronda ({round_id})", COMP_MOVIES, round_id))
+            scopes.append((self.t("round", id=round_id), COMP_MOVIES, round_id))
             default = len(scopes) - 1
         if tour:
-            scopes.append((f"Torneo ({tour})", COMP_MOVIES, tour))
+            scopes.append((self.t("tour", id=tour), COMP_MOVIES, tour))
             if default is None:
                 default = len(scopes) - 1
         if default is None:
@@ -374,17 +549,16 @@ class InGameMenuRuntime:
         scopes, default = self.movie_scopes()
         self._movie_scopes = scopes
         if not scopes:
-            return [f"DESC_{MOVIE_ROW}=Elige los vídeos desde el matchHub, antes del partido (R3)."], \
-                   {MOVIE_ROW: [NO_MATCH]}, {MOVIE_ROW: 0}
-        names = [DEFAULT_LABEL] + self.movie_names()
+            return [f"TITLE_{MOVIE_ROW}=" + self.t("tab_movies"), f"DESC_{MOVIE_ROW}=" + self.t("movies_open_hub")], \
+                   {MOVIE_ROW: [self.t("no_match")]}, {MOVIE_ROW: 0}
+        names = [self.t("default")] + self.movie_names()
         exedir = Path(self.app.exedir)
         videos = [""] + [ingame_images.movie_video_play_path(n) if ingame_images.movie_video_file(exedir, n).exists()
                          else "" for n in names[1:]]
         placeholder = ingame_images.MOVIE_PLACEHOLDER_REL \
             if (exedir / "data" / "ui" / ingame_images.MOVIE_PLACEHOLDER_REL).exists() else ""
         images = [""] + [placeholder if not v else "" for v in videos[1:]]
-        lines = [f"TITLE_{MOVIE_ROW}=Vídeos", f"DESC_{MOVIE_ROW}=Las entradas y salidas de vídeo (MoviesGBD) de esa "
-                 f"asignación; la vista previa se reproduce sin sonido. Por defecto: quita la asignación."]
+        lines = [f"TITLE_{MOVIE_ROW}=" + self.t("tab_movies"), f"DESC_{MOVIE_ROW}=" + self.t("movies_desc")]
         if any(videos):
             lines.append(f"VID_{MOVIE_ROW}=" + "|".join(videos))
         if any(images):
@@ -395,12 +569,10 @@ class InGameMenuRuntime:
             current = ini.read(key, section).strip()
             selections.append(names.index(current) if current in names[1:] else 0)
         if len(scopes) == 1:
-            lines[0] = f"TITLE_{MOVIE_ROW}=Vídeos · {scopes[0][0]}"
+            lines[0] = f"TITLE_{MOVIE_ROW}=" + self.t("tab_movies") + f" · {scopes[0][0]}"
             return lines, {MOVIE_ROW: names}, {MOVIE_ROW: selections[0]}
         lines += [f"ROWS_{MOVIE_ROW}={MOVIE_SCOPE_ROW}|{MOVIE_ROW}", f"PARENT_{MOVIE_ROW}={MOVIE_SCOPE_ROW}",
-                  f"TITLE_{MOVIE_SCOPE_ROW}=Asignar a",
-                  f"DESC_{MOVIE_SCOPE_ROW}=A quién se asignan los vídeos, como en el overlay (F12): equipo local, "
-                  f"derbi, ronda o torneo."]
+                  f"TITLE_{MOVIE_SCOPE_ROW}=" + self.t("scope"), f"DESC_{MOVIE_SCOPE_ROW}=" + self.t("scope_desc_movies")]
         lines += [f"{MOVIE_ROW}_SEL@{g}={sel}" for g, sel in enumerate(selections)]
         return lines, {MOVIE_SCOPE_ROW: [label for label, _s, _k in scopes], MOVIE_ROW: names}, \
             {MOVIE_SCOPE_ROW: default, MOVIE_ROW: selections[default]}
@@ -414,10 +586,10 @@ class InGameMenuRuntime:
         if MOVIE_SCOPE_ROW in fields:
             scope_index, scope_text = fields[MOVIE_SCOPE_ROW]
         elif len(written) == 1:
-            scope_index, scope_text = 0, written[0][0]
+            scope_index, scope_text = 0, self.say(written[0][0])
         else:
             return None
-        if not (0 <= scope_index < len(written) and written[scope_index][0] == scope_text):
+        if not (0 <= scope_index < len(written) and self.say(written[scope_index][0]) == scope_text):
             self.app.log(f"In-game menu: movie scope '{scope_text}' is not the one written; ignored")
             return None
         _label, section, key = written[scope_index]
@@ -425,9 +597,9 @@ class InGameMenuRuntime:
         if (section, key) not in {(s, k) for _l, s, k in now}:
             self.app.log(f"In-game menu: movies for [{section}] {key} ignored (the match context changed)")
             return None
-        _index, text = fields[MOVIE_ROW]
+        index, text = fields[MOVIE_ROW]
         ini = self.app.settings_ini
-        if text == DEFAULT_LABEL:
+        if index == 0 or text == self.say(self.t("default")):
             if ini.key_exists(key, section):
                 ini.delete_key(key, section)  # reloads from disk: save before any write
                 ini.save()
@@ -455,7 +627,7 @@ class InGameMenuRuntime:
         assets, textures = [], []
         for row, kind in IMAGE_KINDS.items():
             for value in self.option_values(row):
-                if value == NONE_LABEL:
+                if value == self.t("none"):
                     continue
                 if row == "STADIUMGOALPOSTTEX":
                     textures.append(value)
@@ -467,6 +639,17 @@ class InGameMenuRuntime:
         from .file_tools import asset_placeholder_path, resolve_movie_preview_path, stadium_preview_fallback_path
         placeholder_source = stadium_preview_fallback_path()
         movie_placeholder = asset_placeholder_path("movie")
+        from .file_tools import resolve_asset_thumbnail_path
+        for row, (_scope, _title, attr, _sections, thumb, placeholder_kind, kind) in PACK_TABS.items():
+            root = getattr(self.app, attr, None)
+            for pack in self.pack_names(row) if root else []:
+                try:
+                    source = resolve_asset_thumbnail_path(Path(root) / pack, thumb)
+                except Exception:  # noqa: BLE001
+                    source = None
+                if source is not None:
+                    assets.append((kind, pack, source))
+        pack_placeholders = [(asset_placeholder_path(PACK_TABS[row][5]), rel) for row, rel in PACK_PLACEHOLDERS.items()]
         movies_root = getattr(self.app, "Movies", None)
         movie_videos = []
         for name in self.movie_names():
@@ -482,6 +665,9 @@ class InGameMenuRuntime:
                 if movie_placeholder is not None and ingame_images.ensure_placeholder(
                         exedir, movie_placeholder, ingame_images.MOVIE_PLACEHOLDER_REL):
                     made += 1
+                for source, rel in pack_placeholders:
+                    if source is not None and ingame_images.ensure_placeholder(exedir, source, rel):
+                        made += 1
                 more, more_available = ingame_images.ensure_movie_videos(exedir, movie_videos)
                 made, available = made + more, available + more_available
                 for value in textures:   # after the stadiums: these take a subprocess each
@@ -512,7 +698,18 @@ class InGameMenuRuntime:
         if not self.installed():
             return False
         values, selected = self.rows()
-        extra, stadium_values, stadium_selected = self.stadium_lines()
+        extra: list[str] = [f"LANG={self.language()}",   # the app's guess, for the log / diagnosis only
+                            "INFO=" + self.t("info", source="CG Server 16", stamp=STAMP_SLOT),
+                            "BEHIND=" + self.t("behind"), "TITLE_KITS=" + self.t("tab_kits"),
+                            "DESC_KITS=" + self.t("kits_desc")]
+        extra += [f"TAB_{tab}=" + self.t(key) for tab, key in TAB_TEXTS.items()]
+        for row in PACK_TABS:
+            pack_extra, pack_values, pack_selected = self.pack_lines(row)
+            extra += pack_extra
+            values.update(pack_values)
+            selected.update(pack_selected)
+        stadium_extra, stadium_values, stadium_selected = self.stadium_lines()
+        extra += stadium_extra
         values.update(stadium_values)
         selected.update(stadium_selected)
         movie_extra, movie_values, movie_selected = self.movie_lines()
@@ -521,8 +718,9 @@ class InGameMenuRuntime:
         selected.update(movie_selected)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = ingame_datafile.encode(values, selected, source="CG Server 16", stamp=stamp, ack=self.last_seq)
-        text = "\n".join([text] + extra)
-        key = "\n".join(line for line in text.split("\n") if not line.startswith("STAMP="))
+        text = "\n".join([text] + [line.replace(STAMP_SLOT, stamp) if line.startswith("INFO=") else line
+                                   for line in extra])
+        key = "\n".join(line for line in text.split("\n") if not line.startswith(("STAMP=", "INFO=")))
         if key == self._written and not force:
             return False
         if self._template is None:
@@ -535,7 +733,7 @@ class InGameMenuRuntime:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(ingame_datafile.render(self._template, text))
         self._written = key
-        shown = ", ".join(f"{row}={values[row][selected[row]]}" for row in DEFAULT_ROWS)
+        shown = ", ".join(f"{row}={self.say(values[row][selected[row]])}" for row in DEFAULT_ROWS)
         stadium = f", stadium scopes={len(self._stadium_scopes)}" if self._stadium_scopes else ""
         self.app.log(f"In-game menu: data.big written ({reason}): {shown}{stadium}, ack={self.last_seq}")
         self.start_images()
@@ -602,7 +800,13 @@ class InGameMenuRuntime:
             return
         seq, fields = top
         self.app.log(f"In-game menu: save #{seq} read from FIFA ({mb:.0f} MB in {secs:.1f} s)")
-        changed = self.apply(dict(fields))
+        fields = dict(fields)
+        reported = ingame_menu_texts.normalize(fields.pop("LANG", (0, ""))[1])
+        if reported and reported != self.record_lang:
+            self.app.log(f"In-game menu: FIFA is in '{reported}'")
+        if reported:
+            self.record_lang = reported   # what follows was shown in it
+        changed = self.apply(fields)
         self.last_seq = seq
         self.write_data(f"after save #{seq}", force=True)
         if changed:
@@ -612,86 +816,100 @@ class InGameMenuRuntime:
     def apply(self, fields: dict[str, tuple[int, str]]) -> bool:
         """Writes the menu's choices into settings.ini. The index refers to the lists in data.big; the text
         decides if the lists moved since. True if settings.ini changed."""
-        values, _selected = self.rows()
         ini = self.app.settings_ini
         writes: list[tuple[str, str, str]] = []   # (key, value, section)
         changed = False
-        for row, (section, _folder) in DEFAULT_ROWS.items():
-            if row not in fields:
-                continue
-            index, text = fields[row]
-            names = values[row]
-            if not (0 <= index < len(names) and names[index] == text):
-                if text in names:
-                    index = names.index(text)
-                else:
-                    self.app.log(f"In-game menu: {row} '{text}' is not one of the app's packs; ignored")
-                    continue
-            current = ini.read(DEFAULT_KEY, section).strip()
-            if index == 0:
-                if ini.key_exists(DEFAULT_KEY, section):
-                    ini.delete_key(DEFAULT_KEY, section)  # reloads from disk: save before any write
-                    ini.save()
-                    changed = True
-                    self.app.log(f"In-game menu assignment: [{section}] {DEFAULT_KEY} reset to default")
-            elif names[index] != current:
-                writes.append((DEFAULT_KEY, names[index], section))
+        for row in PACK_TABS:
+            pack = self._pack_write(row, fields)   # a delete is saved inside: before any write below
+            if pack is True:
+                changed = True
+            elif pack:
+                writes.append(pack)
         movie = self._movie_write(fields)   # a delete is saved inside: before any write below
         if movie is True:
             changed = True
         elif movie:
             writes.append(movie)
-        stadium_write, stadium_changed, preselect = self._stadium_write(fields)  # its own saves come first
-        changed = changed or stadium_changed
-        if stadium_write:
-            writes.append(stadium_write)
+        changed = self._stadium_saves(fields) or changed   # saved inside: before the writes below
         for key, value, section in writes:
             ini.write(key, value, section)
             self.app.log(f"In-game menu assignment: [{section}] {key}={value}")
         if writes:
             ini.save()
-        if preselect:
-            self._preselect_stadium(*preselect)
         return changed or bool(writes)
 
-    def _stadium_write(self, fields: dict[str, tuple[int, str]]):
-        """The Estadio tab's save, as the F12 overlay's stadium wizard (app_overlay._activate_wizard_step's last
-        step): the packs (goalpost model/texture, net mesh, entrance camera) first, in their own sections keyed by
-        the stadium (assignment_runtime._write_stadium_goalpost_overrides: deletes saved one by one, then the
-        writes), then the scope's value with this stadium's entry "<stadium>,<police>,<pitch>,<net>" appended
-        (_append_overlay_stadium: a re-picked stadium moves last with the new triple; max 64), pre-chosen for
-        the match about to be played. "Por defecto" removes the scope's key.
-        Returns (assignment to write (key, value, section) or None, settings.ini changed already, the
-        (key, value, section) to pre-choose or None)."""
+    def _stadium_scope(self, index: int | None, text: str | None):
+        """(section, key) of a scope the menu sent (index and label into the scopes the data was written with;
+        None with one scope: the menu showed no "Asignar a" row), or None (logged) if it is not one of them or
+        the match context changed since."""
         written = self._stadium_scopes
-        if STADIUM_ROW not in fields or not written:
-            return None, False, None
-        if SCOPE_ROW in fields:
-            scope_index, scope_text = fields[SCOPE_ROW]
-        elif len(written) == 1:
-            scope_index, scope_text = 0, written[0][0]   # one scope: the menu showed no "Asignar a" row
-        else:
-            return None, False, None
-        if not (0 <= scope_index < len(written) and written[scope_index][0] == scope_text):
-            self.app.log(f"In-game menu: stadium scope '{scope_text}' is not the one written; ignored")
-            return None, False, None
-        _label, section, key = written[scope_index]
+        if index is None:
+            if len(written) != 1:
+                return None
+            index, text = 0, self.say(written[0][0])
+        if not (0 <= index < len(written) and self.say(written[index][0]) == text):
+            self.app.log(f"In-game menu: stadium scope '{text}' is not the one written; ignored")
+            return None
+        _label, section, key = written[index]
         now, _default = self.stadium_scopes()
         if (section, key) not in {(s, k) for _l, s, k in now}:
             self.app.log(f"In-game menu: stadium for [{section}] {key} ignored (the match context changed)")
-            return None, False, None
-        _index, text = fields[STADIUM_ROW]
+            return None
+        return section, key
+
+    def _stadium_saves(self, fields: dict[str, tuple[int, str]]) -> bool:
+        """The Estadio tab's "Guardar"s (SV<n>_<row>, in order) and its match rows. True if anything changed."""
+        saves: dict[int, dict[str, tuple[int, str]]] = {}
+        for name, value in fields.items():
+            m = SAVE_FIELD.match(name)
+            if m:
+                saves.setdefault(int(m.group(1)), {})[m.group(2)] = value
+        changed = False
+        for n in sorted(saves):
+            changed = self._stadium_save(saves[n]) or changed
+        return self._match_choices(fields) or changed
+
+    def _stadium_remove(self, section: str, key: str, text: str) -> bool:
+        """"Quitar": the stadium's entry goes from the key's value (the key goes with the last one; its packs stay,
+        they belong to the stadium) and so does a match choice of it. Saved here. True if settings.ini changed."""
         ini = self.app.settings_ini
-        if text == DEFAULT_LABEL:
-            if ini.key_exists(key, section):
-                ini.delete_key(key, section)  # reloads from disk: save before any write
-                ini.save()
-                self.app.log(f"In-game menu assignment: [{section}] {key} removed (FIFA's stadium)")
-                return None, True, None
-            return None, False, None
+        entries = self.stadium_entries(section, key)
+        rest = [entry for entry in entries if entry[0] != text]
+        choices = getattr(self.app, "_ingame_stadium_choice", None)
+        if choices and choices.get((section, key), (None, None))[1] == text:
+            choices.pop((section, key), None)
+        if len(rest) == len(entries):
+            return False
+        if rest:
+            value = ",".join(field for entry in rest for field in entry)
+            ini.write(key, value, section)
+            ini.save()
+            self.app.log(f"In-game menu assignment: [{section}] {key}={value} ({text} removed)")
+        else:
+            ini.delete_key(key, section)   # reloads from disk: nothing pending here
+            ini.save()
+            self.app.log(f"In-game menu assignment: [{section}] {key} removed ({text} was the last)")
+        return True
+
+    def _stadium_save(self, fields: dict[str, tuple[int, str]]) -> bool:
+        """One "Guardar", as the F12 overlay's stadium wizard (app_overlay._activate_wizard_step's last step): the
+        packs (goalpost model/texture, net mesh, entrance camera) first, in their own sections keyed by the stadium
+        (assignment_runtime._write_stadium_goalpost_overrides: deletes saved one by one, then the writes), then
+        the scope's value with this stadium's entry "<stadium>,<police>,<pitch>,<net>": in its place if it was
+        assigned already, else appended (max 64, the oldest goes). Saved here. True if settings.ini changed."""
+        if STADIUM_ROW not in fields:
+            return False
+        scope = self._stadium_scope(*fields[SCOPE_ROW]) if SCOPE_ROW in fields else self._stadium_scope(None, None)
+        if scope is None:
+            return False
+        section, key = scope
+        text = fields[STADIUM_ROW][1]
+        if f"{STADIUM_ROW}DEL" in fields:
+            return self._stadium_remove(section, key, text)
         if text not in self.stadium_names():
             self.app.log(f"In-game menu: stadium '{text}' is not in StadiumGBD; ignored")
-            return None, False, None
+            return False
+        ini = self.app.settings_ini
         entries = self.stadium_entries(section, key)
         old = {name: (police, pitch, net) for name, police, pitch, net in entries}
         triple = list(old.get(text, OVERLAY_DEFAULTS))
@@ -700,45 +918,76 @@ class InGameMenuRuntime:
             if row not in fields:
                 continue
             chosen = fields[row][1]
-            if chosen not in self.option_values(row):
+            if chosen not in [self.say(v) for v in self.option_values(row)]:
                 self.app.log(f"In-game menu: {row} '{chosen}' is not in its list; kept as it was")
                 continue
             if kind == "triple":
                 triple[n] = chosen
             else:
-                overrides[where[1]] = "None" if chosen == NONE_LABEL else chosen
+                overrides[where[1]] = "None" if chosen == self.say(self.t("none")) else chosen
         changed = False
         current_packs = {sec: (ini.read(text, sec).strip() or "None") for sec in overrides}
         if any(current_packs[sec] != value for sec, value in overrides.items()):
             from .assignment_runtime import AssignmentRuntime
             writer = getattr(self.app, "assignment_runtime", None) or AssignmentRuntime(self.app)
-            writer._write_stadium_goalpost_overrides([text], overrides)   # saved (before any write below)
+            writer._write_stadium_goalpost_overrides([text], overrides)   # saved (before the write below)
             changed = True
             self.app.log(f"In-game menu assignment: packs of {text}: {overrides}")
-        new_entries = [entry for entry in entries if entry[0] != text]
-        if len(new_entries) >= MAX_STADIUMS:
-            new_entries.pop(0)
-        new_entries.append((text, *triple))
-        value = ",".join(field for entry in new_entries for field in entry)
-        old_value = ",".join(field for entry in entries for field in entry)
-        write = (key, value, section) if value != old_value else None
-        if write is None and not changed:
-            return None, False, None   # nothing new for this scope
-        return write, changed, (key, value, section)
+            entries = self.stadium_entries(section, key)
+        entry = (text, *triple)
+        if text in old:
+            new_entries = [entry if name == text else (name, *rest) for name, *rest in entries]
+        else:
+            new_entries = list(entries)
+            if len(new_entries) >= MAX_STADIUMS:
+                new_entries.pop(0)
+            new_entries.append(entry)
+        value = ",".join(field for e in new_entries for field in e)
+        old_value = ",".join(field for e in entries for field in e)
+        if value != old_value:
+            ini.write(key, value, section)
+            ini.save()
+            changed = True
+            self.app.log(f"In-game menu assignment: [{section}] {key}={value}")
+        return changed
 
-    def _preselect_stadium(self, key: str, value: str, section: str) -> None:
-        """What the overlay leaves after an explicit pick (app_overlay._write_overlay_assignment): the stadium
-        picker of this match counts as resolved for the value just written, so apply_stadium_runtime applies
-        the chosen one (the last entry) instead of asking among every stadium of that key."""
+    def _match_choices(self, fields: dict[str, tuple[int, str]]) -> bool:
+        """"Estadio del partido" per scope: app._ingame_stadium_choice[(section, key)] = (this match's kickoff
+        generation, stadium); "Selector/Al azar" removes it. True if a choice changed."""
         app = self.app
-        if not hasattr(app, "_stadium_picker_signature"):
-            return
-        app._stadium_picker_signature = (getattr(app, "_kickoff_generation", 0), section, key, value,
-                                         getattr(app, "HID", ""), getattr(app, "TOURNAME", ""),
-                                         getattr(app, "TOURROUNDID", ""))
-        app._stadium_picker_pending = True
-        app._stadium_picker_resolved = True
-        app._stadium_picker_chosen = value.split(",")[-4]   # the last entry: the one just picked
+        if not hasattr(app, "_ingame_stadium_choice"):
+            app._ingame_stadium_choice = {}
+        generation = getattr(app, "_kickoff_generation", 0)
+        changed = False
+        for field, (index, text) in fields.items():
+            m = MATCH_FIELD.match(field)
+            if not m:
+                continue
+            if m.group(1):   # the scope's index in the data (the record carries no scope label here)
+                g = int(m.group(1))
+                if g >= len(self._stadium_scopes):
+                    continue
+                scope = self._stadium_scope(g, self.say(self._stadium_scopes[g][0]))
+            else:
+                scope = self._stadium_scope(None, None)
+            if scope is None:
+                continue
+            section, key = scope
+            before = self.match_choice(section, key)
+            assigned = [entry[0] for entry in self.stadium_entries(section, key)]
+            if index == 0 or text == self.say(self.t("random")):
+                app._ingame_stadium_choice.pop((section, key), None)
+                after = None
+            elif text in assigned:
+                app._ingame_stadium_choice[(section, key)] = (generation, text)
+                after = text
+            else:
+                self.app.log(f"In-game menu: match stadium '{text}' is not assigned to [{section}] {key}; ignored")
+                continue
+            if after != before:
+                changed = True
+                self.app.log(f"In-game menu: stadium for this match on [{section}] {key}: {after or self.say(self.t('random'))}")
+        return changed
 
 
 def _context(app, attr: str) -> str:

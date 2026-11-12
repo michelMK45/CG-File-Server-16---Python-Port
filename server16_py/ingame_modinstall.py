@@ -11,7 +11,9 @@ and installs the menu from a release package (resources/ingame/mod) without this
                        is written. A file the game had is backed up and put back by uninstall; a loose
                        file the game did not have gets its name hash zeroed in the .bh files (as FIP's
                        regenerator does) and uninstall puts the hash back.
-  uninstall(game, patches)
+  uninstall(game, patches, unpatch)
+                       unpatch: rel -> unpatch of every file an install of ours may have patched; install
+                       also takes our blocks out of a patched file it no longer patches (a retired patch)
   write_package(folder, info, files, variants) / load_package(folder)
                        the release package: prebuilt files plus, for a game file we change (the KickOffHub
                        movie), one prebuilt copy per known original (keyed by the original's sha1)
@@ -259,9 +261,27 @@ def _zero_hash(game, man, rel):
         man['hashes'] += [dict(slot, rel=rel) for slot in game.zero_hash(rel)]
 
 
-def install(game, files, patches, info, check=None, log=print):
+def _unpatch_file(game, man, rel, unpatch, log):
+    """Takes our blocks out of a patched file: no loose file again if it is then the game's own, else the text
+    without them; the .bh slots zeroed for it get their hash back."""
+    info = man['patched'].pop(rel)
+    dst = game.path(rel)
+    if os.path.exists(dst):
+        text = unpatch(game.read(rel).decode('latin-1'))
+        if not info.get('had_loose') and game.in_big(rel) and text.encode('latin-1') == game.read_packed(rel):
+            os.remove(dst)  # identical to the game's own: no loose file, as before
+        else:
+            _write(dst, text.encode('latin-1'))
+        log(f'~ {rel} (sin el bloque CGFS16)')
+    for slot in [s for s in man['hashes'] if s.get('rel') == rel]:
+        game.restore_hash(slot)
+        man['hashes'].remove(slot)
+
+
+def install(game, files, patches, info, check=None, log=print, unpatch=None):
     """Installs (or updates an older install of) the files and patches; returns the manifest.
-    check(rel, text) raises ValueError when a patched text lacks something. FIFA 16 must be closed."""
+    check(rel, text) raises ValueError when a patched text lacks something. FIFA 16 must be closed.
+    unpatch: rel -> unpatch, for files an older install patched that are not in `patches` any more."""
     man = load_manifest(game) or {'created': {}, 'patched': {}, 'hashes': []}
     contents, skipped = {}, []
     for rel, data in files.items():
@@ -272,13 +292,15 @@ def install(game, files, patches, info, check=None, log=print):
                 continue
         contents[rel] = data
     changed = {}
-    for rel, (patch, unpatch) in patches.items():  # every text checked before writing anything
-        after = patch(unpatch(game.read(rel).decode('latin-1')))  # re-patch: an older install is replaced
+    for rel, (patch, strip) in patches.items():  # every text checked before writing anything
+        after = patch(strip(game.read(rel).decode('latin-1')))  # re-patch: an older install is replaced
         if check:
             check(rel, after)
         changed[rel] = after
     for rel in [r for r in man['created'] if r not in contents]:  # left by an older install, or skipped now
         _remove_created(game, man, rel, log)
+    for rel in [r for r in man['patched'] if r not in patches and r in (unpatch or {})]:   # a retired patch
+        _unpatch_file(game, man, rel, unpatch[rel], log)
     for rel, data in contents.items():
         dst = game.path(rel)
         if rel not in man['created']:
@@ -306,26 +328,17 @@ def install(game, files, patches, info, check=None, log=print):
     return man
 
 
-def uninstall(game, patches, log=print):
+def uninstall(game, patches, log=print, unpatch=None):
     """Removes exactly what install added. False if nothing was installed."""
     man = load_manifest(game)
     if not man:
         return False
     for rel in list(man['created']):
         _remove_created(game, man, rel, log)
-    for rel in man['patched']:
-        dst = game.path(rel)
-        if not os.path.exists(dst) or rel not in patches:
-            continue
-        _patch, unpatch = patches[rel]
-        text = unpatch(game.read(rel).decode('latin-1'))
-        info = man['patched'][rel]
-        if not info.get('had_loose') and game.in_big(rel) and text.encode('latin-1') == game.read_packed(rel):
-            os.remove(dst)  # identical to the game's own: no loose file, as before
-        else:
-            _write(dst, text.encode('latin-1'))
-        log(f'~ {rel} (sin el bloque CGFS16)')
-    for slot in man.get('hashes', []):  # those of the patched files
+    unpatchers = dict(unpatch or {}, **{rel: pair[1] for rel, pair in patches.items()})
+    for rel in [r for r in man['patched'] if r in unpatchers]:
+        _unpatch_file(game, man, rel, unpatchers[rel], log)
+    for slot in man.get('hashes', []):  # any left (a patched file nobody knows how to unpatch)
         game.restore_hash(slot)
     os.remove(manifest_path(game))
     shutil.rmtree(os.path.join(game.root, STATE_DIR, 'backup'), ignore_errors=True)
