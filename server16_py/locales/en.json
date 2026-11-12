@@ -774,6 +774,7 @@
   "setup.section.ingame_menu": "IN-GAME MENU",
   "setup.item.ingame_menu": "CGFS16 menu inside FIFA 16 (R3 on the match hub)",
   "button.uninstall_ingame_menu": "Uninstall in-game menu",
+  "setup.hint.ingame_menu_theme": "A FIFA theme replaces the files the in-game menu hooks into. After installing or changing a theme, the menu is put back automatically when this app starts or when you press Launch FIFA 16 (with FIFA closed). If R3 still does not open it, close FIFA and press Run Setup.",
   "setup.status.ingame_installed": "Installed ({build})",
   "setup.status.ingame_update": "Update available ({build})",
   "setup.status.ingame_not_installed": "Not installed",

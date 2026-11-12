@@ -28,8 +28,8 @@ What the rows mean here:
                        [stadium] <HID>, Round -> [comp] <ROUND>, Tournament -> [comp] <TOUR>; left out with one),
                        "+ Agregar estadio", one row per stadium assigned to that scope (each entry
                        "<stadium>,<police>,<pitch>,<net>" of the key) and "Estadio del partido" (Selector/Al azar or one of
-                       them, app._ingame_stadium_choice: StadiumRuntime uses it for this match, before random or
-                       the picker). A on "+ Agregar" or a stadium opens its assets, as the F12 overlay's stadium
+                       them, saved in settings.ini [FixedStadium] <section>_<key>: StadiumRuntime uses it for every
+                       match of that assignment, before random or the picker, until Selector/Al azar again). A on "+ Agregar" or a stadium opens its assets, as the F12 overlay's stadium
                        wizard: the stadium (every one of StadiumGBD, with its preview from ingame_images; locked
                        when editing one), then STADIUM_OPTIONS: police, pitch pattern, net colour (the entry's
                        triple, per scope) and goalpost model/texture, net mesh, entrance camera (their own
@@ -93,6 +93,10 @@ PACK_PLACEHOLDERS = {"SCOREBOARD": ingame_images.SCOREBOARD_PLACEHOLDER_REL, "TV
 OTHER_ROWS = ("KITS",)
 DEFAULT_KEY = "0"
 STADIUM_SECTION, COMP_SECTION = "stadium", "comp"
+# "Estadio del partido" (the match row of the Estadio tab): the stadium fixed for one assignment, kept across
+# matches and restarts in settings.ini [FixedStadium] "<section>_<key>" = <stadium> (stadium_241, comp_12);
+# no key = Selector/Al azar. StadiumRuntime._ingame_menu_choice reads it.
+FIXED_STADIUM_SECTION = "FixedStadium"
 # Vídeos, as the F12 overlay's Movies tab (assignment_runtime.assign_movie): Home Team -> [TeamMovies] <HID>,
 # Derby -> [DerbyMatch] <HID>vs<AID>, Round -> [movies] <ROUND>, Tournament -> [movies] <TOUR>; the value is a
 # MoviesGBD pack. Its preview is the pack's bootflowoutro.vp8 (file_tools.resolve_movie_preview_path), played muted
@@ -411,10 +415,8 @@ class InGameMenuRuntime:
         return out
 
     def match_choice(self, section: str, key: str) -> str | None:
-        """The stadium "Estadio del partido" chose for this key in this match, or None (random / the picker)."""
-        choices = getattr(self.app, "_ingame_stadium_choice", None) or {}
-        got = choices.get((section, key))
-        return got[1] if got and got[0] == getattr(self.app, "_kickoff_generation", 0) else None
+        """The stadium "Estadio del partido" fixed for this key, or None (random / the picker)."""
+        return read_fixed_stadium(self.app.settings_ini, section, key)
 
     def option_values(self, row: str) -> list[str]:
         """The list of one of the stadium's option rows (STADIUM_OPTIONS), as the F12 wizard offers it."""
@@ -875,11 +877,13 @@ class InGameMenuRuntime:
         ini = self.app.settings_ini
         entries = self.stadium_entries(section, key)
         rest = [entry for entry in entries if entry[0] != text]
-        choices = getattr(self.app, "_ingame_stadium_choice", None)
-        if choices and choices.get((section, key), (None, None))[1] == text:
-            choices.pop((section, key), None)
+        fixed_changed = False
+        if read_fixed_stadium(ini, section, key) == text:
+            write_fixed_stadium(ini, section, key, None)   # saved
+            fixed_changed = True
+            self.app.log(f"In-game menu: fixed stadium on [{section}] {key} removed ({text} removed)")
         if len(rest) == len(entries):
-            return False
+            return fixed_changed
         if rest:
             value = ",".join(field for entry in rest for field in entry)
             ini.write(key, value, section)
@@ -952,12 +956,9 @@ class InGameMenuRuntime:
         return changed
 
     def _match_choices(self, fields: dict[str, tuple[int, str]]) -> bool:
-        """"Estadio del partido" per scope: app._ingame_stadium_choice[(section, key)] = (this match's kickoff
-        generation, stadium); "Selector/Al azar" removes it. True if a choice changed."""
-        app = self.app
-        if not hasattr(app, "_ingame_stadium_choice"):
-            app._ingame_stadium_choice = {}
-        generation = getattr(app, "_kickoff_generation", 0)
+        """"Estadio del partido" per scope: saved in settings.ini [FixedStadium] (write_fixed_stadium), kept for
+        every match of that assignment; "Selector/Al azar" removes it. True if a choice changed."""
+        ini = self.app.settings_ini
         changed = False
         for field, (index, text) in fields.items():
             m = MATCH_FIELD.match(field)
@@ -976,18 +977,41 @@ class InGameMenuRuntime:
             before = self.match_choice(section, key)
             assigned = [entry[0] for entry in self.stadium_entries(section, key)]
             if index == 0 or text == self.say(self.t("random")):
-                app._ingame_stadium_choice.pop((section, key), None)
                 after = None
             elif text in assigned:
-                app._ingame_stadium_choice[(section, key)] = (generation, text)
                 after = text
             else:
                 self.app.log(f"In-game menu: match stadium '{text}' is not assigned to [{section}] {key}; ignored")
                 continue
             if after != before:
+                write_fixed_stadium(ini, section, key, after)   # saved
                 changed = True
-                self.app.log(f"In-game menu: stadium for this match on [{section}] {key}: {after or self.say(self.t('random'))}")
+                self.app.log(f"In-game menu: fixed stadium on [{section}] {key}: {after or self.say(self.t('random'))}")
         return changed
+
+
+def fixed_stadium_key(section: str, key: str) -> str:
+    """The [FixedStadium] key of one stadium assignment: "<section>_<key>" (stadium_241, comp_12)."""
+    return f"{str(section).strip().lower()}_{str(key).strip()}"
+
+
+def read_fixed_stadium(ini, section: str, key: str) -> str | None:
+    """The stadium "Estadio del partido" fixed for [section] key, or None (Selector/Al azar)."""
+    try:
+        return ini.read(fixed_stadium_key(section, key), FIXED_STADIUM_SECTION).strip() or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def write_fixed_stadium(ini, section: str, key: str, stadium: str | None) -> None:
+    """Fix (or with None, unfix) the stadium of [section] key in [FixedStadium]; saved here. The delete is saved on
+    its own (SessionIniFile.delete_key reloads from disk and would drop pending writes)."""
+    name = fixed_stadium_key(section, key)
+    if stadium:
+        ini.write(name, stadium, FIXED_STADIUM_SECTION)
+    else:
+        ini.delete_key(name, FIXED_STADIUM_SECTION)
+    ini.save()
 
 
 def _context(app, attr: str) -> str:

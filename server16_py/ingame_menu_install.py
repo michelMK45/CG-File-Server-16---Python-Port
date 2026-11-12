@@ -2,15 +2,20 @@
 
 The menu's files come prebuilt in the release package resources/ingame/mod (cgfs-ingame:
 `python tools/ingame.py release --out ../repository/resources/ingame/mod`): its screens, data movie and
-images, plus one hooked KickOffHub movie (R3 on the pre-match hub) per known original of that file
-(vanilla FIFA 16 and FIP's); a game with another KickOffHub gets the menu without R3 (and so without a way in).
+images, one hooked KickOffHub movie (R3 on the pre-match hub) per known original of that file, and the hook's
+assembly text: any other KickOffHub (a FIFA theme's) is hooked at install time by ingame_kickhook.py. Only a
+KickOffHub that is not FIFA's screen class gets the menu without R3 (and so without a way in).
+FIFA themes replace the KickOffHub and the nav flows the menu hooks into: drift() sees it and repair() installs
+again (the theme's KickOffHub becomes the original that uninstall puts back); the app runs it at start and
+before it launches FIFA.
 The text patches (the nav flows that load the KickOffHub; between CGFS16-INGAME markers) are applied to
 whatever files the game has now. The old CGFS16 tile in Customise > Edit Teams is no longer installed and is
 taken out of a game that still has it (ingame_hubpatch.RETIRED).
 
-ingame_modinstall.py and ingame_hubpatch.py are byte-identical copies of cgfs-ingame's modinstall.py and
-hubpatch.py (stdlib only), so an install made with either tool is updated or removed by the other: both
-keep <game>/_cgfs16_ingame/manifest.json. FIFA 16 must be closed (its .bh files are changed).
+ingame_modinstall.py, ingame_hubpatch.py and ingame_kickhook.py are byte-identical copies of cgfs-ingame's
+modinstall.py, hubpatch.py and kickhook.py (stdlib only; kickhook is generated, the Apt toolchain inside), so
+an install made with either tool is updated or removed by the other: both keep
+<game>/_cgfs16_ingame/manifest.json. FIFA 16 must be closed (its .bh files are changed).
 """
 from __future__ import annotations
 
@@ -62,6 +67,12 @@ def _game(exedir: str | Path) -> ingame_modinstall.GameFiles:
     return ingame_modinstall.GameFiles(str(exedir))
 
 
+def _package(folder: Path) -> tuple[dict, dict]:
+    from . import ingame_kickhook   # the Apt toolchain: loaded only when a package is
+
+    return ingame_modinstall.load_package(str(folder), hook=ingame_kickhook.hook_movie)
+
+
 def status(exedir: str | Path) -> MenuStatus:
     man = None
     try:
@@ -82,7 +93,7 @@ def install(exedir: str | Path, log: Callable[[str], None]) -> MenuStatus:
     if ingame_modinstall.game_running():
         raise FifaRunning("FIFA 16 is running")
     game = _game(exedir)
-    info, files = ingame_modinstall.load_package(str(folder))
+    info, files = _package(folder)
     info["source"] = SOURCE
     man = ingame_modinstall.install(game, files, ingame_hubpatch.PATCHES, info,
                                     check=ingame_hubpatch.check_patched, log=lambda m: log(f"In-game menu: {m}"),
@@ -90,6 +101,32 @@ def install(exedir: str | Path, log: Callable[[str], None]) -> MenuStatus:
     log(f"In-game menu: installed (build {info.get('installed')}, {len(man['created'])} files, "
         f"{len(man['patched'])} patched{', no R3: unknown KickOffHub' if man.get('skipped') else ''})")
     return status(exedir)
+
+
+def drift(exedir: str | Path) -> list[str]:
+    """What changed in the installed menu's files since the install (a FIFA theme replaces the KickOffHub and
+    the nav flows): [] when it is not installed, there is no package, or nothing changed. Reads only."""
+    folder = package_dir()
+    if folder is None:
+        return []
+    try:
+        game = _game(exedir)
+        if not ingame_modinstall.load_manifest(game):
+            return []
+        _info, files = _package(folder)
+    except (OSError, ValueError):   # not a FIFA 16 folder, unreadable manifest or package
+        return []
+    return ingame_modinstall.drift(game, files, ingame_hubpatch.PATCHES)
+
+
+def repair(exedir: str | Path, log: Callable[[str], None]) -> bool:
+    """Installs again when drift() finds something (see install for what it raises). False if nothing to do."""
+    found = drift(exedir)
+    if not found:
+        return False
+    log(f"In-game menu: changed since the install (a FIFA theme?): {'; '.join(found)}")
+    install(exedir, log)
+    return True
 
 
 def uninstall(exedir: str | Path, log: Callable[[str], None]) -> bool:

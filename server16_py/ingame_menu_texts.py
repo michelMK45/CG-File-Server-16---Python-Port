@@ -48,7 +48,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Save", "save_desc": "Press A to save it in the list. Back: return without saving.",
         "remove": "Remove", "remove_desc": "Press A to remove it from this assignment's list (its assets stay).",
         "match": "Match stadium",
-        "match_desc": "Which one of the list is used in this match. Picker/Random: as usual, the overlay's picker "
+        "match_desc": "Which one of the list is used in every match of this assignment (kept until you change it). Picker/Random: as usual, the overlay's picker "
                       "or a random one, depending on the app's setting.",
         "police": "Police", "police_desc": "Police level of the stadium (1-10).",
         "pitch": "Pitch pattern", "pitch_desc": "Pitch mowing pattern (FSW/PitchMowPattern).",
@@ -89,7 +89,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Guardar", "save_desc": "Pulsa A para guardarlo en la lista. Atrás: volver sin guardar.",
         "remove": "Quitar", "remove_desc": "Pulsa A para quitarlo de la lista de esta asignación (sus assets se quedan).",
         "match": "Estadio del partido",
-        "match_desc": "Cuál de la lista se usa en este partido. Selector/Al azar: como siempre, el selector del "
+        "match_desc": "Cuál de la lista se usa en todos los partidos de esta asignación (se guarda hasta que lo cambies). Selector/Al azar: como siempre, el selector del "
                       "overlay o uno al azar según el ajuste de la app.",
         "police": "Policía", "police_desc": "Nivel de policía del estadio (1-10).",
         "pitch": "Patrón del césped", "pitch_desc": "Dibujo del corte del césped (FSW/PitchMowPattern).",
@@ -130,7 +130,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Enregistrer", "save_desc": "Appuyez sur A pour l'enregistrer dans la liste. Retour : revenir sans enregistrer.",
         "remove": "Retirer", "remove_desc": "Appuyez sur A pour le retirer de la liste de cette attribution (ses assets restent).",
         "match": "Stade du match",
-        "match_desc": "Lequel de la liste est utilisé pour ce match. Sélecteur/Aléatoire : comme d'habitude, le "
+        "match_desc": "Lequel de la liste est utilisé pour tous les matchs de cette attribution (conservé jusqu'à ce que vous le changiez). Sélecteur/Aléatoire : comme d'habitude, le "
                       "sélecteur de l'overlay ou un stade au hasard selon le réglage de l'app.",
         "police": "Police", "police_desc": "Niveau de police du stade (1-10).",
         "pitch": "Motif de la pelouse", "pitch_desc": "Motif de tonte de la pelouse (FSW/PitchMowPattern).",
@@ -172,7 +172,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "remove": "Entfernen",
         "remove_desc": "Drücke A, um es aus der Liste dieser Zuweisung zu entfernen (seine Assets bleiben).",
         "match": "Stadion des Spiels",
-        "match_desc": "Welches der Liste in diesem Spiel verwendet wird. Auswahl/Zufällig: wie immer, die Auswahl "
+        "match_desc": "Welches der Liste in allen Spielen dieser Zuweisung verwendet wird (bleibt gespeichert, bis du es änderst). Auswahl/Zufällig: wie immer, die Auswahl "
                       "des Overlays oder ein zufälliges, je nach Einstellung der App.",
         "police": "Polizei", "police_desc": "Polizeistufe des Stadions (1-10).",
         "pitch": "Rasenmuster", "pitch_desc": "Mähmuster des Rasens (FSW/PitchMowPattern).",
@@ -213,7 +213,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "remove": "Rimuovi",
         "remove_desc": "Premi A per rimuoverlo dalla lista di questa assegnazione (i suoi asset restano).",
         "match": "Stadio della partita",
-        "match_desc": "Quale della lista si usa in questa partita. Selettore/Casuale: come sempre, il selettore "
+        "match_desc": "Quale della lista si usa in tutte le partite di questa assegnazione (resta salvato finché non lo cambi). Selettore/Casuale: come sempre, il selettore "
                       "dell'overlay o uno a caso secondo l'impostazione dell'app.",
         "police": "Polizia", "police_desc": "Livello di polizia dello stadio (1-10).",
         "pitch": "Motivo del prato", "pitch_desc": "Motivo di taglio del prato (FSW/PitchMowPattern).",
@@ -256,7 +256,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "remove": "Remover",
         "remove_desc": "Prima A para removê-lo da lista desta atribuição (os seus assets ficam).",
         "match": "Estádio da partida",
-        "match_desc": "Qual da lista é usado nesta partida. Seletor/Aleatório: como sempre, o seletor do overlay "
+        "match_desc": "Qual da lista é usado em todas as partidas desta atribuição (fica guardado até o mudar). Seletor/Aleatório: como sempre, o seletor do overlay "
                       "ou um aleatório conforme a definição da app.",
         "police": "Polícia", "police_desc": "Nível de polícia do estádio (1-10).",
         "pitch": "Padrão do relvado", "pitch_desc": "Padrão de corte do relvado (FSW/PitchMowPattern).",
@@ -299,7 +299,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "remove": "Verwijderen",
         "remove_desc": "Druk op A om het uit de lijst van deze toewijzing te halen (zijn assets blijven).",
         "match": "Stadion van de wedstrijd",
-        "match_desc": "Welke van de lijst in deze wedstrijd wordt gebruikt. Kiezer/Willekeurig: zoals altijd, de "
+        "match_desc": "Welke van de lijst in alle wedstrijden van deze toewijzing wordt gebruikt (blijft bewaard tot je het wijzigt). Kiezer/Willekeurig: zoals altijd, de "
                       "kiezer van de overlay of een willekeurige, afhankelijk van de instelling van de app.",
         "police": "Politie", "police_desc": "Politieniveau van het stadion (1-10).",
         "pitch": "Grasmotief", "pitch_desc": "Maaipatroon van het veld (FSW/PitchMowPattern).",
@@ -337,7 +337,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Spara", "save_desc": "Tryck A för att spara den i listan. Tillbaka: gå tillbaka utan att spara.",
         "remove": "Ta bort", "remove_desc": "Tryck A för att ta bort den från tilldelningens lista (dess assets finns kvar).",
         "match": "Matchens arena",
-        "match_desc": "Vilken i listan som används i den här matchen. Väljare/Slumpmässig: som vanligt, overlayens "
+        "match_desc": "Vilken i listan som används i alla matcher för tilldelningen (sparas tills du ändrar det). Väljare/Slumpmässig: som vanligt, overlayens "
                       "väljare eller en slumpmässig beroende på appens inställning.",
         "police": "Polis", "police_desc": "Arenans polisnivå (1-10).",
         "pitch": "Gräsmönster", "pitch_desc": "Klippmönster på planen (FSW/PitchMowPattern).",
@@ -375,7 +375,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Lagre", "save_desc": "Trykk A for å lagre det i listen. Tilbake: gå tilbake uten å lagre.",
         "remove": "Fjern", "remove_desc": "Trykk A for å fjerne det fra tildelingens liste (dets assets blir værende).",
         "match": "Kampens stadion",
-        "match_desc": "Hvilket i listen som brukes i denne kampen. Velger/Tilfeldig: som vanlig, overlayets velger "
+        "match_desc": "Hvilket i listen som brukes i alle kamper for tildelingen (lagres til du endrer det). Velger/Tilfeldig: som vanlig, overlayets velger "
                       "eller et tilfeldig avhengig av appens innstilling.",
         "police": "Politi", "police_desc": "Stadionets politinivå (1-10).",
         "pitch": "Gressmønster", "pitch_desc": "Klippemønster på banen (FSW/PitchMowPattern).",
@@ -413,7 +413,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Gem", "save_desc": "Tryk A for at gemme det i listen. Tilbage: gå tilbage uden at gemme.",
         "remove": "Fjern", "remove_desc": "Tryk A for at fjerne det fra tildelingens liste (dets assets bliver).",
         "match": "Kampens stadion",
-        "match_desc": "Hvilket på listen der bruges i denne kamp. Vælger/Tilfældig: som altid, overlayets vælger "
+        "match_desc": "Hvilket på listen der bruges i alle kampe for tildelingen (gemmes, indtil du ændrer det). Vælger/Tilfældig: som altid, overlayets vælger "
                       "eller et tilfældigt afhængigt af appens indstilling.",
         "police": "Politi", "police_desc": "Stadionets politiniveau (1-10).",
         "pitch": "Græsmønster", "pitch_desc": "Klippemønster på banen (FSW/PitchMowPattern).",
@@ -451,7 +451,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Zapisz", "save_desc": "Naciśnij A, aby zapisać go na liście. Wstecz: wróć bez zapisywania.",
         "remove": "Usuń", "remove_desc": "Naciśnij A, aby usunąć go z listy tego przypisania (jego zasoby zostają).",
         "match": "Stadion meczu",
-        "match_desc": "Który z listy jest używany w tym meczu. Wybór/Losowo: jak zawsze, wybór z overlayu lub "
+        "match_desc": "Który z listy jest używany we wszystkich meczach tego przypisania (zapisany, dopóki go nie zmienisz). Wybór/Losowo: jak zawsze, wybór z overlayu lub "
                       "losowy, zależnie od ustawienia aplikacji.",
         "police": "Policja", "police_desc": "Poziom policji na stadionie (1-10).",
         "pitch": "Wzór murawy", "pitch_desc": "Wzór koszenia murawy (FSW/PitchMowPattern).",
@@ -489,7 +489,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Сохранить", "save_desc": "Нажмите A, чтобы сохранить его в списке. Назад: вернуться без сохранения.",
         "remove": "Убрать", "remove_desc": "Нажмите A, чтобы убрать его из списка этого назначения (его ассеты остаются).",
         "match": "Стадион матча",
-        "match_desc": "Какой из списка используется в этом матче. Выбор/Случайно: как обычно, выбор в оверлее или "
+        "match_desc": "Какой из списка используется во всех матчах этого назначения (сохраняется, пока вы его не измените). Выбор/Случайно: как обычно, выбор в оверлее или "
                       "случайный, в зависимости от настройки приложения.",
         "police": "Полиция", "police_desc": "Уровень полиции на стадионе (1-10).",
         "pitch": "Узор газона", "pitch_desc": "Узор стрижки газона (FSW/PitchMowPattern).",
@@ -527,7 +527,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Uložit", "save_desc": "Stiskněte A pro uložení do seznamu. Zpět: vrátit se bez uložení.",
         "remove": "Odebrat", "remove_desc": "Stiskněte A pro odebrání ze seznamu tohoto přiřazení (jeho assety zůstanou).",
         "match": "Stadion zápasu",
-        "match_desc": "Který ze seznamu se použije v tomto zápase. Výběr/Náhodně: jako vždy, výběr v overlayi nebo "
+        "match_desc": "Který ze seznamu se použije ve všech zápasech tohoto přiřazení (zůstane uložený, dokud ho nezměníte). Výběr/Náhodně: jako vždy, výběr v overlayi nebo "
                       "náhodný podle nastavení aplikace.",
         "police": "Policie", "police_desc": "Úroveň policie na stadionu (1-10).",
         "pitch": "Vzor trávníku", "pitch_desc": "Vzor sekání trávníku (FSW/PitchMowPattern).",
@@ -565,7 +565,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "Kaydet", "save_desc": "Listeye kaydetmek için A'ya basın. Geri: kaydetmeden dön.",
         "remove": "Kaldır", "remove_desc": "Bu atamanın listesinden kaldırmak için A'ya basın (varlıkları kalır).",
         "match": "Maçın stadyumu",
-        "match_desc": "Listeden hangisinin bu maçta kullanılacağı. Seçici/Rastgele: her zamanki gibi, uygulamanın "
+        "match_desc": "Listeden hangisinin bu atamanın tüm maçlarında kullanılacağı (siz değiştirene kadar kaydedilir). Seçici/Rastgele: her zamanki gibi, uygulamanın "
                       "ayarına göre overlay seçicisi veya rastgele biri.",
         "police": "Polis", "police_desc": "Stadyumun polis seviyesi (1-10).",
         "pitch": "Çim deseni", "pitch_desc": "Çim biçme deseni (FSW/PitchMowPattern).",
@@ -603,7 +603,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "حفظ", "save_desc": "اضغط A لحفظه في القائمة. رجوع: العودة دون حفظ.",
         "remove": "إزالة", "remove_desc": "اضغط A لإزالته من قائمة هذا التعيين (تبقى ملحقاته).",
         "match": "ملعب المباراة",
-        "match_desc": "أي ملعب من القائمة يستخدم في هذه المباراة. المحدد/عشوائي: كالمعتاد، محدد الواجهة أو ملعب "
+        "match_desc": "أي ملعب من القائمة يستخدم في كل مباريات هذا التعيين (يبقى محفوظًا حتى تغيّره). المحدد/عشوائي: كالمعتاد، محدد الواجهة أو ملعب "
                       "عشوائي حسب إعداد التطبيق.",
         "police": "الشرطة", "police_desc": "مستوى الشرطة في الملعب (1-10).",
         "pitch": "نقشة العشب", "pitch_desc": "نمط قص العشب (FSW/PitchMowPattern).",
@@ -639,7 +639,7 @@ TEXTS: dict[str, dict[str, str]] = {
         "save": "儲存", "save_desc": "按 A 儲存至清單。返回：不儲存並返回。",
         "remove": "移除", "remove_desc": "按 A 將其從此指派的清單中移除 (其資源保留)。",
         "match": "比賽球場",
-        "match_desc": "此場比賽使用清單中的哪一個。選擇器/隨機：照常，依應用程式設定使用疊加介面的選擇器或隨機一個。",
+        "match_desc": "此指派的所有比賽使用清單中的哪一個 (會保存直到你更改)。選擇器/隨機：照常，依應用程式設定使用疊加介面的選擇器或隨機一個。",
         "police": "警察", "police_desc": "球場的警察等級 (1-10)。",
         "pitch": "草皮圖案", "pitch_desc": "草皮修剪圖案 (FSW/PitchMowPattern)。",
         "net": "球網顏色", "net_desc": "球門網的顏色 (FSW/Nets)。",

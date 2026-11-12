@@ -41,6 +41,9 @@ from . import window_fit
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE, XINPUT_STATE, XINPUT_SUCCESS
 from .xinput_players import VirtualPadMatcher, may_be_virtual_pad, read_player_identity
 
+# One in-game menu repair at a time (app start and Launch FIFA both run one in a worker).
+_INGAME_REPAIR_LOCK = threading.Lock()
+
 try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
 except Exception:
@@ -4757,6 +4760,12 @@ class UIMixin:
             state="disabled",
         )
         self._uninstall_ingame_menu_btn.pack(side="left")
+        # A FIFA UI theme (FIP's theme switcher) replaces kickoffhub.big and the nav flows the menu
+        # hooks into, so the R3 entry disappears; the safe order is uninstall menu -> theme -> menu.
+        tk.Label(
+            left_col, text=self.tr("setup.hint.ingame_menu_theme"), bg=self.card, fg=self.gold,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=340,
+        ).pack(fill="x", pady=(4, 0))
 
         section(right_col, "setup.section.user_folders")
         status_row(right_col, "setup.item.gbd_stadium", "gbd_stadium")
@@ -5499,6 +5508,33 @@ class UIMixin:
         if menu is not None:
             self.after(0, menu.install_changed)
         return True
+
+    def _repair_ingame_menu_blocking(self, why: str) -> bool:
+        """Installs the in-game menu again if something replaced its files since it was installed -- a FIFA
+        theme brings its own KickOffHub and nav flows, which drops R3 (ingame_menu_install.drift). Worker
+        thread; does nothing while FIFA runs (the files can only change with it closed). Never raises.
+        True if it repaired."""
+        from .ingame_menu_install import FifaRunning, repair
+
+        with _INGAME_REPAIR_LOCK:   # app start and Launch FIFA may both ask
+            try:
+                if not repair(self.exedir, self.log):
+                    return False
+            except FifaRunning:
+                self.log(f"In-game menu: not repaired ({why}), FIFA 16 is running: close it and run Setup")
+                return False
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"In-game menu: repair failed ({why}): {exc}")
+                return False
+        self.log(f"In-game menu: repaired ({why})")
+        menu = getattr(self, "ingame_menu", None)
+        if menu is not None:
+            self.after(0, menu.install_changed)
+        return True
+
+    def _start_ingame_menu_repair(self) -> None:
+        """At app start: the repair check in a worker (a theme may have been switched while the app was closed)."""
+        threading.Thread(target=self._repair_ingame_menu_blocking, args=("app start",), daemon=True).start()
 
     def _uninstall_ingame_menu(self) -> None:
         from tkinter import messagebox

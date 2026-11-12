@@ -84,6 +84,10 @@ class InGameMenuInstallTests(unittest.TestCase):
         self.assertTrue(callable(files[KICKOFF]))
         index = json.loads((folder / ingame_modinstall.PACKAGE_INFO).read_text(encoding="utf-8"))
         self.assertIn(VANILLA_KICKOFF_SHA1, index["variants"][KICKOFF])
+        hook = index["hooks"][KICKOFF]   # any other KickOffHub (a FIFA theme's) is hooked at install time
+        self.assertEqual((hook["class"], hook["export"]),
+                         ("game.screens.playNow.KickOffHub", "__Packages.game.screens.cgfs16.KickOffHubEntry"))
+        self.assertTrue((folder / hook["asm"]).is_file())
         self.assertEqual(set(REAL_PATCHES), {   # R3 on the match hub; no hub tile any more
             NAV, "data/ui/nav/careermode/playmatchflow.nav", "data/ui/nav/fut/quicksettingsflow.nav"})
         self.assertNotIn("data/ui/imgassets/tiles/mainhub/cgfs16menu.dds", files)
@@ -124,6 +128,52 @@ class InGameMenuInstallTests(unittest.TestCase):
         self.assertTrue(st.without_r3)
         self.assertEqual((self.game / KICKOFF).read_bytes(), b"another mod's kickoffhub")
         self.assertTrue((self.game / FLOW).exists())
+
+    def _package_with_hook(self) -> None:
+        """The package as `ingame.py release` writes it now: copies for known originals plus the hook's assembly
+        text, with ingame_kickhook.hook_movie faked (the real one needs a real movie: cgfs-ingame tests it)."""
+        ingame_modinstall.write_package(
+            str(self.package), {"version": "fase4-pestanas", "installed": "2026-11-12 18:00", "screen": "menu"},
+            {FLOW: b"our flow", "data/ui/cgfs16/data.big": b"data"},
+            {KICKOFF: {ingame_modinstall.sha1(self.kickoff): b"hooked kickoffhub"}},
+            {KICKOFF: {"asm": "HOOK", "class": "game.screens.playNow.KickOffHub", "export": "E"}})
+
+        def fake_hook(big: bytes, asm: str, cls: str, export: str) -> bytes:
+            if big.startswith(b"hooked"):
+                raise ValueError("E: the movie already has our hook")
+            return b"hooked " + asm.encode() + b" " + big
+
+        from server16_py import ingame_kickhook
+        self._patch(ingame_kickhook, "hook_movie", fake_hook)
+
+    def test_a_theme_switch_is_repaired(self) -> None:
+        """A FIFA theme replaces the KickOffHub and the nav flow after the install (R3 gone): drift sees it,
+        repair hooks the theme's KickOffHub, and uninstall leaves the theme's file (not FIFA's old one)."""
+        self._package_with_hook()
+        ingame_menu_install.install(self.game, self.logs.append)
+        self.assertEqual(ingame_menu_install.drift(self.game), [])
+        self.assertFalse(ingame_menu_install.repair(self.game, self.logs.append))   # nothing to do
+        (self.game / KICKOFF).write_bytes(b"a theme's kickoffhub")
+        (self.game / NAV).write_bytes(b'{"states":["theme"]}\n')
+        self.assertEqual(ingame_menu_install.drift(self.game), [f"{KICKOFF}: replaced", f"{NAV}: without our block"])
+        self.assertTrue(ingame_menu_install.repair(self.game, self.logs.append))
+        self.assertEqual((self.game / KICKOFF).read_bytes(), b"hooked HOOK a theme's kickoffhub")
+        self.assertIn("CGFS16-INGAME", (self.game / NAV).read_text())
+        self.assertEqual(ingame_menu_install.drift(self.game), [])
+        self.assertTrue(ingame_menu_install.uninstall(self.game, self.logs.append))
+        self.assertEqual((self.game / KICKOFF).read_bytes(), b"a theme's kickoffhub")
+        self.assertEqual((self.game / NAV).read_bytes(), b'{"states":["theme"]}\n')
+
+    def test_drift_is_empty_when_not_installed_or_not_a_game(self) -> None:
+        self.assertEqual(ingame_menu_install.drift(self.game), [])
+        self.assertEqual(ingame_menu_install.drift(self.base / "nowhere"), [])
+        self.assertFalse(ingame_menu_install.repair(self.game, self.logs.append))
+        self.assertFalse((self.game / FLOW).exists())
+
+    def test_bundled_kickhook_loads_and_refuses_what_is_not_a_movie(self) -> None:
+        from server16_py import ingame_kickhook
+        with self.assertRaises(ValueError):
+            ingame_kickhook.hook_movie(b"not a big file", "", "game.screens.playNow.KickOffHub", "E")
 
     def test_refused_while_fifa_runs(self) -> None:
         self._patch(ingame_modinstall, "game_running", lambda: True)

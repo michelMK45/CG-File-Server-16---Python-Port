@@ -260,12 +260,13 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         self.assertEqual([names[int(i)] for i in d["STADIUM_LIST@1"].split("|")], ["Wembley", "ARG - Bombonera"])
         self.assertEqual(d["TITLE_STADIUMADD"], "+ Agregar estadio")
         self.assertNotIn("STADIUMMATCH_SEL@1", d)                        # nothing chosen: "Selector/Al azar"
-        self.app._ingame_stadium_choice = {("comp", "12"): (0, "ARG - Bombonera")}
+        self.app.settings_ini.write("comp_12", "ARG - Bombonera", "FixedStadium")
+        self.app.settings_ini.save()
         self.rt.write_data("test", force=True)
         self.assertEqual(read_data(self.app)["STADIUMMATCH_SEL@1"], "2")
-        self.app._kickoff_generation = 1                                 # another match: that choice is gone
+        self.app._kickoff_generation = 1                                 # another match: the fixed one stays
         self.rt.write_data("test", force=True)
-        self.assertNotIn("STADIUMMATCH_SEL@1", read_data(self.app))
+        self.assertEqual(read_data(self.app)["STADIUMMATCH_SEL@1"], "2")
 
     def test_one_scope_has_no_scope_row(self) -> None:
         self.app.HID = "241"                                             # a friendly: only the home team
@@ -323,7 +324,7 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         self.assertFalse(saved.key_exists("ESP - Camp Nou", "stadiumgoalpost"))    # "Ninguno": no override
         self.assertEqual(saved.read("ESP - Camp Nou", "stadiumgoalposttexture"), "Black")
         self.assertEqual(saved.read("ESP - Camp Nou", "stadiumentrancecam"), "Aerial")
-        self.assertFalse(getattr(self.app, "_ingame_stadium_choice", None))        # saving chooses nothing
+        self.assertFalse(saved.items("FixedStadium"))                              # saving fixes nothing
         self.assertEqual(self.app.runtime_applied, 1)
         # only a pack changes: the packs are written, the entry stays, the runtime is applied again
         fields2 = fields[:6] + (("SV1_STADIUMENTRANCECAM", (2, "Classic")),)
@@ -451,24 +452,28 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         self.rt.on_scan_done(5, [record], [], 1.0, 0.1, None)
         value = SessionIniFile(self.app.exedir / "FSW" / "settings.ini").read("241", "stadium")
         self.assertEqual(value, "ESP - Camp Nou,7,2,3,ARG - Monumental,4,0,0")
-        self.assertEqual(self.app._ingame_stadium_choice, {("stadium", "241"): (4, "ARG - Monumental")})
+        self.assertEqual(SessionIniFile(self.app.exedir / "FSW" / "settings.ini").read("stadium_241", "FixedStadium"),
+                         "ARG - Monumental")                             # saved: kept across matches and restarts
         self.assertEqual(self.app.runtime_applied, 1)
         d = read_data(self.app)
         self.assertEqual((d["STADIUM_LIST"], d["STADIUMMATCH_SEL"]), ("2|1", "2"))
         # only the match row changes: still applied again (another stadium)
         self.rt.on_scan_done(5, [(2, (("M_STADIUMMATCH", (0, "Selector/Al azar")),))], [], 1.0, 0.1, None)
-        self.assertEqual(self.app._ingame_stadium_choice, {})
+        saved = SessionIniFile(self.app.exedir / "FSW" / "settings.ini")
+        self.assertFalse(saved.key_exists("stadium_241", "FixedStadium"))
+        self.assertEqual(saved.read("241", "stadium"), "ESP - Camp Nou,7,2,3,ARG - Monumental,4,0,0")   # untouched
         self.assertEqual(self.app.runtime_applied, 2)
         self.rt.on_scan_done(5, [(3, (("M_STADIUMMATCH", (1, "Wembley")),))], [], 1.0, 0.1, None)   # not assigned
-        self.assertEqual(self.app._ingame_stadium_choice, {})
+        self.assertFalse(SessionIniFile(self.app.exedir / "FSW" / "settings.ini").items("FixedStadium"))
 
     def test_quitar_removes_the_entry_and_its_match_choice(self) -> None:
         ini = self.app.settings_ini
         ini.write("241", "ESP - Camp Nou,1,2,3,Wembley,4,0,0", "stadium")
         ini.write("ESP - Camp Nou", "2", "stadiumgoalpost")
         ini.save()
+        ini.write("stadium_241", "ESP - Camp Nou", "FixedStadium")
+        ini.save()
         self.app.HID = "241"
-        self.app._ingame_stadium_choice = {("stadium", "241"): (0, "ESP - Camp Nou")}
         self.rt.write_data("test")
         self.rt.attached(5)
         record = (1, (("SV1_STADIUM", (2, "ESP - Camp Nou")), ("SV1_STADIUMDEL", (0, ""))))
@@ -476,7 +481,7 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         saved = SessionIniFile(self.app.exedir / "FSW" / "settings.ini")
         self.assertEqual(saved.read("241", "stadium"), "Wembley,4,0,0")
         self.assertEqual(saved.read("ESP - Camp Nou", "stadiumgoalpost"), "2")      # its packs stay
-        self.assertEqual(self.app._ingame_stadium_choice, {})
+        self.assertFalse(saved.key_exists("stadium_241", "FixedStadium"))           # nor is it fixed any more
         self.assertEqual(self.app.runtime_applied, 1)
         self.rt.on_scan_done(5, [(2, (("SV1_STADIUM", (3, "Wembley")), ("SV1_STADIUMDEL", (0, ""))))],
                              [], 1.0, 0.1, None)
@@ -493,13 +498,17 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         self.rt.write_data("test")
         self.rt.attached(5)
         self.rt.on_scan_done(5, [(1, (("M1_STADIUMMATCH", (2, "ARG - Bombonera")),))], [], 1.0, 0.1, None)
-        self.assertEqual(self.app._ingame_stadium_choice, {("comp", "12"): (0, "ARG - Bombonera")})
+        self.assertEqual(SessionIniFile(self.app.exedir / "FSW" / "settings.ini").read("comp_12", "FixedStadium"),
+                         "ARG - Bombonera")
         runtime = StadiumRuntime(self.app)
         self.assertEqual(runtime._ingame_menu_choice("comp", "12", ["Wembley", "ARG - Bombonera"]), "ARG - Bombonera")
         self.assertIsNone(runtime._ingame_menu_choice("stadium", "241", ["Wembley"]))      # another assignment
         self.assertIsNone(runtime._ingame_menu_choice("comp", "12", ["Wembley"]))          # no longer one of them
-        self.app._kickoff_generation = 1
-        self.assertIsNone(runtime._ingame_menu_choice("comp", "12", ["Wembley", "ARG - Bombonera"]))  # next match
+        self.app._kickoff_generation = 1                                                    # next match: still fixed
+        self.assertEqual(runtime._ingame_menu_choice("comp", "12", ["Wembley", "ARG - Bombonera"]), "ARG - Bombonera")
+        self.app.settings_ini = SessionIniFile(self.app.exedir / "FSW" / "settings.ini")   # a restart: read from disk
+        self.assertEqual(StadiumRuntime(self.app)._ingame_menu_choice("comp", "12", ["Wembley", "ARG - Bombonera"]),
+                         "ARG - Bombonera")
 
     def test_stadium_of_another_match_is_ignored(self) -> None:
         self.app.HID = "241"

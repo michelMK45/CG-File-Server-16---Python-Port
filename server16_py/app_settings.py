@@ -517,7 +517,37 @@ class SettingsMixin:
         if self._is_target_process_running():
             self.log(f"FIFA process already running: {self.fifaEXE}")
             return
-        subprocess.Popen([self.fifaEXE], shell=False)
+        if getattr(self, "_fifa_launch_pending", False):   # a second click while the menu check runs
+            return
+        from .ingame_menu_install import status as ingame_menu_status
+
+        try:
+            menu_installed = ingame_menu_status(self.exedir).installed is not None
+        except Exception:  # noqa: BLE001
+            menu_installed = False
+        if not menu_installed:
+            self._start_fifa_process()
+            return
+        # A FIFA theme switched since the last start drops the in-game menu's R3 entry: put it back
+        # (FIFA closed, ~0.1 s; a repair writes a few files) before FIFA reads them.
+        self._fifa_launch_pending = True
+
+        def work() -> None:
+            self._repair_ingame_menu_blocking("before launching FIFA")
+            self.after(0, self._start_fifa_process)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _start_fifa_process(self) -> None:
+        self._fifa_launch_pending = False
+        if self._is_target_process_running():
+            self.log(f"FIFA process already running: {self.fifaEXE}")
+            return
+        try:
+            subprocess.Popen([self.fifaEXE], shell=False)
+        except OSError as exc:
+            self.log(f"Could not launch FIFA executable {self.fifaEXE}: {exc}")
+            return
         self.log(f"Launched FIFA executable: {self.fifaEXE}")
 
     def _autorun_launch_fifa(self) -> None:

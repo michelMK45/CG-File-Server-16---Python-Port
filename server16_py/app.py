@@ -390,9 +390,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_picker_signature = None
         self._stadium_picker_resolved = False
         self._stadium_picker_chosen: str | None = None
-        # The in-game CGFS16 menu's "Estadio del partido": (settings.ini section, key) -> (kickoff
-        # generation, stadium); StadiumRuntime._ingame_menu_choice uses it for that match only.
-        self._ingame_stadium_choice: dict[tuple[str, str], tuple[int, str]] = {}
+        # The in-game CGFS16 menu's "Estadio del partido" lives in settings.ini [FixedStadium]
+        # (ingame_menu_runtime.read_fixed_stadium / StadiumRuntime._ingame_menu_choice).
         # Remembers the last stadium_signature actually decided by the
         # picker (picked, or closed/cancelled -> random fallback) plus what
         # was decided for it -- unlike _stadium_picker_pending/_resolved
@@ -725,6 +724,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # Evaluated when it fires (not here): needs the main window up before it may
         # spawn FIFA, and re-reads the Autorun switch -- see _autorun_launch_fifa.
         self.after(1500, self._autorun_launch_fifa)
+        # A FIFA theme switched while the app was closed drops the in-game menu's R3 entry: put it back
+        # now (worker; Launch FIFA checks again and waits for it).
+        self._start_ingame_menu_repair()
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
         if self._discord_rpc_enabled:

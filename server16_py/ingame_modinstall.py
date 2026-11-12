@@ -10,13 +10,20 @@ and installs the menu from a release package (resources/ingame/mod) without this
                        text files other mods also edit. Everything is computed and checked before anything
                        is written. A file the game had is backed up and put back by uninstall; a loose
                        file the game did not have gets its name hash zeroed in the .bh files (as FIP's
-                       regenerator does) and uninstall puts the hash back.
+                       regenerator does) and uninstall puts the hash back. A changed copy someone else
+                       replaced since (a FIFA theme brings its own KickOffHub) is that file's new original:
+                       backed up instead of the old one, and our copy made from it.
+  drift(game, files, patches)
+                       what install would put back because something else changed the game since (a theme
+                       switch): patched files without our block, our changed copies replaced, files missing,
+                       a skipped file the package can make now (hook: an install without R3 is repaired)
   uninstall(game, patches, unpatch)
                        unpatch: rel -> unpatch of every file an install of ours may have patched; install
                        also takes our blocks out of a patched file it no longer patches (a retired patch)
-  write_package(folder, info, files, variants) / load_package(folder)
+  write_package(folder, info, files, variants, hooks) / load_package(folder, hook)
                        the release package: prebuilt files plus, for a game file we change (the KickOffHub
-                       movie), one prebuilt copy per known original (keyed by the original's sha1)
+                       movie), one prebuilt copy per known original (keyed by the original's sha1) and the
+                       hook's assembly text, so hook (kickhook.hook_movie) makes the copy of any other
 Bookkeeping: <game>/_cgfs16_ingame/manifest.json (backups next to it), shared by every installer.
 """
 import hashlib
@@ -263,7 +270,8 @@ def _zero_hash(game, man, rel):
 
 def _unpatch_file(game, man, rel, unpatch, log):
     """Takes our blocks out of a patched file: no loose file again if it is then the game's own, else the text
-    without them; the .bh slots zeroed for it get their hash back."""
+    without them; the .bh slots zeroed for it get their hash back once no loose file is left (one that stays,
+    e.g. a theme's flow with our block taken out, must still be the one the game reads)."""
     info = man['patched'].pop(rel)
     dst = game.path(rel)
     if os.path.exists(dst):
@@ -274,8 +282,54 @@ def _unpatch_file(game, man, rel, unpatch, log):
             _write(dst, text.encode('latin-1'))
         log(f'~ {rel} (sin el bloque CGFS16)')
     for slot in [s for s in man['hashes'] if s.get('rel') == rel]:
-        game.restore_hash(slot)
+        if not os.path.exists(dst):
+            game.restore_hash(slot)
         man['hashes'].remove(slot)
+
+
+def _replaced(game, man, rel, make):
+    """The loose file someone else (a FIFA theme...) put where install wrote the changed copy `make`
+    makes, else None (ours, or not installed)."""
+    info = man['created'].get(rel)
+    path = game.path(rel)
+    if info is None or not os.path.exists(path):
+        return None
+    with open(path, 'rb') as f:
+        current = f.read()
+    mine = info.get('sha1')
+    if mine is None:  # manifests before 2026-11-12: what we would write from the backed-up original
+        ours = make(original(game, rel))
+        mine = sha1(ours) if ours is not None else None
+    return current if sha1(current) != mine else None
+
+
+def drift(game, files, patches):
+    """What install would put back because something else changed the game since it ran (a FIFA theme
+    replaces the KickOffHub and the nav flows): [text]. [] when not installed or nothing changed. Reads
+    only the files involved (no .big index while they are loose)."""
+    man = load_manifest(game)
+    if not man or not man.get('created'):
+        return []
+    out = []
+    for rel in man['created']:
+        if not os.path.exists(game.path(rel)):
+            out.append(f'{rel}: missing')
+        elif callable(files.get(rel)) and _replaced(game, man, rel, files[rel]) is not None:
+            out.append(f'{rel}: replaced')
+    for rel in man.get('skipped', []):
+        try:
+            if callable(files.get(rel)) and files[rel](game.read(rel)) is not None:
+                out.append(f'{rel}: can be made now')
+        except (KeyError, OSError):
+            pass
+    for rel, (patch, strip) in patches.items():
+        try:
+            text = game.read(rel).decode('latin-1')
+            if patch(strip(text)) != text:
+                out.append(f'{rel}: without our block')
+        except (KeyError, OSError, ValueError) as e:
+            out.append(f'{rel}: {e}')
+    return out
 
 
 def install(game, files, patches, info, check=None, log=print, unpatch=None):
@@ -283,10 +337,13 @@ def install(game, files, patches, info, check=None, log=print, unpatch=None):
     check(rel, text) raises ValueError when a patched text lacks something. FIFA 16 must be closed.
     unpatch: rel -> unpatch, for files an older install patched that are not in `patches` any more."""
     man = load_manifest(game) or {'created': {}, 'patched': {}, 'hashes': []}
-    contents, skipped = {}, []
+    contents, skipped, adopted = {}, [], {}
     for rel, data in files.items():
         if callable(data):
-            data = data(original(game, rel))
+            foreign = _replaced(game, man, rel, data)
+            if foreign is not None:  # e.g. a FIFA theme's KickOffHub: the game's original now
+                adopted[rel] = foreign
+            data = data(foreign if foreign is not None else original(game, rel))
             if data is None:
                 skipped.append(rel)
                 continue
@@ -297,6 +354,10 @@ def install(game, files, patches, info, check=None, log=print, unpatch=None):
         if check:
             check(rel, after)
         changed[rel] = after
+    for rel, data in adopted.items():  # before anything puts our backup back over it
+        _write(_backup_path(game, rel), data)
+        man['created'][rel]['had_file'] = True
+        log(f'= {rel}: replaced since the install (a theme?), taken as the original')
     for rel in [r for r in man['created'] if r not in contents]:  # left by an older install, or skipped now
         _remove_created(game, man, rel, log)
     for rel in [r for r in man['patched'] if r not in patches and r in (unpatch or {})]:   # a retired patch
@@ -308,6 +369,8 @@ def install(game, files, patches, info, check=None, log=print, unpatch=None):
             if had:  # not ours: keep it to put back on uninstall
                 _write(_backup_path(game, rel), open(dst, 'rb').read())
             man['created'][rel] = {'had_file': had}
+        if callable(files[rel]):  # a changed copy of the game's file: _replaced tells ours from a theme's
+            man['created'][rel]['sha1'] = sha1(data)
         _write(dst, data)
         _zero_hash(game, man, rel)
         log(f'+ {rel}')
@@ -355,13 +418,14 @@ def sha1(data):
     return hashlib.sha1(data).hexdigest()
 
 
-def write_package(folder, info, files, variants):
-    """files: rel -> bytes; variants: rel -> {sha1 of the game's original: our copy}. Replaces the folder
-    (only one that is empty or holds a package)."""
+def write_package(folder, info, files, variants, hooks=None):
+    """files: rel -> bytes; variants: rel -> {sha1 of the game's original: our copy}; hooks: rel ->
+    {'asm': aptasm text, 'class': ..., 'export': ...} (load_package's hook makes the copy of any other
+    original with it). Replaces the folder (only one that is empty or holds a package)."""
     if os.path.isdir(folder) and os.listdir(folder) and not os.path.exists(os.path.join(folder, PACKAGE_INFO)):
         raise ValueError(f'{folder} is not empty and holds no {PACKAGE_INFO}: not replaced')
     shutil.rmtree(folder, ignore_errors=True)
-    index = dict(info, files=sorted(files), variants={})
+    index = dict(info, files=sorted(files), variants={}, hooks={})
     for rel, data in files.items():
         _write(os.path.join(folder, 'files', *rel.split('/')), data)
     for rel, copies in variants.items():
@@ -370,26 +434,43 @@ def write_package(folder, info, files, variants):
             name = f'variants/{key}.big'
             _write(os.path.join(folder, *name.split('/')), data)
             index['variants'][rel][key] = name
+    for rel, spec in (hooks or {}).items():
+        name = 'hooks/' + rel.rsplit('/', 1)[-1].rsplit('.', 1)[0] + '.asm'
+        _write(os.path.join(folder, *name.split('/')), spec['asm'].encode('utf-8'))
+        index['hooks'][rel] = {'asm': name, 'class': spec['class'], 'export': spec['export']}
     with open(os.path.join(folder, PACKAGE_INFO), 'w', encoding='utf-8') as f:
         json.dump(index, f, indent=2, ensure_ascii=False)
     return index
 
 
-def load_package(folder):
-    """(info, files) for install(): a variant file is a function picking the copy for the game's original."""
+def load_package(folder, hook=None):
+    """(info, files) for install(): a variant file is a function making our copy from the game's original,
+    None when it cannot: the package's copy for that original, else hook(original, asm, class, export)
+    with the package's hook for the file (hook: kickhook.hook_movie; an error -> None)."""
     with open(os.path.join(folder, PACKAGE_INFO), encoding='utf-8') as f:
         index = json.load(f)
     files = {}
     for rel in index['files']:
         with open(os.path.join(folder, 'files', *rel.split('/')), 'rb') as f:
             files[rel] = f.read()
-    for rel, copies in index['variants'].items():
-        def pick(orig, copies=copies):
+    hooks = index.get('hooks', {})
+    for rel in sorted(set(index['variants']) | set(hooks)):
+        spec, asm = hooks.get(rel), None
+        if spec and hook:
+            with open(os.path.join(folder, *spec['asm'].split('/')), encoding='utf-8') as f:
+                asm = f.read()
+
+        def pick(orig, copies=index['variants'].get(rel, {}), spec=spec, asm=asm):
             name = copies.get(sha1(orig))
-            if name is None:
+            if name is not None:
+                with open(os.path.join(folder, *name.split('/')), 'rb') as f:
+                    return f.read()
+            if asm is None:
                 return None
-            with open(os.path.join(folder, *name.split('/')), 'rb') as f:
-                return f.read()
+            try:
+                return hook(orig, asm, spec['class'], spec['export'])
+            except Exception:  # noqa: BLE001 -- already hooked, not that screen, or a movie we cannot read
+                return None
         files[rel] = pick
-    info = {k: v for k, v in index.items() if k not in ('files', 'variants')}
+    info = {k: v for k, v in index.items() if k not in ('files', 'variants', 'hooks')}
     return info, files
