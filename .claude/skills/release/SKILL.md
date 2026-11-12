@@ -26,7 +26,8 @@ at that step. The user runs the build and the in-game smoke test.
    confirm `bin/cgfs16_overlay.dll`, `bin/cgfs16_inject.exe`, `bin/KitExtractorHost.exe` were rebuilt
    and are part of the commit. Smoke test: launch, Setup tab, one Kick-Off match with a custom stadium,
    F12 menu opens/closes.
-5. **After the user confirms the build:** commit (`feat: <ver> release notes.` style), then — only on
+5. **After the user confirms the build:** commit (`feat: <ver> release notes.` style, no
+   `Co-Authored-By` / Claude attribution trailer), then — only on
    explicit OK — `git tag v<ver>` and push. Tags so far sit on commits shared by `develop` and `main`
    (kept level); merge `develop` → `main` only if the user asks. If `gh` is available,
    `gh release create v<ver> --title "v<ver>" --notes-file RELEASE_NOTES_v<ver>.md` (exe attached
