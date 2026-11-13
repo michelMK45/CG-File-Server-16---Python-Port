@@ -86,13 +86,17 @@ class SettingsMixin:
             elif kind == "ingame_menu_images":
                 _, made, available, error = event
                 self.ingame_menu.on_images_done(made, available, error)
+            elif kind == "ingame_menu_kit_images":
+                _, made, error, failures = event
+                self.ingame_menu.kits.on_pictures_done(made, error, failures)
             elif kind == "kit_cycle_error":
                 _, side, team_id, message = event
                 self._kit_cycle_task_running = False
                 self.log(f"Kit hotkey: failed to cycle kit for team {team_id} ({side}): {message}")
         ingame_menu = getattr(self, "ingame_menu", None)
         if (self._stadium_task_running or self._kit_cycle_task_running or not self._worker_queue.empty()
-                or (ingame_menu is not None and (ingame_menu.busy or ingame_menu.images_busy))):
+                or (ingame_menu is not None and (ingame_menu.busy or ingame_menu.images_busy
+                                                 or getattr(getattr(ingame_menu, "kits", None), "pictures_busy", False)))):
             self._schedule_worker_poll()
 
     def setuppaths(self, load_team_database: bool = True) -> None:

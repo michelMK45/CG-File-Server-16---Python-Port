@@ -128,7 +128,7 @@ class InGameMenuRuntimeTests(unittest.TestCase):
         self.assertEqual(d["TVLOGO_SEL"], "0")
         self.assertEqual(d["STADIUM"], NO_MATCH)        # no match context: the Estadio tab says where to open it
         self.assertEqual(d["MOVIES"], NO_MATCH)
-        self.assertEqual(d["KITS"], NOT_YET)
+        self.assertEqual(d["KITS"], NO_MATCH)          # Equipaciones too (ingame_kits)
         self.assertEqual(d["ACK"], "0")
         self.assertFalse(self.rt.write_data("again"))            # nothing changed
         self.assertTrue(self.rt.write_data("again", force=True))
@@ -548,6 +548,17 @@ class InGameMenuLanguageTests(unittest.TestCase):
             for key, value in table.items():
                 self.assertEqual(fields(value), fields(texts.TEXTS["eng"][key]), (lang, key))
                 self.assertFalse(any(c in value for c in "|=\n"), (lang, key))   # the data text cannot carry them
+
+    def test_kits_tab_texts(self) -> None:
+        from server16_py import ingame_menu_texts as texts
+        self.assertEqual(texts.render(texts.token("kits_home", team="FC Barcelona"), "eng"), "Home · FC Barcelona")
+        self.assertEqual(texts.render(texts.token("kits_away", team="Real Madrid"), "spa"), "Visitante · Real Madrid")
+        self.assertEqual(texts.TEXTS["eng"]["kits_original"], "Original kits")
+        self.assertEqual(texts.TEXTS["spa"]["kits_original"], "Equipaciones originales")
+        self.assertEqual(texts.TEXTS["spa"]["kits_unsupported"], "Necesita el player.lua de Rev Mod V1.3.5.")
+        self.assertEqual(texts.TEXTS["eng"]["kits_desc"],
+                         "Kit combinations saved in the app (Kits > Team). The change applies when the match loads.")
+        self.assertIn("kits_none", texts.TEXTS["chi"])
 
     def test_language_codes(self) -> None:
         from server16_py import ingame_menu_texts as texts

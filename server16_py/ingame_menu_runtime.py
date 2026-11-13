@@ -42,7 +42,9 @@ What the rows mean here:
                        this match has; left out with one) and the MoviesGBD pack, each previewed by its
                        bootflowoutro.vp8 played muted by FIFA's MoviePlayer in the menu (ingame_images links it
                        under data/ui/cgfs16/mov). Saved to [TeamMovies]/[DerbyMatch]/[movies] as assign_movie.
-  Equipaciones         not wired yet: one "Próximamente" value, saves ignored.
+  Equipaciones         ingame_kits: one row per side (KITS = home, KITSAWAY = away), the original kits + the
+                       team's saved Team Kits combinations, each with its drawing; saved to team_<id>.lua by
+                       KitClassicRuntime.save, as the F7-F10 kit hotkeys.
 After a save that changed settings.ini the runtime is applied again (apply_all_runtime): coming back to the
 KickOffHub is a "revisit" that would not reload anything (docs/stadium-slots.md).
 
@@ -64,6 +66,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from . import ingame_datafile, ingame_images, ingame_menu_texts, ingame_recordscan
+from .ingame_kits import InGameKits
 from .file_tools import _bundled_resource_path, discover_stadium_names
 
 if TYPE_CHECKING:
@@ -90,7 +93,7 @@ PACK_TABS = {
 DEFAULT_ROWS = tuple(PACK_TABS)   # the rows the log line shows
 DEFAULT_SCOPE_LABEL = "Por defecto / Amistoso"   # Spanish (tests)
 PACK_PLACEHOLDERS = {"SCOREBOARD": ingame_images.SCOREBOARD_PLACEHOLDER_REL, "TVLOGO": ingame_images.TVLOGO_PLACEHOLDER_REL}
-OTHER_ROWS = ("KITS",)
+OTHER_ROWS: tuple[str, ...] = ()   # plain rows without data yet ("Próximamente")
 DEFAULT_KEY = "0"
 STADIUM_SECTION, COMP_SECTION = "stadium", "comp"
 # "Estadio del partido" (the match row of the Estadio tab): the stadium fixed for one assignment, kept across
@@ -160,6 +163,7 @@ class InGameMenuRuntime:
         self.record_lang: str | None = None   # the language of the menu's last record (its LANG): FIFA's
         self._images_started = False
         self.images_busy = False   # the previews are being made in a worker thread
+        self.kits = InGameKits(self)   # the Equipaciones tab
 
     # --- language ----------------------------------------------------------------------------
     def language(self) -> str:
@@ -702,8 +706,7 @@ class InGameMenuRuntime:
         values, selected = self.rows()
         extra: list[str] = [f"LANG={self.language()}",   # the app's guess, for the log / diagnosis only
                             "INFO=" + self.t("info", source="CG Server 16", stamp=STAMP_SLOT),
-                            "BEHIND=" + self.t("behind"), "TITLE_KITS=" + self.t("tab_kits"),
-                            "DESC_KITS=" + self.t("kits_desc")]
+                            "BEHIND=" + self.t("behind")]
         extra += [f"TAB_{tab}=" + self.t(key) for tab, key in TAB_TEXTS.items()]
         for row in PACK_TABS:
             pack_extra, pack_values, pack_selected = self.pack_lines(row)
@@ -718,6 +721,10 @@ class InGameMenuRuntime:
         extra += movie_extra
         values.update(movie_values)
         selected.update(movie_selected)
+        kit_extra, kit_values, kit_selected = self.kits.lines()
+        extra += kit_extra
+        values.update(kit_values)
+        selected.update(kit_selected)
         stamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         text = ingame_datafile.encode(values, selected, source="CG Server 16", stamp=stamp, ack=self.last_seq)
         text = "\n".join([text] + [line.replace(STAMP_SLOT, stamp) if line.startswith("INFO=") else line
@@ -747,6 +754,11 @@ class InGameMenuRuntime:
         self._written = None
         self.write_data("install", force=True)
 
+    def kits_changed(self) -> None:
+        """A team file's combinations were saved (KitClassicRuntime.save): the Equipaciones rows list them."""
+        if self.installed() and not self.kits.applying:   # a menu save writes the data once, after it
+            self.write_data("kit combinations")
+
     def context_changed(self) -> None:
         """From the live context reader (HID/AID/... changed): the Estadio rows depend on the home team."""
         if self.installed():
@@ -758,6 +770,8 @@ class InGameMenuRuntime:
         if not self.installed():
             return
         self.attached(pid)
+        if page == MENU_PAGE and previous != MENU_PAGE:
+            self.kits.menu_opened()   # FIFA has just read data.big
         if previous == MENU_PAGE and page != MENU_PAGE and pid:
             self._start_scan(pid)
         elif page != MENU_PAGE:
@@ -809,6 +823,7 @@ class InGameMenuRuntime:
         if reported:
             self.record_lang = reported   # what follows was shown in it
         changed = self.apply(fields)
+        self.kits.apply(fields)   # team_<id>.lua, not settings.ini: no apply_all_runtime for it
         self.last_seq = seq
         self.write_data(f"after save #{seq}", force=True)
         if changed:

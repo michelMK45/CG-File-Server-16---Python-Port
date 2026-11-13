@@ -260,6 +260,17 @@ class RuntimeTests(unittest.TestCase):
             self.runtime.save(_sample())
         self.assertFalse(self.runtime.team_lua_path(383).exists())
 
+    def test_save_notifies_the_ingame_menu(self):
+        self._install_player_lua()
+        menu = mock.Mock()
+        self.runtime.app.ingame_menu = menu
+        self.runtime.save(_sample())
+        menu.kits_changed.assert_called_once_with()
+        self.runtime.save(_sample())                      # same text: nothing written, nothing to tell
+        menu.kits_changed.assert_called_once_with()
+        del self.runtime.app.ingame_menu
+        self.runtime.save(kc.TeamCombinations(383))       # an app without the menu runtime: no error
+
     def test_save_writes_block_and_backs_up_the_untouched_file_once(self):
         self._install_player_lua()
         original = b"--Palmeiras \xe9\r\nswapTeamKit(383, 1, 3)\r\n"   # cp1252 byte must survive

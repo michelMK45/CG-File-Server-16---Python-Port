@@ -472,6 +472,12 @@ class IconFactory:
         sig = hashlib.md5(repr((ART_VERSION, size, self._collar(paths[0]), [_stamp(p) for p in paths])).encode("utf-8", "replace")).hexdigest()
         return self.cache_dir / f"kit_v{ART_VERSION}_{size}_{sig[:16]}.png"
 
+    def drawing_path(self, shirt: Optional[Path], shorts: Optional[Path], socks: Optional[Path],
+                     size: int = 56) -> Optional[Path]:
+        """The cached PNG render_path would return for these sources, without rendering it (it may not exist
+        yet). None without a cache folder. The in-game menu names its pictures after it."""
+        return self._drawing_cache([Path(p) if p is not None else None for p in (shirt, shorts, socks)], size)
+
     def render_path(self, shirt: Optional[Path], shorts: Optional[Path], socks: Optional[Path],
                     size: int = 56) -> Optional[Path]:
         """The cached PNG of render_png's drawing, rendered first if needed. None

@@ -814,4 +814,11 @@ class KitClassicRuntime:
         path.parent.mkdir(parents=True, exist_ok=True)
         write_lua_text_atomic(path, new_text)
         self.app.log(f"Kits Classic: saved {len(tc.items)} combination(s) for team {tc.team} -> {path}")
+        # the in-game menu lists each side's combinations: its data follows (Kits > Team tab, F12, F7-F10, the menu)
+        changed = getattr(getattr(self.app, "ingame_menu", None), "kits_changed", None)
+        if changed is not None:
+            try:
+                changed()
+            except Exception as exc:  # noqa: BLE001 - the file is saved; the menu catches up on the next page
+                self.app.log(f"Kits Classic: in-game menu data not refreshed: {exc}")
         return path, clashes

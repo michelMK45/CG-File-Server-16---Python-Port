@@ -3227,15 +3227,6 @@ class UIMixin:
         card = self._card(parent, "card.app_settings.title", "card.app_settings.subtitle")
         card.grid(row=0, column=0, sticky="new", padx=(0, 12))
 
-        self.notification_switch = ttk.Checkbutton(
-            card,
-            style="Switch.TCheckbutton",
-            text=self.tr("toggle.show_loading_notification"),
-            variable=self.show_stadium_loading_var,
-            command=self._toggle_stadium_loading_visibility,
-        )
-        self.notification_switch.pack(anchor="w", padx=12, pady=(6, 4))
-
         self.kit_hotkeys_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
@@ -3243,7 +3234,7 @@ class UIMixin:
             variable=self.kit_hotkeys_var,
             command=self._toggle_kit_hotkeys,
         )
-        self.kit_hotkeys_switch.pack(anchor="w", padx=12, pady=(0, 4))
+        self.kit_hotkeys_switch.pack(anchor="w", padx=12, pady=(6, 4))
         self._add_tooltip(self.kit_hotkeys_switch, "tooltip.kit_hotkeys")
 
         self.keep_open_switch = ttk.Checkbutton(
@@ -3294,6 +3285,15 @@ class UIMixin:
             command=self._toggle_overlay_enabled,
         )
         self.overlay_switch.pack(anchor="w", padx=12, pady=(6, 4))
+
+        self.notification_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.show_loading_notification"),
+            variable=self.show_stadium_loading_var,
+            command=self._toggle_stadium_loading_visibility,
+        )
+        self.notification_switch.pack(anchor="w", padx=12, pady=(0, 4))
 
         self.performance_mode_switch = ttk.Checkbutton(
             card,
