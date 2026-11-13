@@ -160,6 +160,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._match_prep_context: tuple[str, str, str, str] | None = None
         self._match_prep_ignored_context: tuple[str, str, str, str] | None = None
         self._kickoff_revisit = False
+        # Set on Career/Tournament's post-match career/Results page; the next
+        # FluxHub then restores the scoreboard crests (see app_game.py).
+        self._career_results_seen = False
         # Tracks whether the scoreboardstdname loading notification
         # (app_game.py's _start_scoreboard_name_progress /
         # _finish_scoreboard_name_progress) is currently showing, so the

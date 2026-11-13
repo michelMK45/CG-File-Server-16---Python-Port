@@ -184,6 +184,8 @@ class GameMixin:
         # from FIFA's started flag, which can stay stale after an abandoned match.
         if self._page_ends_match_prep(page_name):
             self._end_match_preparation(page_name)
+        if self._page_restores_scoreboard_ui(page_name):
+            self._restore_scoreboard_ui_after_match(page_name)
         # Safety net for the manual stadium picker (see _open_stadium_picker
         # in stadium_runtime.py): it only ever opens while sitting at
         # KickOffHub, so the first genuine transition away from it — the
@@ -464,6 +466,56 @@ class GameMixin:
         self._match_prep_context = None
         self._kickoff_revisit = False
         self.log(f"Match preparation ended on {page_name!r}; the next KickOffHub applies the runtime again")
+
+    def _page_restores_scoreboard_ui(self, page_name: str) -> bool:
+        """True for a page that is only reached once the match is over, where
+        the scoreboard pack's crests/fonts are put back (_restore_scoreboard_ui_after_match).
+
+        - SelectTeam (Kick-Off): never opened from inside a match (no log shows it
+          after a pause; the stadium-name patch already treats it as post-match).
+        - Career/Tournament (maintainer's request 2026-11-13, same day): FluxHub is
+          the pause menu, the half-time menu, the post-match menu AND the main menu,
+          so it only counts after `game/screens/career/Results`. In
+          FSW/Nav/pausemenuflow.nav that screen is only loaded by the
+          CareerMatchResults / CareerMatchResultsPostGame states, which are entered
+          from PostGame (after MatchEnded); "advance" goes from there to PauseMenu,
+          i.e. the post-match FluxHub. Tournament Mode runs on the career screens
+          (career/Scheduling in its logs). Restore on that FluxHub, or on a
+          career/tournamentMode hub page if the player leaves another way; pages in
+          between (highlights, replay, match details, blank) keep the flag.
+          No rematch from a career match, so nothing is needed again before the
+          next KickOffHub, which re-applies the runtime anyway.
+        """
+        lowered = (page_name or "").lower()
+        if "selectteam" in lowered:
+            self._career_results_seen = False
+            return True
+        if page_name == KICKOFF_HUB_PAGE:
+            # The apply on this page restores/installs whatever the match wants.
+            self._career_results_seen = False
+            return False
+        if "career/results" in lowered:
+            if not getattr(self, "_career_results_seen", False):
+                self.log(f"Career/Tournament match over ({page_name!r}): the next FluxHub restores the scoreboard crests")
+            self._career_results_seen = True
+            return False
+        if not getattr(self, "_career_results_seen", False):
+            return False
+        if "fluxhub" in lowered or "career/" in lowered or "tournamentmode/" in lowered:
+            self._career_results_seen = False
+            return True
+        return False
+
+    def _restore_scoreboard_ui_after_match(self, page_name: str) -> None:
+        """Puts the scoreboard pack's crests/fonts back on a post-match page
+        (_page_restores_scoreboard_ui) so FIFA's menus show the normal crests."""
+        assets = getattr(self, "assets_runtime", None)
+        if assets is None:
+            return
+        try:
+            assets.restore_scoreboard_ui_after_match(page_name)
+        except Exception as exc:
+            self.log("Scoreboard restore on SelectTeam failed", exc, exc_info=sys.exc_info())
 
     def _match_prep_locked(self, page_name: str) -> bool:
         """True once the player left KickOffHub after its runtime was applied:

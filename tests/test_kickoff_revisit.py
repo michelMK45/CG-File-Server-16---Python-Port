@@ -15,6 +15,8 @@ from server16_py.app_game import GameMixin
 KICKOFF = "game/screens/playNow/KickOffHub"
 TEAM_MANAGEMENT = "game/screens/teamsheets/TeamSheets"
 SETTINGS = "game/screens/settings/GameSettings"
+FLUXHUB = "game/screens/fluxHub/FluxHub"
+CAREER_RESULTS = "game/screens/career/Results"
 
 
 class FakeOffsets:
@@ -277,6 +279,66 @@ class KickOffHubRevisitTests(unittest.TestCase):
         game.goto(KICKOFF)
         self.assertEqual(game._kickoff_generation, 2)
         self.assertEqual(len(game.applies), 2)
+
+
+class SelectTeamScoreboardRestoreTests(unittest.TestCase):
+    """SelectTeam is only reachable outside a match, so the scoreboard pack's
+    crests are put back there and the team picker shows the normal ones."""
+
+    def setUp(self) -> None:
+        self.game = FakeGame()
+        self.restores: list[str] = []
+        self.game.assets_runtime = types.SimpleNamespace(
+            restore_scoreboard_ui_after_match=self.restores.append
+        )
+
+    def test_select_team_restores_the_scoreboard_crests(self) -> None:
+        self.game.goto("game/screens/playNow/SelectTeam")
+        self.assertEqual(self.restores, ["game/screens/playNow/SelectTeam"])
+
+    def test_pause_menu_and_kickoff_hub_do_not_restore(self) -> None:
+        for page in ("game/screens/FluxHub", "", "game/screens/StadiumPan", KICKOFF, "game/screens/TV/bumper"):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [])
+
+    def test_career_results_then_fluxhub_restores_once(self) -> None:
+        # pausemenuflow.nav: PostGame -> CareerMatchResults (career/Results)
+        # -> advance -> PauseMenu (FluxHub).
+        for page in (KICKOFF, "", "TV/bumper", "", FLUXHUB, "", CAREER_RESULTS, FLUXHUB, "", FLUXHUB):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [FLUXHUB])
+
+    def test_pause_and_half_time_fluxhub_do_not_restore(self) -> None:
+        for page in (KICKOFF, "", "TV/bumper", "", FLUXHUB, "", FLUXHUB, "game/screens/matchDetails/MatchDetails", FLUXHUB):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [])
+
+    def test_highlights_after_career_results_keep_the_flag(self) -> None:
+        # CareerMatchResultsPostGame -> advance -> matchHighlights -> ...
+        for page in (
+            CAREER_RESULTS,
+            "game/screens/postGameFlow/MatchHighlights",
+            "game/screens/instantReplay/ReplayScreen",
+            "",
+            FLUXHUB,
+        ):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [FLUXHUB])
+
+    def test_career_hub_after_results_restores_when_fluxhub_is_skipped(self) -> None:
+        for page in (CAREER_RESULTS, "", "game/screens/career/Scheduling", FLUXHUB):
+            self.game.goto(page)
+        self.assertEqual(self.restores, ["game/screens/career/Scheduling"])
+
+    def test_kickoff_hub_clears_a_pending_career_restore(self) -> None:
+        for page in (CAREER_RESULTS, KICKOFF, "", FLUXHUB):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [])
+
+    def test_career_hub_without_a_finished_match_does_not_restore(self) -> None:
+        for page in (FLUXHUB, "", "game/screens/tournamentMode/SelectTournament", "game/screens/career/Scheduling"):
+            self.game.goto(page)
+        self.assertEqual(self.restores, [])
 
 
 if __name__ == "__main__":

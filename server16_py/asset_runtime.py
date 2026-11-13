@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING
 
 from .file_tools import (
     copy,
+    copy_file_atomic,
     copy_if_exists,
     copy_tvlogo,
     install_tracked_files,
@@ -284,30 +285,34 @@ class AssetRuntime:
                             scoreboard_dir = tmp_dir
                         variant = scoreboard_dir / app.tvlogoscoreboardtype
                         if app.tvlogoscoreboardtype != "default" and variant.exists():
-                            copy(variant, app.Scoredata)
+                            self._install_scoreboard_pack(variant)
                         else:
-                            copy(scoreboard_dir, app.Scoredata)
+                            self._install_scoreboard_pack(scoreboard_dir)
                     except Exception as exc:
                         app.log(f"Failed to apply scoreboard archive '{scoreboard_path.name}': {exc}")
                         scoreboard = ""
+                        self._restore_scoreboard_ui("scoreboard archive failed")
                     finally:
                         shutil.rmtree(tmp_dir, ignore_errors=True)
                 elif scoreboard_dir.exists() and scoreboard_dir.is_dir():
                     variant = scoreboard_dir / app.tvlogoscoreboardtype
                     if app.tvlogoscoreboardtype != "default" and variant.exists():
-                        copy(variant, app.Scoredata)
+                        self._install_scoreboard_pack(variant)
                     else:
-                        copy(scoreboard_dir, app.Scoredata)
+                        self._install_scoreboard_pack(scoreboard_dir)
                 else:
                     app.log(f"Scoreboard not found, keeping default: {scoreboard_path}")
                     scoreboard = ""
+                    self._restore_scoreboard_ui("assigned scoreboard not found")
                 if scoreboard:
                     app._set_display("scoreboard", scoreboard)
                     app.log(f"Applied scoreboard: {scoreboard}")
                     self._show_asset_toast(app.tr("notify.scoreboard_loaded"), scoreboard, icon="scoreboard")
             else:
                 app.log("No scoreboard assignment found; default scoreboard active")
+                self._restore_scoreboard_ui("no scoreboard assigned to this match")
         else:
+            self._restore_scoreboard_ui("module off", apply_defaults=False)
             app._set_display("scoreboard", app.display_value("scoreboard_module_disable"))
             scoreboard_check = self._resolve_assignment_value(
                 [
@@ -330,6 +335,90 @@ class AssetRuntime:
                 if sb_exists:
                     self._show_warning_toast(app.tr("notify.warn.scoreboard_off"), app.tr("notify.warn.assets_skipped"), icon="scoreboard")
         self.update_audio_overview()
+
+    # Backup of the data/ui files a scoreboard pack overwrote outside game/, and
+    # the user's optional folder of "normal" data/ui files (mirrors data/ui).
+    _SCOREBOARD_UI_BACKUP = ".scoreboard_ui_backup"
+    _SCOREBOARD_DEFAULTS = "ScoreBoardDefaults"
+
+    @staticmethod
+    def _is_scoreboard_game_file(rel: str) -> bool:
+        return rel.split("/", 1)[0].lower() == "game"
+
+    def _install_scoreboard_pack(self, src_dir: Path) -> None:
+        """Copies a scoreboard pack (folder, or extracted archive) into data/ui.
+
+        game/ is copied as before: FSW/ScoreBoard resets it on every apply.
+        Everything else (imgassets/ crests, fonts/, ...) used to stay in data/ui
+        for good, so a competition's special crests showed in FIFA's menus and
+        later matches (forum request 2026-11-13). Those files are now installed
+        tracked (backup in FSW/.scoreboard_ui_backup) and put back once a later
+        apply no longer wants them; FSW/ScoreBoardDefaults is then laid down
+        under the pack."""
+        app = self.app
+        names = list_pack_files(src_dir)
+        if (src_dir / "game").is_dir():
+            copy(src_dir / "game", app.Scoredata / "game")
+        selection = {rel: src_dir / rel for rel in names if not self._is_scoreboard_game_file(rel)}
+        try:
+            installed = install_tracked_selection(
+                selection, app.Scoredata, app.exedir / "FSW" / self._SCOREBOARD_UI_BACKUP
+            )
+        except OSError as exc:
+            # The rest went through; a locked crest must not drop the scoreboard.
+            installed = []
+            app.log(f"Scoreboard runtime: some data/ui files outside game/ were not installed: {exc}")
+        if installed:
+            app.log(f"Scoreboard runtime: {len(installed)} data/ui file(s) outside game/ installed (tracked)")
+        self._apply_scoreboard_defaults(skip={rel.lower() for rel in selection})
+
+    def _restore_scoreboard_ui(self, reason: str, *, apply_defaults: bool = True) -> None:
+        """Puts back the data/ui files an earlier scoreboard pack overwrote outside
+        game/ and deletes the ones it added; then lays down FSW/ScoreBoardDefaults
+        (not with the module off: CGFS then only undoes its own changes)."""
+        self._restore_tracked_originals(
+            "Scoreboard", self.app.Scoredata, self._SCOREBOARD_UI_BACKUP, reason
+        )
+        if apply_defaults:
+            self._apply_scoreboard_defaults(skip=set())
+
+    def restore_scoreboard_ui_after_match(self, page_name: str) -> None:
+        """Called on SelectTeam (see GameMixin._handle_page_transition), which is
+        only reachable once the match is over: the team picker should show the
+        normal crests, not the ones the last scoreboard pack installed. The next
+        KickOffHub installs whatever that match wants again. Idempotent: with
+        nothing tracked it only re-checks FSW/ScoreBoardDefaults by size/mtime."""
+        reason = f"left the match: {page_name.rsplit('/', 1)[-1] or page_name}"
+        self._restore_scoreboard_ui(reason, apply_defaults=self.app.module_enabled("ScoreBoard"))
+
+    def _apply_scoreboard_defaults(self, skip: set[str]) -> None:
+        """Copies FSW/ScoreBoardDefaults/ (optional, same layout as data/ui, e.g.
+        imgAssets/crest/light/l241.dds) into data/ui, except the files the current
+        pack installs (`skip`, lower-cased) and game/ (FSW/ScoreBoard owns that).
+
+        The tracked backup only knows what was on disk the first time a pack
+        overwrote a file; an install where older CGFS versions already left
+        special crests behind would keep restoring those. This folder is the
+        user's own reference for the normal files. Untracked on purpose: these
+        ARE the files that should stay. Unchanged files are skipped by size/mtime."""
+        app = self.app
+        defaults_dir = app.exedir / "FSW" / self._SCOREBOARD_DEFAULTS
+        if not defaults_dir.is_dir():
+            return
+        copied = 0
+        failed: list[str] = []
+        for rel in list_pack_files(defaults_dir):
+            if rel.lower() in skip or self._is_scoreboard_game_file(rel):
+                continue
+            try:
+                if copy_file_atomic(defaults_dir / rel, app.Scoredata / rel):
+                    copied += 1
+            except OSError:
+                failed.append(rel)
+        if copied:
+            app.log(f"Scoreboard runtime: {copied} file(s) from FSW/{self._SCOREBOARD_DEFAULTS} applied")
+        if failed:
+            app.log(f"Scoreboard runtime: could not apply {', '.join(failed[:10])} from FSW/{self._SCOREBOARD_DEFAULTS}")
 
     def apply_movie_runtime(self) -> None:
         app = self.app
