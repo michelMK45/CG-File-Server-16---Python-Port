@@ -174,7 +174,16 @@ class GameMixin:
     def _handle_page_transition(self, page_name: str) -> None:
         if page_name == self.lastpagename:
             return
+        previous_page = self.lastpagename
         self.lastpagename = page_name
+        # The in-game CGFS16 menu: keep its data.big current and, when its page is left, read back
+        # what the user saved there (a worker thread; result through _worker_queue).
+        ingame_menu = getattr(self, "ingame_menu", None)
+        if ingame_menu is not None:
+            try:
+                ingame_menu.on_page(previous_page, page_name, self.memory.process_id or None)
+            except Exception as exc:
+                self.log("In-game menu: page transition handling failed", exc, exc_info=sys.exc_info())
         # Kept deliberately lightweight (real transitions only, thanks to the
         # dedupe above) — this is the trail needed to diagnose why a given
         # page path did or didn't arm/start Team Entrance (see CLAUDE.md §7,
@@ -1142,6 +1151,12 @@ class GameMixin:
                 self._match_prep_context = signature
                 self._match_prep_ignored_context = None
                 self.apply_all_runtime()
+            ingame_menu = getattr(self, "ingame_menu", None)
+            if ingame_menu is not None:
+                try:
+                    ingame_menu.context_changed()  # its Estadio tab is for the home team
+                except Exception as exc:  # noqa: BLE001 - never break the context reader
+                    self.log(f"In-game menu: context update failed: {exc}")
 
     def _try_read_context_int(self, trace_name: str, static_ptr: int, offsets: list[int], page_name: str) -> str | None:
         try:

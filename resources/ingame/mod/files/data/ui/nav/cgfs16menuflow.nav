@@ -1,0 +1,52 @@
+{
+	"name": "cgfs16MenuFlow",
+	"initial": {
+		"targets": [
+			"cgfs16Menu"
+		]
+	},
+	"states": [
+		{
+			"name": "cgfs16Menu",
+			"onEnter": [
+				[
+					"loadView",
+					[
+						"screen",
+						"game/screens/cgfs16/CGFS16Menu"
+					]
+				],
+				[
+					"loadView",
+					[
+						"background",
+						"BOOTFLOW"
+					]
+				]
+			],
+			"onExit": [
+				[
+					"unloadView",
+					[
+						"screen",
+						"game/screens/cgfs16/CGFS16Menu"
+					]
+				],
+				[
+					"unloadView",
+					[
+						"background"
+					]
+				]
+			],
+			"transitions": [
+				{
+					"event": "back",
+					"targets": [
+						"back"
+					]
+				}
+			]
+		}
+	]
+}

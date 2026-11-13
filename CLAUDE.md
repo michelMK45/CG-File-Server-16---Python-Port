@@ -104,6 +104,7 @@ chronology is in `docs/history/<same name>.md` — grep it for `**Part N` only w
 | t3db database, `db_patcher` | `docs/database.md` |
 | older/misc fixes (RAR5, goal songs, Discord, context-read spam, practice arena, SkillGamePause) | `docs/bugs-misc.md` |
 | deps, build, native binaries | `docs/dependencies-build.md` |
+| in-game CGFS16 menu (FIFA's own UI), `ingame_*` modules, continuing its work (sibling `cgfs-ingame` project) | `docs/ingame-menu.md` (§0 first) |
 | roadmap, open items, `legacy/` map | `docs/roadmap-legacy.md` |
 
 Logs (`runtime/server16.log`, `.previous.log`, forum `Log*.txt`) can be tens of thousands of lines:

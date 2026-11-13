@@ -41,6 +41,9 @@ from . import window_fit
 from .win32_types import RECT, SW_SHOWNOACTIVATE, SW_HIDE, XINPUT_STATE, XINPUT_SUCCESS
 from .xinput_players import VirtualPadMatcher, may_be_virtual_pad, read_player_identity
 
+# One in-game menu repair at a time (app start and Launch FIFA both run one in a worker).
+_INGAME_REPAIR_LOCK = threading.Lock()
+
 try:
     from .d3d_injector import D3DOverlayInjector as _D3DOverlayInjector
 except Exception:
@@ -4745,6 +4748,25 @@ class UIMixin:
         source_row(left_col, "setup.item.fsw_scoreboard", "fsw_scoreboard")
         source_row(left_col, "setup.item.fsw_tvlogo", "fsw_tvlogo")
 
+        # The CGFS16 menu inside FIFA 16's own UI (R3 on the match hub), from the bundled package
+        # resources/ingame/mod (ingame_menu_install.py). Run Setup installs or updates it; the button
+        # below removes it (and puts back the game files it changed).
+        section(left_col, "setup.section.ingame_menu")
+        source_row(left_col, "setup.item.ingame_menu", "ingame_menu")
+        _ingame_row = tk.Frame(left_col, bg=self.card)
+        _ingame_row.pack(fill="x", pady=(2, 0))
+        self._uninstall_ingame_menu_btn = ttk.Button(
+            _ingame_row, text=self.tr("button.uninstall_ingame_menu"), command=self._uninstall_ingame_menu,
+            state="disabled",
+        )
+        self._uninstall_ingame_menu_btn.pack(side="left")
+        # A FIFA UI theme (FIP's theme switcher) replaces kickoffhub.big and the nav flows the menu
+        # hooks into, so the R3 entry disappears; the safe order is uninstall menu -> theme -> menu.
+        tk.Label(
+            left_col, text=self.tr("setup.hint.ingame_menu_theme"), bg=self.card, fg=self.gold,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=340,
+        ).pack(fill="x", pady=(4, 0))
+
         section(right_col, "setup.section.user_folders")
         status_row(right_col, "setup.item.gbd_stadium", "gbd_stadium")
         status_row(right_col, "setup.item.gbd_tvlogo", "gbd_tvlogo")
@@ -5184,6 +5206,9 @@ class UIMixin:
             regen_btn = getattr(self, "_regen_bh_btn", None)
             if regen_btn:
                 regen_btn.configure(state="disabled")
+            uninstall_menu_btn = getattr(self, "_uninstall_ingame_menu_btn", None)
+            if uninstall_menu_btn:
+                uninstall_menu_btn.configure(state="disabled")
             assets_action_btn = getattr(self, "_assets_action_btn", None)
             if assets_action_btn and not getattr(self, "_assets_extraction_running", False):
                 assets_action_btn.configure(state="disabled")
@@ -5228,6 +5253,8 @@ class UIMixin:
         ):
             exists = Path(path).exists()
             _set(key, exists, ok_text if exists else missing)
+
+        self._refresh_ingame_menu_status(_set)
 
         # Destination folders
         for key, path in (
@@ -5330,6 +5357,7 @@ class UIMixin:
         do_camera      = install_vars.get("fsw_camera",     tk.BooleanVar(value=False)).get()
         do_netmesh     = install_vars.get("fsw_netmesh",    tk.BooleanVar(value=False)).get()
         do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
+        do_ingame_menu = install_vars.get("ingame_menu", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
@@ -5380,6 +5408,10 @@ class UIMixin:
                         )
                 else:
                     self.log("install_data folder not found, skipping bundled copy")
+
+                if do_ingame_menu:
+                    self.after(0, self._set_setup_progress, self.tr("progress.setup.ingame_menu"))
+                    self._install_ingame_menu_blocking()
 
                 _set_pb(10)
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.extracting"))
@@ -5435,6 +5467,92 @@ class UIMixin:
                 )
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # --- CGFS16 menu inside FIFA 16's UI (ingame_menu_install.py) ---------------------------------
+    def _refresh_ingame_menu_status(self, set_status) -> None:
+        from .ingame_menu_install import status
+
+        st = status(self.exedir)
+        btn = getattr(self, "_uninstall_ingame_menu_btn", None)
+        if btn:
+            btn.configure(state="normal" if st.installed else "disabled")
+        if st.installed is None:
+            key = "setup.status.ingame_not_installed" if st.bundled else "setup.status.ingame_no_package"
+            set_status("ingame_menu", None, self.tr(key))
+        elif st.without_r3:
+            set_status("ingame_menu", None, self.tr("setup.status.ingame_no_r3"))
+        elif st.bundled and not st.up_to_date:
+            set_status("ingame_menu", None, self.tr("setup.status.ingame_update").format(build=st.bundled))
+        else:
+            set_status("ingame_menu", True, self.tr("setup.status.ingame_installed").format(build=st.installed))
+
+    def _ingame_menu_fifa_running(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showwarning(self.tr("message.fifa16"), self.tr("message.ingame_menu.fifa_running"))
+
+    def _install_ingame_menu_blocking(self) -> bool:
+        """Installs or updates the in-game menu (worker thread of Run Setup). Never raises."""
+        from .ingame_menu_install import FifaRunning, install
+
+        try:
+            install(self.exedir, self.log)
+        except FifaRunning:
+            self.log("In-game menu: not installed, FIFA 16 is running (close it and run Setup again)")
+            self.after(0, self._ingame_menu_fifa_running)
+            return False
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"In-game menu: install failed: {exc}")
+            return False
+        menu = getattr(self, "ingame_menu", None)
+        if menu is not None:
+            self.after(0, menu.install_changed)
+        return True
+
+    def _repair_ingame_menu_blocking(self, why: str) -> bool:
+        """Installs the in-game menu again if something replaced its files since it was installed -- a FIFA
+        theme brings its own KickOffHub and nav flows, which drops R3 (ingame_menu_install.drift). Worker
+        thread; does nothing while FIFA runs (the files can only change with it closed). Never raises.
+        True if it repaired."""
+        from .ingame_menu_install import FifaRunning, repair
+
+        with _INGAME_REPAIR_LOCK:   # app start and Launch FIFA may both ask
+            try:
+                if not repair(self.exedir, self.log):
+                    return False
+            except FifaRunning:
+                self.log(f"In-game menu: not repaired ({why}), FIFA 16 is running: close it and run Setup")
+                return False
+            except Exception as exc:  # noqa: BLE001
+                self.log(f"In-game menu: repair failed ({why}): {exc}")
+                return False
+        self.log(f"In-game menu: repaired ({why})")
+        menu = getattr(self, "ingame_menu", None)
+        if menu is not None:
+            self.after(0, menu.install_changed)
+        return True
+
+    def _start_ingame_menu_repair(self) -> None:
+        """At app start: the repair check in a worker (a theme may have been switched while the app was closed)."""
+        threading.Thread(target=self._repair_ingame_menu_blocking, args=("app start",), daemon=True).start()
+
+    def _uninstall_ingame_menu(self) -> None:
+        from tkinter import messagebox
+
+        from .ingame_menu_install import FifaRunning, uninstall
+
+        if not messagebox.askyesno(self.tr("message.fifa16"), self.tr("message.ingame_menu.confirm_uninstall")):
+            return
+        try:
+            uninstall(self.exedir, self.log)
+        except FifaRunning:
+            self._ingame_menu_fifa_running()
+        except Exception as exc:  # noqa: BLE001
+            self.log(f"In-game menu: uninstall failed: {exc}")
+        menu = getattr(self, "ingame_menu", None)
+        if menu is not None:
+            menu.install_changed()
+        self.refresh_setup_tab()
 
     def _run_bh_regen_blocking(self, pb=None) -> tuple[int, int] | None:
         """Runs bh_worker.py against self.exedir and blocks until it's done,

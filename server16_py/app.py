@@ -24,6 +24,7 @@ from .fifa_db import FifaDatabase
 from .file_tools import checkdirs, checkver, copy, copy_if_exists, extra_setup
 from .gamepad_bridge_runtime import VGAMEPAD_IMPORT_ERROR, GamepadBridgeRuntime
 from .hidhide_runtime import HidHideRuntime
+from .ingame_menu_runtime import InGameMenuRuntime
 from .kit_classic import KitClassicRuntime
 from .kit_mixer import KitMixRuntime
 from .match_string_patcher import MatchStringPatchCoordinator, StadiumDbNamePatchCoordinator
@@ -392,6 +393,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_picker_signature = None
         self._stadium_picker_resolved = False
         self._stadium_picker_chosen: str | None = None
+        # The in-game CGFS16 menu's "Estadio del partido" lives in settings.ini [FixedStadium]
+        # (ingame_menu_runtime.read_fixed_stadium / StadiumRuntime._ingame_menu_choice).
         # Remembers the last stadium_signature actually decided by the
         # picker (picked, or closed/cancelled -> random fallback) plus what
         # was decided for it -- unlike _stadium_picker_pending/_resolved
@@ -600,6 +603,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.kit_mixer = KitMixRuntime(self)
         self.kit_classic = KitClassicRuntime(self)
         self.substitution_runtime = SubstitutionRuntime(self)
+        # The CGFS16 menu inside FIFA's own UI (cgfs-ingame): data.big for it, its saves read back.
+        self.ingame_menu = InGameMenuRuntime(self)
         discord_rpc_config = self.settings.data.get("discord_rpc", {})
         client_id = discord_rpc_config.get("client_id", "1495719449700077630")
         self.discord_rpc = DiscordRPCRuntime(client_id, logger=None)
@@ -726,6 +731,9 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         # Evaluated when it fires (not here): needs the main window up before it may
         # spawn FIFA, and re-reads the Autorun switch -- see _autorun_launch_fifa.
         self.after(1500, self._autorun_launch_fifa)
+        # A FIFA theme switched while the app was closed drops the in-game menu's R3 entry: put it back
+        # now (worker; Launch FIFA checks again and waits for it).
+        self._start_ingame_menu_repair()
         if self.module_enabled("Chants"):
             self._start_chants_runtime()
         if self._discord_rpc_enabled:

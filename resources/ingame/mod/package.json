@@ -1,0 +1,25 @@
+{
+  "version": "fase4-pestanas",
+  "installed": "2026-11-12 17:56",
+  "screen": "menu",
+  "files": [
+    "data/ui/cgfs16/data.big",
+    "data/ui/cgfs16/img/logo.dds",
+    "data/ui/cgfs16/menudata.big",
+    "data/ui/game/screens/cgfs16/cgfs16menu.big",
+    "data/ui/nav/cgfs16menuflow.nav"
+  ],
+  "variants": {
+    "data/ui/game/screens/playnow/kickoffhub.big": {
+      "e6d1f9a8f1eb509bb08e3a6975499026583b8d20": "variants/e6d1f9a8f1eb509bb08e3a6975499026583b8d20.big",
+      "e1d6cb580f9f4d82cae36a6819cc83d4f4284021": "variants/e1d6cb580f9f4d82cae36a6819cc83d4f4284021.big"
+    }
+  },
+  "hooks": {
+    "data/ui/game/screens/playnow/kickoffhub.big": {
+      "asm": "hooks/kickoffhub.asm",
+      "class": "game.screens.playNow.KickOffHub",
+      "export": "__Packages.game.screens.cgfs16.KickOffHubEntry"
+    }
+  }
+}

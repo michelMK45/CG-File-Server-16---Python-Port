@@ -114,7 +114,7 @@ class SetupGeneralTabTests(unittest.TestCase):
                     if isinstance(w, tk.Label) and str(w.cget("text")).startswith("setup.section.")]
 
         self.assertEqual(section_titles(left), [
-            "setup.section.prerequisites", "setup.section.fsw_sources",
+            "setup.section.prerequisites", "setup.section.fsw_sources", "setup.section.ingame_menu",
             "setup.section.extra_assets", "setup.section.extra_revmod",
         ])
         self.assertEqual(section_titles(right), ["setup.section.user_folders", "setup.section.dest_folders"])
@@ -142,11 +142,32 @@ class SetupGeneralTabTests(unittest.TestCase):
         self.assertTrue(var.get())
 
 
+    def test_ingame_menu_row_is_checked_and_shows_its_install_state(self) -> None:
+        self.assertTrue(self.app._setup_install_vars["ingame_menu"].get())
+        (self.exedir / "fifa16.exe").write_bytes(b"")
+        self.app.refresh_setup_tab()
+        _dot, status = self.app._setup_status_vars["ingame_menu"]
+        self.assertEqual(status.cget("text"), "setup.status.ingame_not_installed")   # the package is in resources
+        self.assertEqual(str(self.app._uninstall_ingame_menu_btn.cget("state")), "disabled")
+        manifest = self.exedir / "_cgfs16_ingame" / "manifest.json"
+        manifest.parent.mkdir()
+        manifest.write_text(json.dumps({"created": {"x": {}}, "patched": {}, "hashes": [], "installed": "old"}),
+                            encoding="utf-8")
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ingame_update")
+        self.assertEqual(str(self.app._uninstall_ingame_menu_btn.cget("state")), "normal")
+
+
 class SetupLocaleTests(unittest.TestCase):
     def test_new_setup_strings_exist_in_every_language(self) -> None:
         for lang in ("en", "es", "pt"):
             catalog = json.loads((LOCALES / f"{lang}.json").read_text(encoding="utf-8"))
-            for key in ("setup.section.extra_assets", "setup.section.extra_revmod", "setup.item.fsw_netmesh"):
+            for key in ("setup.section.extra_assets", "setup.section.extra_revmod", "setup.item.fsw_netmesh",
+                        "setup.section.ingame_menu", "setup.item.ingame_menu", "button.uninstall_ingame_menu",
+                        "setup.status.ingame_installed", "setup.status.ingame_update",
+                        "setup.status.ingame_not_installed", "setup.status.ingame_no_package",
+                        "setup.status.ingame_no_r3", "progress.setup.ingame_menu",
+                        "message.ingame_menu.fifa_running", "message.ingame_menu.confirm_uninstall"):
                 self.assertTrue(catalog.get(key), f"{lang}: {key}")
 
 
