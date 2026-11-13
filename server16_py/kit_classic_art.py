@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import hashlib
 import io
+import math
+import re
 import struct
 from collections import OrderedDict
 from pathlib import Path
@@ -27,6 +29,15 @@ from typing import Callable, Optional
 
 from PIL import Image, ImageDraw, ImageFilter
 
+from .kit_classic_shapes import SHAPES
+
+try:   # 3D preview from the game's own body models; the flat drawing below is the fallback
+    from . import kit3d
+except Exception:  # noqa: BLE001
+    kit3d = None
+USE_3D = True
+
+_RE_KIT_NAME = re.compile(r"^kit_(\d+)_(\d+)_(\d+)\.rx3$", re.I)
 RX3_MAGIC = b"RX3l"
 RX3_TYPE_TEXTURE = 0x7A0B60DA
 RX3_TYPE_TABLE = 0x6BD085DC
@@ -39,7 +50,7 @@ TEXTURE_REDUCE = 4
 FULL_TEXTURE_SIZE = 200
 IMAGE_TEXTURE_MAX = 512   # imported image sources are shrunk to at most this width
 
-ART_VERSION = 5   # bump when shapes/crops change: invalidates the disk cache
+ART_VERSION = 13   # bump when shapes/crops change: invalidates the disk cache
 
 # Where each piece takes its colours from: name -> (texture, crop in fractions).
 # "shirt" = shirt texture (1024x1024), "shorts"/"sock" = socks+shorts atlas (1024x512).
@@ -48,6 +59,8 @@ ART_REGIONS = {
     "hem": ("shirt", (0.315, 0.90, 0.685, 0.945)),
     "collar": ("shirt", (0.00, 0.955, 0.26, 1.00)),
     "sleeve": ("shirt", (0.222, 0.03, 0.362, 0.32)),
+    "sleeve_l": ("shirt", (0.222, 0.175, 0.372, 0.335)),   # left sleeve panel, its front half (cuff on the left)
+    "sleeve_r": ("shirt", (0.628, 0.175, 0.778, 0.335)),   # right sleeve panel (cuff on the right)
     "cuff": ("shirt", (0.190, 0.03, 0.218, 0.32)),
     "waist": ("shorts", (0.12, 0.372, 0.88, 0.452)),
     "shorts": ("shorts", (0.03, 0.47, 0.97, 0.95)),
@@ -60,29 +73,10 @@ def _mirror(poly):
     return [(1.0 - x, y) for x, y in reversed(poly)]
 
 
-_SLEEVE_L = [(0.30, 0.07), (0.21, 0.10), (0.10, 0.17), (0.155, 0.265), (0.30, 0.20)]
-_CUFF_L = [(0.10, 0.17), (0.155, 0.265), (0.176, 0.247), (0.12, 0.155)]
-_SOCK_L = [(0.325, 0.88), (0.465, 0.88), (0.465, 0.99), (0.325, 0.99)]
-_SOCKCUFF_L = [(0.325, 0.88), (0.465, 0.88), (0.465, 0.91), (0.325, 0.91)]
+# Open-sleeved shirt, shorts and long socks: see kit_classic_shapes.py (the shapes were taken
+# from a flat kit illustration). Drawn in order, so the later pieces cover the earlier ones.
+ART_SHAPES = SHAPES
 
-# (name, region, polygon in 0..1 of the thumbnail, shading 0..1), drawn in order.
-ART_SHAPES = [
-    ("sock_l", "sock", _SOCK_L, 0.5),
-    ("sock_r", "sock", _mirror(_SOCK_L), 0.5),
-    ("sockcuff_l", "sockcuff", _SOCKCUFF_L, 0.2),
-    ("sockcuff_r", "sockcuff", _mirror(_SOCKCUFF_L), 0.2),
-    ("legs", "shorts", [(0.285, 0.615), (0.715, 0.615), (0.74, 0.82), (0.525, 0.82), (0.50, 0.71),
-                        (0.475, 0.82), (0.26, 0.82)], 0.5),
-    ("waist", "waist", [(0.285, 0.615), (0.715, 0.615), (0.72, 0.66), (0.28, 0.66)], 0.2),
-    ("sleeve_l", "sleeve", _SLEEVE_L, 0.5),
-    ("sleeve_r", "sleeve", _mirror(_SLEEVE_L), 0.5),
-    ("cuff_l", "cuff", _CUFF_L, 0.2),
-    ("cuff_r", "cuff", _mirror(_CUFF_L), 0.2),
-    ("body", "body", [(0.30, 0.075), (0.42, 0.045), (0.58, 0.045), (0.70, 0.075), (0.705, 0.505),
-                      (0.295, 0.505)], 0.5),
-    ("hem", "hem", [(0.295, 0.505), (0.705, 0.505), (0.705, 0.55), (0.295, 0.55)], 0.2),
-    ("collar", "collar", [(0.42, 0.045), (0.58, 0.045), (0.55, 0.095), (0.50, 0.13), (0.45, 0.095)], 0.1),
-]
 # Garments as separate layers, bottom to top, and the texture each one paints
 # from (ART_REGIONS). ART_SHAPES draws the socks, then the shorts, then the shirt,
 # so the three layers stacked in this order give the same drawing as painting
@@ -222,13 +216,13 @@ def _shape_masks(w: int, h: int):
     key = (ART_VERSION, w, h)
     if key not in _COVERAGE_CACHE:
         out = []
-        for name, region, poly, shade in ART_SHAPES:
+        for name, region, poly, shade, opt in ART_SHAPES:
             mask = _mask(poly, w, h)
             bbox = mask.getbbox()
             if bbox is None:
                 continue
             # The dilated mask is the 1 px outline drawn under each piece.
-            out.append((name, region, shade, _as_rows(mask), _as_rows(mask.filter(ImageFilter.MaxFilter(3))), bbox))
+            out.append((name, region, shade, _as_rows(mask), _as_rows(mask.filter(ImageFilter.MaxFilter(3))), bbox, opt))
         _COVERAGE_CACHE[key] = out
     return _COVERAGE_CACHE[key]
 
@@ -263,6 +257,63 @@ def _sample_crop(rows: list[bytes], crop, outw: int, outh: int) -> list[list[tup
     return out
 
 
+def _sample_frame(rows, crop, frame, w: int, h: int, bbox):
+    """Colours of `bbox` when the `crop` is stretched over `frame` (fractions of the whole
+    drawing), pixels outside the frame taking the nearest edge colour."""
+    fx0, fy0, fx1, fy1 = (frame[0] * w, frame[1] * h, frame[2] * w, frame[3] * h)
+    fw, fh = max(1, int(round(fx1 - fx0))), max(1, int(round(fy1 - fy0)))
+    grid = _sample_crop(rows, crop, fw, fh)
+    bx0, by0, bx1, by1 = bbox
+    ox, oy = int(round(fx0)), int(round(fy0))
+    return [[grid[min(fh - 1, max(0, y - oy))][min(fw - 1, max(0, x - ox))] for x in range(bx0, bx1)]
+            for y in range(by0, by1)]
+
+
+def _sample_oriented(rows, crop, cov, bbox, angle: float):
+    """Colours of `bbox` when the `crop` is stretched over the piece's rectangle turned by
+    `angle` degrees (its width follows the piece's axis, its height is perpendicular):
+    the slanted sleeves, whose texture panel is a plain upright rectangle."""
+    bx0, by0, bx1, by1 = bbox
+    th = math.radians(angle)
+    ax, ay = math.cos(th), math.sin(th)
+    px, py = -ay, ax
+    us, vs = [], []
+    for y in range(by0, by1):
+        crow = cov[y]
+        for x in range(bx0, bx1):
+            if crow[x] > 0.5:
+                us.append((x + 0.5) * ax + (y + 0.5) * ay)
+                vs.append((x + 0.5) * px + (y + 0.5) * py)
+    if not us:
+        return None
+    umin, umax, vmin, vmax = min(us), max(us), min(vs), max(vs)
+    du, dv = max(1e-6, umax - umin), max(1e-6, vmax - vmin)
+    sh, sw = len(rows), len(rows[0]) // 3
+    x0, y0, x1, y1 = crop
+    taps = (-1.0 / 3, 0.0, 1.0 / 3)
+    out = []
+    for y in range(by0, by1):
+        line = []
+        for x in range(bx0, bx1):
+            r = g = b = n = 0
+            for ty in taps:
+                for tx in taps:
+                    cx, cy = x + 0.5 + tx, y + 0.5 + ty
+                    u = (cx * ax + cy * ay - umin) / du
+                    v = (cx * px + cy * py - vmin) / dv
+                    sx = min(sw - 1, max(0, int((x0 + min(1.0, max(0.0, u)) * (x1 - x0)) * sw)))
+                    sy = min(sh - 1, max(0, int((y0 + min(1.0, max(0.0, v)) * (y1 - y0)) * sh)))
+                    o = sx * 3
+                    row = rows[sy]
+                    r += row[o]
+                    g += row[o + 1]
+                    b += row[o + 2]
+                    n += 1
+            line.append((r // n, g // n, b // n))
+        out.append(line)
+    return out
+
+
 def _blend(row: bytearray, x: int, rgb, a: float) -> None:
     if a <= 0:
         return
@@ -281,21 +332,33 @@ def art_size(size: int = 56) -> tuple[int, int]:
 
 
 def make_kit_icon(shirt_rows, shorts_atlas_rows, socks_atlas_rows, size: int = 56,
-                  layers: tuple[str, ...] = ART_LAYERS) -> Image.Image:
+                  layers: tuple[str, ...] = ART_LAYERS, collar: int = 0) -> Image.Image:
     """RGBA thumbnail (transparent background): shirt, shorts and socks painted with
     the given textures, thin outline and a little volume shading. A None texture
     paints that piece grey. Only the garments in `layers` are painted."""
     w, h = art_size(size)
+    if USE_3D and kit3d is not None:
+        try:
+            return _make_kit_icon_3d(shirt_rows, shorts_atlas_rows, socks_atlas_rows, w, h, layers, collar)
+        except Exception:  # noqa: BLE001 - fall back to the flat drawing
+            pass
     rows = [bytearray(w * 4) for _ in range(h)]
     src = {"shirt": shirt_rows, "shorts": shorts_atlas_rows, "sock": socks_atlas_rows}
     textures = {_LAYER_TEXTURE[layer] for layer in layers}
-    for _name, region, shade, cov, dil, (bx0, by0, bx1, by1) in _shape_masks(w, h):
+    for _name, region, shade, cov, dil, (bx0, by0, bx1, by1), opt in _shape_masks(w, h):
         tex_name, crop = ART_REGIONS[region]
         if tex_name not in textures:
             continue
         tex = src[tex_name]
         bw, bh = bx1 - bx0, by1 - by0
-        colors = _sample_crop(tex, crop, bw, bh) if tex is not None else None
+        if tex is None:
+            colors = None
+        elif "angle" in opt:
+            colors = _sample_oriented(tex, crop, cov, (bx0, by0, bx1, by1), opt["angle"])
+        elif "frame" in opt:
+            colors = _sample_frame(tex, crop, opt["frame"], w, h, (bx0, by0, bx1, by1))
+        else:
+            colors = _sample_crop(tex, crop, bw, bh)
         if colors is not None and region in ART_ROW_AVG:
             colors = [[tuple(sum(c[i] for c in line) // len(line) for i in range(3))] * len(line) for line in colors]
         for y in range(max(0, by0 - 1), min(h, by1 + 1)):
@@ -321,14 +384,31 @@ def make_kit_icon(shirt_rows, shorts_atlas_rows, socks_atlas_rows, size: int = 5
     return Image.frombytes("RGBA", (w, h), b"".join(bytes(r) for r in rows))
 
 
-def make_kit_layer(layer: str, rows, size: int = 56) -> Image.Image:
+def _rows_image(rows) -> Optional[Image.Image]:
+    if rows is None:
+        return None
+    return Image.frombytes("RGB", (len(rows[0]) // 3, len(rows)), b"".join(rows))
+
+
+def _make_kit_icon_3d(shirt_rows, shorts_atlas_rows, socks_atlas_rows, w: int, h: int, layers, collar: int = 0) -> Image.Image:
+    """Same drawing as make_kit_icon, rendered from the 3D body models (kit3d)."""
+    src = {"shirt": shirt_rows, "shorts": shorts_atlas_rows, "socks": socks_atlas_rows}
+    ss = 2 if w >= 150 else 3
+    canvas = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    for layer in ART_LAYERS:         # socks, shorts, shirt: back to front
+        if layer in layers:
+            canvas.alpha_composite(kit3d.render_layer(layer, _rows_image(src[layer]), w, h, ss, collar))
+    return canvas
+
+
+def make_kit_layer(layer: str, rows, size: int = 56, collar: int = 0) -> Image.Image:
     """One garment alone (`layer` in ART_LAYERS) on a transparent canvas the size of
     the whole drawing. `rows`: the shirt texture for "shirt", the socks+shorts atlas
     for "shorts" and "socks" (None = grey)."""
     if layer not in ART_LAYERS:
         raise ValueError(f"unknown kit layer: {layer}")
     src = {name: (rows if name == layer else None) for name in ART_LAYERS}
-    return make_kit_icon(src["shirt"], src["shorts"], src["socks"], size, layers=(layer,))
+    return make_kit_icon(src["shirt"], src["shorts"], src["socks"], size, layers=(layer,), collar=collar)
 
 
 class IconFactory:
@@ -342,9 +422,12 @@ class IconFactory:
     files). Not thread-safe: callers serialize with one lock
     (KitClassicRuntime.art_lock)."""
 
-    def __init__(self, kit_path: Callable[[int, int, int], Optional[Path]], cache_dir: Optional[Path]) -> None:
+    def __init__(self, kit_path: Callable[[int, int, int], Optional[Path]], cache_dir: Optional[Path],
+                 collar_lookup: Optional[Callable[[int, int], Optional[int]]] = None) -> None:
         self.kit_path = kit_path
         self.cache_dir = cache_dir
+        # collar_lookup(team, kit type) -> collar model 0..21 (jerseycollargeometrytype) or None
+        self.collar_lookup = collar_lookup
         self._textures: OrderedDict = OrderedDict()
 
     def _rows(self, path: Optional[Path], kind: str, reduce: int = TEXTURE_REDUCE):
@@ -370,10 +453,23 @@ class IconFactory:
     def icon_png(self, team: int, tourn: int, shirt: int, shorts: int, socks: int, size: int = 56) -> bytes:
         return self.render_png(*(self.kit_path(team, tourn, k) for k in (shirt, shorts, socks)), size=size)
 
+    def _collar(self, shirt: Optional[Path]) -> int:
+        """Collar model of the shirt file kit_<team>_<type>_<tourn>.rx3 (0 when unknown)."""
+        if shirt is None or self.collar_lookup is None:
+            return 0
+        m = _RE_KIT_NAME.match(Path(shirt).name)
+        if not m:
+            return 0
+        try:
+            value = self.collar_lookup(int(m.group(1)), int(m.group(2)))
+            return int(value) if value is not None and 0 <= int(value) < 22 else 0
+        except Exception:  # noqa: BLE001 - a broken lookup must never stop the drawing
+            return 0
+
     def _drawing_cache(self, paths: list[Optional[Path]], size: int) -> Optional[Path]:
         if self.cache_dir is None:
             return None
-        sig = hashlib.md5(repr((ART_VERSION, size, [_stamp(p) for p in paths])).encode("utf-8", "replace")).hexdigest()
+        sig = hashlib.md5(repr((ART_VERSION, size, self._collar(paths[0]), [_stamp(p) for p in paths])).encode("utf-8", "replace")).hexdigest()
         return self.cache_dir / f"kit_v{ART_VERSION}_{size}_{sig[:16]}.png"
 
     def render_path(self, shirt: Optional[Path], shorts: Optional[Path], socks: Optional[Path],
@@ -398,7 +494,7 @@ class IconFactory:
                 pass
         reduce = 1 if size >= FULL_TEXTURE_SIZE else TEXTURE_REDUCE
         image = make_kit_icon(self._rows(paths[0], "shirt", reduce), self._rows(paths[1], "atlas", reduce),
-                              self._rows(paths[2], "atlas", reduce), size)
+                              self._rows(paths[2], "atlas", reduce), size, collar=self._collar(paths[0]))
         png = _png_bytes(image)
         if cache is not None:
             _write_cache(cache, png)
@@ -415,13 +511,14 @@ class IconFactory:
         if self.cache_dir is None:
             return None
         path = Path(source) if source is not None else None
-        sig = hashlib.md5(repr((ART_VERSION, size, layer, _stamp(path))).encode("utf-8", "replace")).hexdigest()
+        collar = self._collar(path) if layer == "shirt" else 0
+        sig = hashlib.md5(repr((ART_VERSION, size, layer, collar, _stamp(path))).encode("utf-8", "replace")).hexdigest()
         cache = self.cache_dir / f"kit_v{ART_VERSION}_{size}_{layer}_{sig[:16]}.png"
         if cache.is_file():
             return cache
         reduce = 1 if size >= FULL_TEXTURE_SIZE else TEXTURE_REDUCE
         rows = self._rows(path, "shirt" if layer == "shirt" else "atlas", reduce)
-        return cache if _write_cache(cache, _png_bytes(make_kit_layer(layer, rows, size))) else None
+        return cache if _write_cache(cache, _png_bytes(make_kit_layer(layer, rows, size, collar))) else None
 
 
 def _stamp(p: Optional[Path]):

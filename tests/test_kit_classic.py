@@ -7,8 +7,9 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
-from PIL import Image
+from PIL import Image, ImageChops
 
 from server16_py import kit_classic as kc
 from server16_py import kit_classic_art as art
@@ -430,7 +431,7 @@ class ArtTests(unittest.TestCase):
         self.assertEqual(image.size, (w, h))
         r, g, b, a = image.getpixel((w // 2, int(h * 0.3)))     # shirt body
         self.assertTrue(a > 200 and r > 150 and b < 80)
-        r, g, b, a = image.getpixel((int(w * 0.39), int(h * 0.95)))   # left sock
+        r, g, b, a = image.getpixel((int(w * 0.2), int(h * 0.78)))   # left sock
         self.assertTrue(a > 200 and b > 150 and r < 80)
         self.assertEqual(len(list(cache.glob("*.png"))), 1)
 
@@ -443,7 +444,7 @@ class ArtTests(unittest.TestCase):
         w, h = art.art_size(56)
         r, g, b, a = image.getpixel((w // 2, int(h * 0.3)))       # shirt from the rx3: red
         self.assertTrue(a > 200 and r > 150 and g < 80)
-        r, g, b, a = image.getpixel((int(w * 0.39), int(h * 0.95)))   # sock from the image: green
+        r, g, b, a = image.getpixel((int(w * 0.2), int(h * 0.78)))   # sock from the image: green
         self.assertTrue(a > 200 and g > 150 and r < 80)
 
     def test_large_render_uses_full_resolution_textures(self):
@@ -481,7 +482,7 @@ class ArtTests(unittest.TestCase):
     def test_a_layer_holds_only_its_garment(self):
         rows = self._noise_rows(64, 32, 4)
         w, h = art.art_size(56)
-        body, sock = (w // 2, int(h * 0.3)), (int(w * 0.39), int(h * 0.95))
+        body, sock = (w // 2, int(h * 0.3)), (int(w * 0.2), int(h * 0.78))
         socks_layer = art.make_kit_layer("socks", rows, 56)
         self.assertGreater(socks_layer.getpixel(sock)[3], 200)
         self.assertEqual(socks_layer.getpixel(body)[3], 0)
@@ -519,6 +520,92 @@ class ArtTests(unittest.TestCase):
 
     def test_layer_path_needs_a_cache_folder(self):
         self.assertIsNone(art.IconFactory(lambda *a: None, None).layer_path(self.kit, "shirt"))
+
+    def test_flat_fallback_still_stacks_into_the_whole_drawing(self):
+        textures = {"shirt": self._noise_rows(64, 64, 1), "shorts": self._noise_rows(64, 32, 2),
+                    "socks": self._noise_rows(64, 32, 3)}
+        with mock.patch.object(art, "USE_3D", False):
+            for size in (56, 240):
+                whole = art.make_kit_icon(textures["shirt"], textures["shorts"], textures["socks"], size)
+                stacked = Image.new("RGBA", whole.size, (0, 0, 0, 0))
+                for layer in art.ART_LAYERS:
+                    stacked = Image.alpha_composite(stacked, art.make_kit_layer(layer, textures[layer], size))
+                # The flat shapes overlap across garments, so a few edge pixels round 1/255 apart
+                # (the 3D path, test above, stays byte-identical).
+                diff = ImageChops.difference(stacked, whole)
+                self.assertLessEqual(max(high for _low, high in diff.getextrema()), 1, size)
+
+    def test_the_collar_model_changes_the_shirt_and_its_cache_file(self):
+        shirt = self._noise_rows(64, 64, 6)
+        plain = art.make_kit_layer("shirt", shirt, 110, collar=0)
+        other = art.make_kit_layer("shirt", shirt, 110, collar=5)
+        self.assertNotEqual(plain.tobytes(), other.tobytes())
+        cache = self.dir / "cache"
+        collars = {383: 5}
+        factory = art.IconFactory(lambda *a: None, cache, collar_lookup=lambda team, kit: collars.get(team))
+        with_collar = factory.layer_path(self.kit, "shirt", size=56)
+        collars.clear()
+        self.assertNotEqual(factory.layer_path(self.kit, "shirt", size=56), with_collar)
+
+    def test_both_socks_show_their_top_band_at_the_top(self):
+        # Kit atlases mirror the two sock panels around u=0.5145; a band on each panel's inner
+        # edge is the top of the sock. Regression: the left sock showed it at the ankle instead.
+        atlas = Image.new("RGB", (1024, 512), (255, 255, 255))
+        for x0, x1 in ((505, 515), (539, 549)):   # the real Real Madrid home kit's top bands
+            atlas.paste((200, 0, 0), (x0, 0, x1, 512))
+        layer = art.make_kit_layer("socks", art._image_rows(atlas), 240)
+        w, h = layer.size
+        for x_range in (range(0, w // 3), range(2 * w // 3, w)):
+            rows = [y for y in range(h) if any(layer.getpixel((x, y))[3] > 200 for x in x_range)]
+            top, bottom = rows[0], rows[-1]
+            span = bottom - top
+
+            def red_in(y0, y1):
+                return any(p[3] > 200 and p[0] > 150 and p[1] < 80
+                           for y in range(y0, y1) for p in (layer.getpixel((x, y)) for x in x_range))
+            self.assertTrue(red_in(top, top + span // 6), x_range)
+            self.assertFalse(red_in(top + span // 3, bottom + 1), x_range)
+
+    def test_a_broken_or_out_of_range_collar_lookup_draws_collar_zero(self):
+        def boom(team, kit):
+            raise RuntimeError("lookup failed")
+        self.assertEqual(art.IconFactory(lambda *a: None, None, collar_lookup=boom)._collar(self.kit), 0)
+        self.assertEqual(art.IconFactory(lambda *a: None, None, collar_lookup=lambda t, k: 99)._collar(self.kit), 0)
+        self.assertEqual(art.IconFactory(lambda *a: None, None, collar_lookup=lambda t, k: 7)._collar(self.kit), 7)
+        self.assertEqual(art.IconFactory(lambda *a: None, None, collar_lookup=lambda t, k: 7)._collar(self.dir / "x.png"), 0)
+
+
+class KitCollarTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.exedir = Path(self._tmp.name)
+        self.runtime = kc.KitClassicRuntime(SimpleNamespace(exedir=self.exedir, log=lambda *a, **k: None))
+        self.runtime.team_lua_dir().mkdir(parents=True)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _teamkits(self, rows: list[tuple[int, int, int, int]], encoding: str = "utf-8") -> None:
+        lines = ["teamtechid\tteamkittypetechid\tyear\tjerseycollargeometrytype"]
+        lines += ["\t".join(str(v) for v in row) for row in rows]
+        (self.exedir / "teamkits.txt").write_text("\r\n".join(lines) + "\r\n", encoding=encoding)
+
+    def test_collar_comes_from_teamkits_txt_skipping_historical_kits(self):
+        self._teamkits([(383, 0, 1990, 9), (383, 0, 0, 4), (383, 1, 0, 12)], encoding="utf-16")
+        self.assertEqual(self.runtime.kit_collar(383, 0), 4)
+        self.assertEqual(self.runtime.kit_collar(383, 1), 12)
+        self.assertIsNone(self.runtime.kit_collar(383, 2))
+
+    def test_the_team_lua_assign_kit_details_wins_over_teamkits_txt(self):
+        self._teamkits([(383, 0, 0, 4)])
+        self.runtime.team_lua_path(383).write_text(
+            "assignKitDetails(383, 0, 1, 2, 3, 4, 5, 6, 0, 17)\nassignKitDetails(10, 0, 1, 2, 3, 4, 5, 6, 0, 3)\n",
+            encoding="utf-8")
+        self.assertEqual(self.runtime.kit_collar(383, 0), 17)
+        self.assertIsNone(self.runtime.kit_collar(10, 1))
+
+    def test_no_lua_and_no_teamkits_txt_means_unknown(self):
+        self.assertIsNone(self.runtime.kit_collar(383, 0))
 
 
 try:

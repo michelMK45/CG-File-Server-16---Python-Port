@@ -71,6 +71,7 @@ _RE_BRANCH = re.compile(r"^\s*(?:else)?if\s+KM_SEL\s*==\s*(\d+)\s+then\s*(?:--\s
 _RE_SEL = re.compile(r"^\s*local\s+KM_HOME\s*,\s*KM_AWAY\s*=\s*(-?\d+)\s*,\s*(-?\d+)", re.M)
 _RE_GK = re.compile(r"^\s*local\s+KM_GKH\s*,\s*KM_GKA\s*=\s*(-?\d+)\s*,\s*(-?\d+)", re.M)
 _RE_OLD_NAME = re.compile(r"^--\s*combinacao:\s*(.*)$", re.M)
+_RE_DETAILS = re.compile(r"assignKitDetails\(\s*(\d+)\s*,\s*(\d+)\s*,([^)]*)\)")
 _RE_KIT_FILE = re.compile(r"^kit_(\d+)_(\d+)_(\d+)\.rx3$", re.I)
 
 # Goalkeeper kit types (Rev Mod), the ones offered as a forced goalkeeper kit.
@@ -590,6 +591,37 @@ def missing_functions(player_lua_text: str) -> list[str]:
     ]
 
 
+def _read_teamkits_collars(path: Path) -> dict[tuple[int, int], int]:
+    """(teamtechid, teamkittypetechid) -> jerseycollargeometrytype from a tab-separated teamkits.txt."""
+    try:
+        raw = Path(path).read_bytes()
+    except OSError:
+        return {}
+    if raw[:2] in (b"\xff\xfe", b"\xfe\xff"):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+    lines = text.splitlines()
+    if not lines:
+        return {}
+    head = [c.strip().lower() for c in lines[0].split("\t")]
+    try:
+        it, ik, ic = head.index("teamtechid"), head.index("teamkittypetechid"), head.index("jerseycollargeometrytype")
+    except ValueError:
+        return {}
+    iy = head.index("year") if "year" in head else None   # year != 0: historical kits
+    out: dict[tuple[int, int], int] = {}
+    for line in lines[1:]:
+        cells = line.split("\t")
+        try:
+            if iy is not None and int(cells[iy]) != 0:
+                continue
+            out.setdefault((int(cells[it]), int(cells[ik])), int(cells[ic]))
+        except (ValueError, IndexError):
+            continue
+    return out
+
+
 class KitClassicRuntime:
     """File side of the Classic subtab: team_<id>.lua blocks, the loose kit index
     and the player.lua capability check. Holds no Tk state."""
@@ -603,7 +635,8 @@ class KitClassicRuntime:
         # cache, and one lock because IconFactory isn't thread-safe and each preview
         # renders on its own worker thread.
         base_dir = getattr(app, "base_dir", None)
-        self.art = IconFactory(self.kit_path, Path(base_dir) / "runtime" / "kit_art_cache" if base_dir else None)
+        self.art = IconFactory(self.kit_path, Path(base_dir) / "runtime" / "kit_art_cache" if base_dir else None,
+                               collar_lookup=self.kit_collar)
         self.art_lock = threading.Lock()
 
     # -- paths ---------------------------------------------------------------
@@ -679,6 +712,64 @@ class KitClassicRuntime:
         kits for `tourn`, else for any tournament, else FALLBACK_KIT_TYPES."""
         by_tourn = self.team_kits(team)
         return sorted(by_tourn.get(tourn) or by_tourn.get(0) or FALLBACK_KIT_TYPES)
+
+    # -- collar (jerseycollargeometrytype) -----------------------------------------
+    def kit_collar(self, team: int, kit: int) -> Optional[int]:
+        """Collar model (0..21) of `kit` of `team` for the 3D drawings: the last
+        assignKitDetails(...) of the team's lua that sets one, else the teamkits.txt
+        table, else None (drawn with collar 0)."""
+        value = self._lua_collars(team).get(kit)
+        if value is None:
+            value = self._teamkits_collars().get((team, kit))
+        return value
+
+    def _lua_collars(self, team: int) -> dict[int, int]:
+        path = self.team_lua_path(team)
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            return {}
+        cache = self.__dict__.setdefault("_collar_lua_cache", {})
+        hit = cache.get(team)
+        if hit and hit[0] == mtime:
+            return hit[1]
+        out: dict[int, int] = {}
+        try:
+            text = read_lua_text(path)
+        except OSError:
+            text = ""
+        for m in _RE_DETAILS.finditer(text):
+            args = [a.strip() for a in m.group(3).split(",")]
+            if int(m.group(1)) == team and len(args) >= 8:
+                try:
+                    collar = int(args[7])
+                except ValueError:
+                    continue
+                if collar >= 0:
+                    out[int(m.group(2))] = collar
+        cache[team] = (mtime, out)
+        return out
+
+    def _teamkits_collars(self) -> dict[tuple[int, int], int]:
+        """{(team, kit type): collar} from a teamkits.txt exported from the database, if one
+        sits next to the Server or in the game folder."""
+        folders = [getattr(self.app, "base_dir", None), getattr(self.app, "exedir", None)]
+        for folder in folders:
+            if not folder:
+                continue
+            for sub in ((), ("teamkits",), ("data", "db")):
+                path = Path(folder).joinpath(*sub, "teamkits.txt")
+                try:
+                    mtime = path.stat().st_mtime
+                except OSError:
+                    continue
+                cached = self.__dict__.get("_collar_txt_cache")
+                if cached and cached[0] == (str(path), mtime):
+                    return cached[1]
+                table = _read_teamkits_collars(path)
+                self.__dict__["_collar_txt_cache"] = ((str(path), mtime), table)
+                return table
+        return {}
 
     def kit_path(self, team: int, tourn: int, ktype: int) -> Optional[Path]:
         by_tourn = self.team_kits(team)
