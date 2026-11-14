@@ -88,6 +88,12 @@ optional `FSW/ScoreBoardDefaults/` folder (same layout as `data/ui`, for example
 
 ### Quality of Life
 
+- **Inject overlay into FIFA:** new switch in **Settings > Overlay**, on by default. If FIFA closes
+  a few seconds after starting, turn it off: Server 16 then never loads its overlay into the game.
+  Without the overlay there is no F12 menu, no in-game or stadium loading notices and no kit
+  carousel, and the stadium is picked at random instead of with the picker. Everything else keeps
+  working. If FIFA is already running, the overlay disappears at once but stays loaded until FIFA
+  closes.
 - **About dialog:** new **Wiki** link.
 - **App Options:** the toggle is now called **Show notifications** and sits next to the overlay
   switch.
