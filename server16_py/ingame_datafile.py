@@ -1,10 +1,17 @@
 """data.big for the CGFS16 menu from a template, in plain Python (no Apt toolchain).
 
 This is the part the CG Server 16 app needs: it only has to put a new data text into the menu's data
-movie. The movie's code never changes (datamovie.py writes it once, with PLACEHOLDER as its data
-string); the text is one string of its constant file (1.const), so writing a new data.big is:
+movie. The movie's code never changes (datamovie.py writes it once, with placeholder(0..CHUNKS-1) as its
+data strings); the text goes in CHUNKS strings of its constant file (1.const), so writing a new data.big is:
 
-  template BIG4 -> 0.apt kept as is, 1.const rebuilt with PLACEHOLDER replaced -> BIG4
+  template BIG4 -> 0.apt kept as is, 1.const rebuilt with the placeholders replaced -> BIG4
+
+FIFA 16 crashes when one of the movie's strings is too long (2026-11-14, FIFA Infinity 9: a 74 KB data
+string crashed on opening the menu, 52 KB and FIP's 59 KB did not; FIFA's own movies keep 188 KB of
+constants, so the limit is per string). pack() keeps every string under CHUNK_BYTES: it cuts the text at
+line ends into chunks, a longer line into `KEY+=more|values` continuation lines (the menu appends their
+values to KEY's list, never joining them into one string), and writes an image list's shared folder and
+extension once (IMGPRE_<KEY>, IMGSUF_<KEY>). unpack() is the reverse, as the menu reads it.
 
 64-bit .const ("Apt1"): 24-byte magic, u64 entry (offset of the movie in 0.apt), u64 count, u64 48 (header
 size), then count items of (u64 type, u64 value), then the strings, NUL-terminated, unaligned, each once;
@@ -15,9 +22,16 @@ Shared by the cgfs-ingame project (tools/datafile.py, the original) and the CG S
 (server16_py/ingame_datafile.py, a byte-identical copy: keep them in sync; cgfs-ingame's
 tests/test_repo_copies.py checks it). Self-contained: standard library only, Python 3.9+.
 """
+import os
 import struct
 
 PLACEHOLDER = 'CGFS16_DATA_PLACEHOLDER'
+CHUNKS = 16             # strings of data in the movie: 16 x 30 KB, far above any game's lists
+CHUNK_BYTES = 30000     # per string (UTF-8 bytes); a 33 KB string is proven fine in FIFA, 74 KB crashes
+
+
+def placeholder(i):
+    return f'{PLACEHOLDER}_{i}'
 
 
 # --- BIG4 (as FIFA 16's community UI mods: uncompressed, 64-byte aligned, no trailer) -----------------
@@ -85,18 +99,122 @@ def write_const(entry, items):
 
 
 def render(template_big, text):
-    """data.big bytes: the template with its PLACEHOLDER string replaced by text."""
+    """data.big bytes: the template with its placeholder strings replaced by pack(text) (ValueError if it
+    does not fit)."""
     parts = big_entries(template_big)
     blobs = dict(parts)
     entry, items = read_const(blobs['1'])
-    key = PLACEHOLDER.encode()
-    if sum(1 for t, v in items if t == 1 and v == key) != 1:
-        raise ValueError('the template does not hold the data placeholder exactly once')
-    new = text.encode('utf-8')
-    if b'\0' in new:
+    keys = [placeholder(i).encode() for i in range(CHUNKS)]
+    for key in keys:
+        if sum(1 for t, v in items if t == 1 and v == key) != 1:
+            raise ValueError(f'the template does not hold {key.decode()} exactly once')
+    if b'\0' in text.encode('utf-8'):
         raise ValueError('data text cannot hold NUL')
-    items = [(t, new if t == 1 and v == key else v) for t, v in items]
+    chunks = pack(text)
+    new = dict(zip(keys, [c.encode('utf-8') for c in chunks] + [b''] * (CHUNKS - len(chunks))))
+    items = [(t, new.get(v, v) if t == 1 else v) for t, v in items]
     return big4([(n, write_const(entry, items) if n == '1' else b) for n, b in parts])
+
+
+def read_text(data_big):
+    """The data text of a data.big written by render (unpack of its chunks, in order)."""
+    entry, items = read_const(dict(big_entries(data_big))['1'])
+    # render keeps the template's order: the chunks are the strings that replaced the placeholders, which
+    # datamovie.source pushes first (items 0..CHUNKS-1)
+    return unpack([v.decode('utf-8') for t, v in items[:CHUNKS]])
+
+
+# --- strings FIFA 16 can hold -------------------------------------------------------------------------
+
+def _size(s):
+    return len(s.encode('utf-8'))
+
+
+def _compact_images(line):
+    """IMG_<KEY>=a/b/x.dds|a/b/y.dds -> [IMGPRE_<KEY>=a/b/, IMGSUF_<KEY>=.dds, IMG_<KEY>=x|y] when shorter."""
+    key, _, value = line.partition('=')
+    values = value.split('|')
+    full = [v for v in values if v]
+    if len(full) < 2:
+        return [line]
+    pre = os.path.commonprefix(full)
+    pre = pre[:pre.rfind('/') + 1]
+    suf = os.path.commonprefix([v[len(pre):][::-1] for v in full])[::-1]
+    suf = suf[suf.find('.'):] if '.' in suf else ''
+    if not pre and not suf:
+        return [line]
+    stripped = [v[len(pre):len(v) - len(suf)] if v else '' for v in values]
+    if any(v and not s for v, s in zip(values, stripped)):   # a value that would read as "no image"
+        return [line]
+    name = key[len('IMG_'):]
+    out = [f'IMGPRE_{name}={pre}', f'IMGSUF_{name}={suf}', f'{key}=' + '|'.join(stripped)]
+    return out if sum(map(_size, out)) < _size(line) else [line]
+
+
+def _split_line(line):
+    """A line over CHUNK_BYTES -> the line and `KEY+=...` continuations, cut between values."""
+    if _size(line) <= CHUNK_BYTES:
+        return [line]
+    key, _, value = line.partition('=')
+    out, head, cur, size = [], f'{key}=', [], 0   # size: of head + '|'.join(cur)
+    for v in value.split('|'):
+        n = _size(v)
+        if cur and size + 1 + n > CHUNK_BYTES:
+            out.append(head + '|'.join(cur))
+            head, cur = f'{key}+=', []
+        size = (size + 1 + n) if cur else _size(head) + n
+        cur.append(v)
+        if size > CHUNK_BYTES:
+            raise ValueError(f'{key}: one value is longer than {CHUNK_BYTES} bytes')
+    out.append(head + '|'.join(cur))
+    return out
+
+
+def pack(text):
+    """The data text as at most CHUNKS strings of at most CHUNK_BYTES each (ValueError if it does not fit)."""
+    lines = []
+    for line in text.split('\n'):
+        for part in (_compact_images(line) if line.startswith('IMG_') else [line]):
+            lines += _split_line(part)
+    chunks, cur, size = [], [], 0   # size: of '\n'.join(cur)
+    for line in lines:
+        n = _size(line)
+        if cur and size + 1 + n > CHUNK_BYTES:
+            chunks.append('\n'.join(cur))
+            cur = []
+        size = (size + 1 + n) if cur else n
+        cur.append(line)
+    chunks.append('\n'.join(cur))
+    if len(chunks) > CHUNKS:
+        raise ValueError(f'data text of {_size(text)} bytes does not fit in {CHUNKS} strings of {CHUNK_BYTES}')
+    return chunks
+
+
+def unpack(chunks):
+    """The text pack() was given, from its chunks (empty ones are ignored), read as the menu reads it."""
+    lines = []
+    for chunk in chunks:
+        lines += chunk.split('\n') if chunk else []
+    kv, order = {}, []
+    for line in lines:
+        key, _, value = line.partition('=')
+        if key.endswith('+') and key[:-1] in kv:
+            kv[key[:-1]].append(value)
+            continue
+        if key not in kv:
+            order.append(key)
+        kv[key] = [value]
+    out = []
+    for key in order:
+        if key.startswith(('IMGPRE_', 'IMGSUF_')) and 'IMG_' + key[7:] in kv:
+            continue
+        value = '|'.join(kv[key])
+        name = key[len('IMG_'):]
+        if key.startswith('IMG_') and f'IMGPRE_{name}' in kv:
+            pre, suf = kv[f'IMGPRE_{name}'][0], kv.get(f'IMGSUF_{name}', [''])[0]
+            value = '|'.join(pre + v + suf if v else '' for v in value.split('|'))
+        out.append(f'{key}={value}')
+    return '\n'.join(out)
 
 
 # --- the data text (same format as model.apply_data_body reads) -----------------------------------

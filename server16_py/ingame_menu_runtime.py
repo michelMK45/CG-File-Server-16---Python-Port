@@ -738,9 +738,17 @@ class InGameMenuRuntime:
                 self.app.log("In-game menu: data template not found (resources/ingame/data_template.big)")
                 return False
             self._template = path.read_bytes()
+        try:
+            # in strings FIFA 16 can hold: one over ~64 KB crashed it on opening the menu (FIFA Infinity 9,
+            # 949 stadiums, 2026-11-14); ValueError when even CHUNKS of CHUNK_BYTES are not enough
+            data = ingame_datafile.render(self._template, text)
+        except ValueError as e:
+            self._written = key   # logged once per content, not on every page transition
+            self.app.log(f"In-game menu: data.big not written ({reason}): {e}")
+            return False
         target = Path(self.app.exedir) / DATA_MOVIE
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(ingame_datafile.render(self._template, text))
+        target.write_bytes(data)
         self._written = key
         shown = ", ".join(f"{row}={self.say(values[row][selected[row]])}" for row in DEFAULT_ROWS)
         stadium = f", stadium scopes={len(self._stadium_scopes)}" if self._stadium_scopes else ""

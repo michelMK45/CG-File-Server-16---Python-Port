@@ -92,8 +92,7 @@ def read_data(app: FakeApp, lang: str | None = "spa") -> dict[str, str]:
     """The key=value lines of the data.big the runtime wrote, its keys in `lang` as the menu shows them with FIFA
     in that language (None: as written)."""
     data = (app.exedir / ingame_menu_runtime.DATA_MOVIE).read_bytes()
-    _entry, items = ingame_datafile.read_const(dict(ingame_datafile.big_entries(data))["1"])
-    text = next(v for t, v in items if t == 1 and v.startswith(b"SOURCE=")).decode("utf-8")
+    text = ingame_datafile.read_text(data)
     lines = dict(line.split("=", 1) for line in text.split("\n"))
     if lang is None:
         return lines
@@ -241,6 +240,31 @@ class InGameMenuRuntimeTests(unittest.TestCase):
                                                           ingame_images.asset_image_rel("scoreboard", "UCL")])
         self.assertEqual(d["IMG_TVLOGO"].split("|"), ["", ingame_images.TVLOGO_PLACEHOLDER_REL,
                                                       ingame_images.TVLOGO_PLACEHOLDER_REL])
+
+    def test_a_big_stadium_list_goes_in_strings_fifa_can_hold(self) -> None:
+        """FIFA Infinity 9 (2026-11-14): 949 stadiums made one 86 KB data string and FIFA crashed opening the
+        menu. Now no string of data.big is over ingame_datafile.CHUNK_BYTES and the lists read back whole."""
+        for i in range(1600):
+            (self.app.targetpath / f"ESP - Estadio de prueba número {i:04d} (Liga)").mkdir()
+        self.app.settings_ini.write("241", "ESP - Camp Nou,4,0,0", "stadium")
+        self.app.settings_ini.save()
+        self.app.HID = "241"
+        self.rt.context_changed()
+        data = (self.app.exedir / ingame_menu_runtime.DATA_MOVIE).read_bytes()
+        _entry, items = ingame_datafile.read_const(dict(ingame_datafile.big_entries(data))["1"])
+        self.assertGreater(len(ingame_datafile.read_text(data).encode("utf-8")), 65536)   # as the menu reads it
+        self.assertLessEqual(max(len(v) for t, v in items if t == 1), ingame_datafile.CHUNK_BYTES)
+        d = read_data(self.app)
+        names = d["STADIUM"].split("|")
+        self.assertEqual(len(names), 1604)
+        self.assertEqual([names[int(i)] for i in d["STADIUM_LIST"].split("|")], ["ESP - Camp Nou"])
+
+    def test_data_that_does_not_fit_is_not_written(self) -> None:
+        with unittest.mock.patch.object(ingame_datafile, "render", side_effect=ValueError("too big")):
+            self.assertFalse(self.rt.write_data("test"))
+            self.assertFalse(self.rt.write_data("test again"))      # same content: logged once
+        self.assertFalse((self.app.exedir / ingame_menu_runtime.DATA_MOVIE).exists())
+        self.assertEqual(sum("data.big not written" in line for line in self.app.logs), 1)
 
     def test_stadium_list_per_scope(self) -> None:
         ini = self.app.settings_ini
