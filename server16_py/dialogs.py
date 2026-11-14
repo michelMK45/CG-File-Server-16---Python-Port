@@ -1571,6 +1571,7 @@ class AboutDialog(BaseDialog):
     _DONATE = "https://paypal.me/michellmk"
     _VIGEMBUS_REPO = "https://github.com/nefarius/ViGEmBus"
     _HIDHIDE_REPO = "https://github.com/nefarius/HidHide"
+    _WIKI = "https://github.com/michelMK45/CG-File-Server-16---Python-Port/wiki"
 
     def __init__(self, master: tk.Misc, version: str) -> None:
         super().__init__(master, "dialog.about.title")
@@ -1605,6 +1606,7 @@ class AboutDialog(BaseDialog):
         for key, url in (
             ("dialog.about.github", self._GITHUB),
             ("dialog.about.forum", self._FORUM),
+            ("dialog.about.wiki", self._WIKI),
             ("dialog.about.trello", self._TRELLO),
             ("dialog.about.github.legacy", self._GITHUB_LEGACY),
             ("dialog.about.donate", self._DONATE),
