@@ -222,6 +222,8 @@
   "label.app_options": "Opciones de la aplicación",
   "toggle.show_loading_notification": "Mostrar notificaciones",
   "toggle.show_overlay": "Activar overlay en el juego",
+  "toggle.overlay_injection": "Inyectar el overlay en FIFA",
+  "tooltip.overlay_injection": "Desactívalo si FIFA se cierra a los pocos segundos de arrancar. Sin él no hay menú F12, ni avisos dentro del juego ni de carga de estadio, ni carrusel de equipaciones, y el estadio se elige al azar. Si FIFA ya está abierto, el overlay desaparece al momento pero sigue cargado en el juego hasta que lo cierres.",
   "toggle.kit_hotkeys": "Activar hotkeys de ciclado de kits",
   "toggle.keep_open": "Mantener abierto al cerrar el juego",
   "toggle.performance_mode": "Modo rendimiento (ocultar previews en la lista de estadios)",

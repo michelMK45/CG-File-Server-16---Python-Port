@@ -732,14 +732,14 @@ class StadiumRuntime:
         app.log("No stadium assignment found; default stadium restored")
 
     def _ingame_menu_choice(self, section_name: str, section_id, valid_stadiums: list[str]) -> str | None:
-        """The stadium the in-game menu's "Estadio del partido" fixed for this assignment (settings.ini
-        [FixedStadium], kept across matches and restarts: ingame_menu_runtime.read_fixed_stadium), if it is still
+        """The stadium the in-game menu's "Estadio del partido" forced for this assignment (settings.ini
+        [ForcedStadium], kept across matches and restarts: ingame_menu_runtime.read_forced_stadium), if it is still
         one of its stadiums; None = random / the picker as usual."""
-        from .ingame_menu_runtime import read_fixed_stadium
+        from .ingame_menu_runtime import read_forced_stadium
         settings_ini = getattr(self.app, "settings_ini", None)
         if settings_ini is None:
             return None
-        got = read_fixed_stadium(settings_ini, str(section_name), str(section_id))
+        got = read_forced_stadium(settings_ini, str(section_name), str(section_id))
         return got if got in valid_stadiums else None
 
     @staticmethod

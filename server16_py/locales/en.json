@@ -240,6 +240,8 @@
   "label.app_options": "App Options",
   "toggle.show_loading_notification": "Show notifications",
   "toggle.show_overlay": "Enable in-game overlay",
+  "toggle.overlay_injection": "Inject overlay into FIFA",
+  "tooltip.overlay_injection": "Turn this off if FIFA closes a few seconds after starting. Without it there is no F12 menu, no in-game or stadium loading notices and no kit carousel, and the stadium is picked at random. If FIFA is already running, the overlay disappears at once but stays loaded in the game until it closes.",
   "toggle.kit_hotkeys": "Enable kit-cycling hotkeys",
   "toggle.keep_open": "Keep open after game exits",
   "toggle.performance_mode": "Performance mode (hide stadium list previews)",

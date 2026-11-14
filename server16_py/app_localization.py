@@ -125,6 +125,8 @@ class LocalizationMixin:
             self.keep_open_switch.configure(text=self.tr("toggle.keep_open"))
         if self.overlay_switch is not None:
             self.overlay_switch.configure(text=self.tr("toggle.show_overlay"))
+        if self.overlay_injection_switch is not None:
+            self.overlay_injection_switch.configure(text=self.tr("toggle.overlay_injection"))
         if self.performance_mode_switch is not None:
             self.performance_mode_switch.configure(text=self.tr("toggle.performance_mode"))
         if self.random_stadium_switch is not None:

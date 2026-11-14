@@ -44,6 +44,11 @@ class SettingsStore:
         # does not expose it yet.
         "SHOW_STADIUM_LOADING_NOTIFICATION": True,
         "SHOW_OVERLAY": True,
+        # Settings > Overlay, "Inject overlay into FIFA": off = cgfs16_overlay.dll is never
+        # loaded into fifa16.exe (no F12 menu, toasts, kit carousel, stadium notice or in-game
+        # stadium picker; the Overlay card greys those switches out). For machines where FIFA closes a few
+        # seconds after injection (docs/overlay-d3d.md "Open: FIFA closes").
+        "D3D_OVERLAY_INJECTION": True,
         "KIT_HOTKEYS_ENABLED": True,
         # Settings tab > Controls: keys and gamepad buttons for the overlay
         # shortcuts and the kit hotkeys (input_bindings.py; read back through
@@ -155,6 +160,15 @@ class SettingsStore:
     @show_overlay.setter
     def show_overlay(self, value: bool) -> None:
         self.data["SHOW_OVERLAY"] = bool(value)
+        self.save()
+
+    @property
+    def overlay_injection(self) -> bool:
+        return bool(self.data.get("D3D_OVERLAY_INJECTION", True))
+
+    @overlay_injection.setter
+    def overlay_injection(self, value: bool) -> None:
+        self.data["D3D_OVERLAY_INJECTION"] = bool(value)
         self.save()
 
     @property

@@ -87,6 +87,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
+        self.overlay_injection_var = tk.BooleanVar(value=self.settings.overlay_injection)
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
         # Settings tab > Controls (input_bindings.py). Swapped whole, never
         # changed in place: the hotkey poll thread and the keyboard hook read
@@ -393,8 +394,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_picker_signature = None
         self._stadium_picker_resolved = False
         self._stadium_picker_chosen: str | None = None
-        # The in-game CGFS16 menu's "Estadio del partido" lives in settings.ini [FixedStadium]
-        # (ingame_menu_runtime.read_fixed_stadium / StadiumRuntime._ingame_menu_choice).
+        # The in-game CGFS16 menu's "Estadio del partido" lives in settings.ini [ForcedStadium]
+        # (ingame_menu_runtime.read_forced_stadium / StadiumRuntime._ingame_menu_choice).
         # Remembers the last stadium_signature actually decided by the
         # picker (picked, or closed/cancelled -> random fallback) plus what
         # was decided for it -- unlike _stadium_picker_pending/_resolved
@@ -470,6 +471,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.keep_open_switch = None
         self.auto_clean_cache_switch = None
         self.overlay_switch = None
+        self.overlay_injection_switch = None
         self.performance_mode_switch = None
         self.random_stadium_switch = None
         self._settings_canvas = None
@@ -512,6 +514,8 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._stadium_loading_visible = False
         self._stadium_loading_restore_fullscreen = False
         self._d3d_injector = None
+        # FIFA pid already logged as "running without the overlay" (injection off in Settings).
+        self._overlay_injection_off_logged_pid = 0
         # Startup page-read logging (app_game.update_page_name): pid whose page
         # name has been read at least once, and pid already logged as "starting".
         self._fifa_page_ready_pid = 0

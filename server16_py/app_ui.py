@@ -377,9 +377,12 @@ class UIMixin:
         )
         style.map(
             "Switch.TCheckbutton",
-            background=[("selected", "#19324d"), ("active", "#223753"), ("!selected", self.card_soft)],
-            foreground=[("selected", self.accent), ("!selected", self.fg)],
-            bordercolor=[("selected", self.accent), ("!selected", "#2a3c59")],
+            # "disabled" first (first match wins): a greyed-out switch must not look clickable —
+            # Overlay card with injection off, Controls' Hold switches of an unbound action.
+            background=[("disabled", self.card_soft), ("selected", "#19324d"), ("active", "#223753"),
+                        ("!selected", self.card_soft)],
+            foreground=[("disabled", self.muted), ("selected", self.accent), ("!selected", self.fg)],
+            bordercolor=[("disabled", "#2a3c59"), ("selected", self.accent), ("!selected", "#2a3c59")],
         )
         # Same look as Switch.TCheckbutton (the dotted name inherits its map), with tighter
         # padding: the Dashboard's Modules card stacks 18 of them in labelled groups inside
@@ -1142,6 +1145,18 @@ class UIMixin:
         return True
 
     def _ensure_d3d_overlay_injected(self, log_errors: bool = False) -> bool:
+        # The only injection path, so this one check keeps the DLL out of FIFA entirely.
+        # It must come BEFORE the injector is created: callers (stadium_runtime's manual
+        # picker, the kit carousel, toasts) treat a non-None _d3d_injector as "the overlay
+        # can draw", and a picker opened with nothing to draw it would hang the stadium.
+        if not self.overlay_injection_var.get():
+            if log_errors:
+                self.log("D3D overlay: injection disabled in Settings")
+            pid = self._resolve_fifa_pid()
+            if pid and pid != self._overlay_injection_off_logged_pid:
+                self._overlay_injection_off_logged_pid = pid
+                self.log(f"D3D overlay: injection disabled in Settings; FIFA pid {pid} runs without the overlay DLL")
+            return False
         if _D3DOverlayInjector is None:
             if log_errors:
                 self.log("D3D overlay: injector module not available (import failed)")
@@ -3277,6 +3292,18 @@ class UIMixin:
         card = self._card(parent, "card.overlay_settings.title", "card.overlay_settings.subtitle")
         card.grid(row=0, column=1, sticky="new")
 
+        # First: the others only mean something while the DLL is injected
+        # (_sync_overlay_dependent_switches greys them out when it is off).
+        self.overlay_injection_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.overlay_injection"),
+            variable=self.overlay_injection_var,
+            command=self._toggle_overlay_injection,
+        )
+        self.overlay_injection_switch.pack(anchor="w", padx=12, pady=(6, 4))
+        self._add_tooltip(self.overlay_injection_switch, "tooltip.overlay_injection")
+
         self.overlay_switch = ttk.Checkbutton(
             card,
             style="Switch.TCheckbutton",
@@ -3284,7 +3311,7 @@ class UIMixin:
             variable=self.show_overlay_var,
             command=self._toggle_overlay_enabled,
         )
-        self.overlay_switch.pack(anchor="w", padx=12, pady=(6, 4))
+        self.overlay_switch.pack(anchor="w", padx=12, pady=(0, 4))
 
         self.notification_switch = ttk.Checkbutton(
             card,
@@ -3314,6 +3341,37 @@ class UIMixin:
         )
         self.random_stadium_switch.pack(anchor="w", padx=12, pady=(0, 10))
         self._add_tooltip(self.random_stadium_switch, "tooltip.random_stadium_selection")
+        self._sync_overlay_dependent_switches()
+
+    def _sync_overlay_dependent_switches(self) -> None:
+        """Injection off: grey out the switches that need the DLL and show what really happens
+        (no F12 menu, no thumbnails, no loading notification, stadium always random). Only the Tk
+        variables change, never settings.json, so switching injection back on restores each
+        saved choice. The loading notification is forced off too (maintainer's call, 2026-11-14),
+        which also silences its Tk-window fallback: without the DLL there is no stadium notice."""
+        injected = bool(self.overlay_injection_var.get())
+        forced = (
+            (self.overlay_switch, self.show_overlay_var, self.settings.show_overlay, False),
+            (self.notification_switch, self.show_stadium_loading_var,
+             self.settings.show_stadium_loading_notification, False),
+            (self.performance_mode_switch, self.overlay_performance_mode_var,
+             self.settings.overlay_performance_mode, False),
+            (self.random_stadium_switch, self.random_stadium_selection_var,
+             self.settings.random_stadium_selection, True),
+        )
+        for switch, var, saved, value_when_off in forced:
+            var.set(saved if injected else value_when_off)
+            if switch is not None:
+                switch.state(["!disabled"] if injected else ["disabled"])
+        if not injected:
+            if self._stadium_loading_visible:
+                self._hide_stadium_loading_modal()
+            # Same poll-thread teardown as _toggle_overlay_enabled turning the overlay off,
+            # without saving that choice.
+            if not self._kit_hotkeys_need_key_poll():
+                self._uninstall_hotkey_poll_thread()
+            if not self._kit_hotkeys_need_pad_poll():
+                self._uninstall_gamepad_poll_thread()
 
     def _build_controls_card(self, parent: tk.Misc) -> None:
         """Settings > Controls: the key and the gamepad binding of every
@@ -3791,6 +3849,51 @@ class UIMixin:
         # stadium_runtime.py's manual_mode); it keeps running regardless of
         # "Enable in-game overlay", driven solely by
         # toggle.random_stadium_selection.
+
+    def _toggle_overlay_injection(self) -> None:
+        enabled = self.overlay_injection_var.get()
+        self.settings.overlay_injection = enabled
+        if enabled:
+            # The next overlay tick injects (or, if this FIFA already has the DLL from earlier
+            # in the session, LoadLibraryW just returns the loaded module and DllMain does not
+            # run again).
+            self.log("D3D overlay: injection enabled in Settings")
+        else:
+            self._release_d3d_overlay()
+        self._sync_overlay_dependent_switches()
+
+    def _release_d3d_overlay(self) -> None:
+        """Stop driving the overlay for this session (injection switched off).
+
+        A DLL already inside FIFA cannot be taken out (it pins itself), so clear everything it
+        could still be drawing, then drop the injector: with _d3d_injector None every overlay
+        feature takes its no-overlay path (no stadium notice, random stadium pick, no toasts)."""
+        inj = self._d3d_injector
+        if inj is None:
+            self.log("D3D overlay: injection disabled in Settings")
+            return
+        if self._d3d_menu_visible:
+            self._d3d_menu_visible = False
+            self._clear_overlay_wizard_state()
+            self._uninstall_mouse_wheel_hook()
+            self._uninstall_keyboard_hook()
+            self._publish_overlay_menu_state()
+        if self._stadium_picker_pending:
+            # Resolved as "no choice" -> apply_stadium_runtime picks at random.
+            self._resolve_stadium_picker(None)
+        for hide in (inj.hide, lambda: inj.hide_toast(-1), inj.hide_kit_carousel,
+                     inj.hide_stadium_picker, lambda: inj.set_video_playing(False)):
+            try:
+                hide()
+            except Exception:
+                pass
+        try:
+            inj.destroy()
+        except Exception as exc:
+            self.log("D3D overlay: release failed", exc)
+        self._d3d_injector = None
+        self.log("D3D overlay: injection disabled in Settings; overlay released "
+                 "(a DLL already loaded stays in FIFA, idle, until FIFA closes)")
 
     def _build_audio_card(self) -> None:
         card = self._card(self.audio_tab, "card.chants.title", "card.chants.subtitle")

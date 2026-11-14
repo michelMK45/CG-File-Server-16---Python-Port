@@ -107,7 +107,7 @@ The goal is to preserve and evolve the FIFA 16 Server 16 experience in a modern 
 
 ## Release Notes
 
-Each release has its notes in this repository: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) · [v1.6.0](RELEASE_NOTES_v1.6.0.md) · [v1.7.0](RELEASE_NOTES_v1.7.0.md)
+Each release has its notes in this repository: [v1.2.0](RELEASE_NOTES_v1.2.0.md) · [v1.3.0](RELEASE_NOTES_v1.3.0.md) · [v1.3.1](RELEASE_NOTES_v1.3.1.md) · [v1.4.0](RELEASE_NOTES_v1.4.0.md) · [v1.5.0](RELEASE_NOTES_v1.5.0.md) · [v1.6.0](RELEASE_NOTES_v1.6.0.md) · [v1.7.0](RELEASE_NOTES_v1.7.0.md) · [v1.8.0](RELEASE_NOTES_v1.8.0.md)
 
 ## Credits
 
