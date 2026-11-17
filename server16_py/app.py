@@ -86,6 +86,7 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.tk.call("tk", "scaling", self._base_tk_scaling * self.settings.ui_zoom)
         self.show_stadium_loading_var = tk.BooleanVar(value=self.settings.show_stadium_loading_notification)
         self.auto_apply_substitution_var = tk.BooleanVar(value=self.settings.auto_apply_substitution_count)
+        self.legacy_features_var = tk.BooleanVar(value=self.settings.legacy_features)
         self.show_overlay_var = tk.BooleanVar(value=self.settings.show_overlay)
         self.overlay_injection_var = tk.BooleanVar(value=self.settings.overlay_injection)
         self.kit_hotkeys_var = tk.BooleanVar(value=self.settings.kit_hotkeys_enabled)
@@ -437,6 +438,20 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self.assign_scoreboard_button = None
         self.assign_movie_button = None
         self.substitution_confirm_button = None
+        # Substitutions/bench through dinput8 L9's ini (app_ui._refresh_extender_state).
+        self._substitution_legacy_frame = None
+        self._substitution_l9_frame = None
+        self.l9_confirm_button = None
+        self.l9_subs_entry = None
+        self.l9_bench_entry = None
+        self.l9_subs_var = None
+        self.l9_bench_var = None
+        self.legacy_features_switch = None
+        self.extender_status_label = None
+        self._extender_status = None
+        self._l9_mode = False
+        self._l9_game_running = False
+        self._l9_save_message = ""
         self.exclude_competition_button = None
         self.log_status_label = None
         self.log_autofollow_checkbox = None

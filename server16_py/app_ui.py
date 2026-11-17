@@ -7,6 +7,7 @@ import time
 import threading
 import webbrowser
 import tkinter as tk
+from pathlib import Path
 from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 from PIL import Image, ImageTk
@@ -32,6 +33,7 @@ from .input_bindings import (
 from .kit_art_preview import KitArtPreview, advanced_mix_sources, attach_zoom
 from .kit_classic_tab import KitClassicTab
 from .kit_mixer import KIT_TYPES, NAME_COLOR_HEX_RE
+from . import l9_extender
 from .module_catalog import MODULE_CATEGORIES, module_category_key, module_label_key, module_tooltip_key
 from .settings_store import UI_ZOOM_DEFAULT, UI_ZOOM_MAX, UI_ZOOM_MIN
 from .substitution_runtime import SUBSTITUTION_MAX, SUBSTITUTION_MIN, SUBSTITUTION_VALIDATED_MAX
@@ -1733,8 +1735,11 @@ class UIMixin:
         self._build_substitution_row(body)
 
     def _build_substitution_row(self, parent: tk.Misc) -> None:
-        row = tk.Frame(parent, bg=self.card)
-        row.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        holder = tk.Frame(parent, bg=self.card)
+        holder.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(10, 0))
+        row = tk.Frame(holder, bg=self.card)
+        self._substitution_legacy_frame = row
+        self._build_l9_substitution_frame(holder)
         self._dark_label(row, self.tr("substitutions.label"), bg=self.card, muted=True).pack(side="left")
         self.substitution_count_var = tk.StringVar(value=str(self.settings.substitution_count))
         ttk.Entry(row, textvariable=self.substitution_count_var, width=4).pack(side="left", padx=(6, 6))
@@ -1753,6 +1758,197 @@ class UIMixin:
         status_label = self._dark_label(row, self.tr("substitutions.status.idle"), bg=self.card, muted=True)
         status_label.pack(side="left")
         self._register_info_label("substitution_status", status_label)
+        self._refresh_extender_state()
+
+    # --- dinput8 L9 ("extender") substitutions + bench: l9_extender.py ------------------------
+    def _build_l9_substitution_frame(self, holder: tk.Misc) -> None:
+        """New mode: both values live in dinput8_L9.ini, which L9 reads once when FIFA starts, so
+        Confirm only saves the file and both fields lock while FIFA runs."""
+        frame = tk.Frame(holder, bg=self.card)
+        self._substitution_l9_frame = frame
+        self.l9_subs_var = tk.StringVar(value="")
+        self.l9_bench_var = tk.StringVar(value="")
+        self._dark_label(frame, self.tr("substitutions.label"), bg=self.card, muted=True).grid(row=0, column=0, sticky="w")
+        self.l9_subs_entry = ttk.Entry(frame, textvariable=self.l9_subs_var, width=4)
+        self.l9_subs_entry.grid(row=0, column=1, sticky="w", padx=(6, 10))
+        self._dark_label(frame, self.tr("substitutions.l9.bench_label"), bg=self.card, muted=True).grid(
+            row=1, column=0, sticky="w", pady=(4, 0))
+        self.l9_bench_entry = ttk.Entry(frame, textvariable=self.l9_bench_var, width=4)
+        self.l9_bench_entry.grid(row=1, column=1, sticky="w", padx=(6, 10), pady=(4, 0))
+        self._add_tooltip(self.l9_bench_entry, "tooltip.l9_bench")
+        self.l9_confirm_button = ttk.Button(
+            frame, text=self.tr("button.confirm_substitutions"), command=self._confirm_l9_values,
+        )
+        self.l9_confirm_button.grid(row=0, column=2, rowspan=2, sticky="w", padx=(0, 10))
+        status_label = self._dark_label(frame, "", bg=self.card, muted=True, justify="left", anchor="w", wraplength=520)
+        status_label.grid(row=0, column=3, rowspan=2, sticky="w")
+        self._register_info_label("l9_status", status_label)
+
+    def _extender_game_dir(self) -> Path | None:
+        if not getattr(self, "fifaEXE", None) or self.fifaEXE == "default":
+            return None
+        return Path(self.fifaEXE).parent
+
+    def _l9_mode_active(self) -> bool:
+        return bool(self._l9_mode)
+
+    def _refresh_extender_state(self, reload_values: bool = True) -> None:
+        """Detect the extender mods, pick legacy vs L9 mode for the substitution row, reload the
+        ini/log and update the App Settings indicator. Cheap enough for every lifecycle event
+        (a few stat()s and two small files)."""
+        try:
+            status = l9_extender.detect(self._extender_game_dir())
+        except Exception as exc:  # noqa: BLE001 -- never let a third-party file break the UI
+            self.log("Extender detection failed", exc, exc_info=sys.exc_info())
+            status = l9_extender.ExtenderStatus(False, None, False, None)
+        self._extender_status = status
+        new_mode = status.l9_installed and not self.settings.legacy_features
+        if new_mode != self._l9_mode:
+            self.log(f"Substitutions: {'dinput8 L9 ini' if new_mode else 'legacy code hook'} mode")
+        self._l9_mode = new_mode
+        self._sync_extender_indicator()
+        legacy_frame, l9_frame = self._substitution_legacy_frame, self._substitution_l9_frame
+        if legacy_frame is None or l9_frame is None:
+            return
+        try:
+            if new_mode:
+                legacy_frame.pack_forget()
+                l9_frame.pack(fill="x", anchor="w")
+            else:
+                l9_frame.pack_forget()
+                legacy_frame.pack(fill="x", anchor="w")
+        except tk.TclError:
+            return
+        if new_mode:
+            if reload_values:
+                self._load_l9_values()
+            self._sync_l9_controls()
+        else:
+            self._warn_legacy_l9_conflict()
+
+    def _sync_extender_indicator(self) -> None:
+        label = self.extender_status_label
+        status = self._extender_status
+        if label is None or status is None:
+            return
+        lines = []
+        if status.l9_installed:
+            lines.append(self.tr("extender.l9.installed", version=status.l9_version or "?"))
+        else:
+            lines.append(self.tr("extender.l9.missing"))
+        if status.gameplay_extender_installed:
+            lines.append(self.tr("extender.gameplay.installed", version=status.gameplay_extender_version or "?"))
+        else:
+            lines.append(self.tr("extender.gameplay.missing"))
+        if status.l9_installed:
+            mode_key = "extender.mode.legacy" if self.settings.legacy_features else "extender.mode.l9"
+        else:
+            mode_key = "extender.mode.legacy_no_l9"
+        lines.append(self.tr(mode_key))
+        try:
+            label.configure(text="\n".join(lines))
+        except tk.TclError:
+            pass
+
+    def _load_l9_values(self) -> None:
+        game_dir = self._extender_game_dir()
+        if game_dir is None or self.l9_subs_var is None or self.l9_bench_var is None:
+            return
+        values = l9_extender.read_values(game_dir / l9_extender.L9_INI_NAME)
+        if values is None:
+            return
+        self.l9_subs_var.set(str(values.subs_count) if values.subs_active and values.subs_count else "3")
+        bench = values.bench_count if values.bench_active and values.bench_count else l9_extender.L9_BENCH_MIN
+        self.l9_bench_var.set(str(bench))
+
+    def _sync_l9_controls(self) -> None:
+        """Lock while FIFA runs (L9 already read the ini) and rebuild the status text."""
+        state = ["disabled"] if self._l9_game_running else ["!disabled"]
+        for widget in (self.l9_subs_entry, self.l9_bench_entry, self.l9_confirm_button):
+            if widget is not None:
+                try:
+                    widget.state(state)
+                except tk.TclError:
+                    pass
+        self._set_display("l9_status", self._l9_status_text())
+
+    def _l9_status_text(self) -> str:
+        game_dir = self._extender_game_dir()
+        parts = []
+        if self._l9_game_running:
+            parts.append(self.tr("substitutions.l9.locked"))
+        elif self._l9_save_message:
+            parts.append(self._l9_save_message)
+        applied = l9_extender.read_applied(game_dir) if game_dir is not None else None
+        if applied is not None and (applied.subs is not None or applied.bench is not None
+                                    or applied.bench_requested_not_set is not None):
+            bench = applied.bench if applied.bench is not None else l9_extender.L9_BENCH_MIN
+            subs = applied.subs if applied.subs is not None else "?"
+            parts.append(self.tr("substitutions.l9.applied", subs=subs, bench=bench))
+            if applied.bench_requested_not_set is not None or applied.cbac_ok is False:
+                parts.append(self.tr("substitutions.l9.cbac_missing"))
+            if applied.stale and not self._l9_game_running:
+                parts.append(self.tr("substitutions.l9.pending"))
+        elif not self._l9_game_running:
+            parts.append(self.tr("substitutions.l9.pending"))
+        return "\n".join(parts)
+
+    def _confirm_l9_values(self) -> None:
+        if self._l9_game_running:
+            self._sync_l9_controls()
+            return
+        game_dir = self._extender_game_dir()
+        subs_raw = (self.l9_subs_var.get() if self.l9_subs_var else "").strip()
+        bench_raw = (self.l9_bench_var.get() if self.l9_bench_var else "").strip()
+        if game_dir is None or not subs_raw.isdigit() or not bench_raw.isdigit():
+            self._l9_save_message = self.tr("substitutions.l9.error.subs_range")
+            self._sync_l9_controls()
+            return
+        subs, bench = int(subs_raw), int(bench_raw)
+        error = l9_extender.validate(subs, bench)
+        if error is not None:
+            self._l9_save_message = self.tr(f"substitutions.l9.error.{error}", bench=bench)
+            self._sync_l9_controls()
+            return
+        try:
+            l9_extender.write_values(game_dir / l9_extender.L9_INI_NAME, subs, bench)
+        except OSError as exc:
+            self.log("Could not save dinput8_L9.ini", exc, exc_info=sys.exc_info())
+            self._l9_save_message = self.tr("substitutions.l9.error.write", error=exc)
+            self._sync_l9_controls()
+            return
+        self.log(f"dinput8_L9.ini saved: [Wechsel] Anzahl={subs}, [Ersatzbank] Bank={bench}")
+        message = self.tr("substitutions.l9.saved", subs=subs, bench=bench)
+        if bench > l9_extender.L9_BENCH_COMFORT_MAX:
+            message += "\n" + self.tr("substitutions.l9.bench_high")
+        self._l9_save_message = message
+        self._sync_l9_controls()
+
+    def _warn_legacy_l9_conflict(self) -> None:
+        """Legacy mode with L9's own [Wechsel] active: both set the substitutions."""
+        status = self._extender_status
+        game_dir = self._extender_game_dir()
+        if status is None or not status.l9_installed or game_dir is None:
+            return
+        values = l9_extender.read_values(game_dir / l9_extender.L9_INI_NAME)
+        if values is not None and values.subs_active:
+            self._set_display("substitution_status", self.tr("substitutions.l9.legacy_conflict"))
+
+    def on_extender_game_running(self, running: bool) -> None:
+        """poll_process, on every FIFA start/stop: lock or unlock the L9 fields, and re-read the
+        ini and log when FIFA closes (the log then holds what L9 applied)."""
+        if running == self._l9_game_running:
+            return
+        self._l9_game_running = running
+        self._l9_save_message = ""
+        self._refresh_extender_state(reload_values=not running)
+        if running:
+            # L9 writes what it applied within a few seconds of FIFA starting.
+            self.after(15000, lambda: self._l9_mode and self._sync_l9_controls())
+
+    def _toggle_legacy_features(self) -> None:
+        self.settings.legacy_features = self.legacy_features_var.get()
+        self._refresh_extender_state()
 
     def _confirm_substitution_count(self) -> None:
         raw = self.substitution_count_var.get().strip()
@@ -3285,8 +3481,23 @@ class UIMixin:
             text=self.tr("button.imgbb_key"),
             command=self._change_imgbb_api_key,
         )
-        self.imgbb_key_button.pack(anchor="w", padx=12, pady=(0, 10))
+        self.imgbb_key_button.pack(anchor="w", padx=12, pady=(0, 4))
         self._add_tooltip(self.imgbb_key_button, "tooltip.imgbb_key")
+
+        # Extender mods next to fifa16.exe (l9_extender.py): which are installed, and whether
+        # CGFS16 uses its own legacy implementations instead.
+        self.legacy_features_switch = ttk.Checkbutton(
+            card,
+            style="Switch.TCheckbutton",
+            text=self.tr("toggle.legacy_features"),
+            variable=self.legacy_features_var,
+            command=self._toggle_legacy_features,
+        )
+        self.legacy_features_switch.pack(anchor="w", padx=12, pady=(4, 2))
+        self._add_tooltip(self.legacy_features_switch, "tooltip.legacy_features")
+        self.extender_status_label = self._dark_label(card, "", bg=self.card, muted=True, justify="left", anchor="w")
+        self.extender_status_label.pack(anchor="w", padx=12, pady=(0, 10))
+        self._refresh_extender_state()
 
     def _build_overlay_settings_card(self, parent: tk.Misc) -> None:
         card = self._card(parent, "card.overlay_settings.title", "card.overlay_settings.subtitle")

@@ -83,6 +83,8 @@ class GameMixin:
                 self._poll_job = self.after(500, self.poll_process)
                 return
             running = bool(self.MP) and any(Path((p.info.get("name") or "")).stem.lower() == self.MP.lower() for p in psutil.process_iter(["name"]))
+            # dinput8 L9 reads its ini only at FIFA start: lock/unlock the dashboard fields.
+            self.on_extender_game_running(running)
             if running and self.memory.attack(self.MP):
                 if not self._attached_once:
                     self._attached_once = True
@@ -248,7 +250,8 @@ class GameMixin:
             self.bumperpagechange = False
             self._clear_live_context()
             self.substitution_runtime.reset_for_new_match()
-            if self.settings.auto_apply_substitution_count:
+            # In L9 mode dinput8 L9 sets the substitutions itself (dinput8_L9.ini); the legacy hook stays off.
+            if self.settings.auto_apply_substitution_count and not self._l9_mode_active():
                 # KickOffHub is reached well before kickoff (menus, formation, etc.), so the
                 # FIRST side's own first substitution could be a long way off — use the same
                 # generous window normally reserved for the second side, rather than the short

@@ -73,6 +73,11 @@ class SettingsStore:
         # should show a familiar baseline rather than an arbitrary number.
         "SUBSTITUTION_COUNT": 3,
         "AUTO_APPLY_SUBSTITUTION_COUNT": False,
+        # Settings > App, "Use legacy features": True = CGFS16's own implementations even when an
+        # extender mod next to fifa16.exe could do the job (today: substitutions through
+        # substitution_runtime's code hook instead of dinput8 L9's ini, see l9_extender.py).
+        # False only switches when that mod is actually installed.
+        "LEGACY_FEATURES": False,
         # Discord Rich Presence defaults.  Users can override any key in their
         # runtime/settings.json; missing keys fall back to these values so the
         # feature works out-of-the-box in the compiled EXE without needing to
@@ -260,6 +265,15 @@ class SettingsStore:
     @auto_apply_substitution_count.setter
     def auto_apply_substitution_count(self, value: bool) -> None:
         self.data["AUTO_APPLY_SUBSTITUTION_COUNT"] = bool(value)
+        self.save()
+
+    @property
+    def legacy_features(self) -> bool:
+        return bool(self.data.get("LEGACY_FEATURES", False))
+
+    @legacy_features.setter
+    def legacy_features(self, value: bool) -> None:
+        self.data["LEGACY_FEATURES"] = bool(value)
         self.save()
 
     @property

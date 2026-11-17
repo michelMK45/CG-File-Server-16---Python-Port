@@ -126,6 +126,9 @@ class SettingsMixin:
                 _shutil.copy2(str(src_ini), str(self.settings_ini.path))
         self._load_module_states()
         self._update_audio_overview()
+        # The dashboard/Settings widgets are built before the first setuppaths() (app.py), when
+        # fifaEXE is still unknown: detect the extender mods (dinput8 L9) now that it is resolved.
+        self._refresh_extender_state()
         if self.fifaEXE != "default":
             self.assets_runtime.cleanup_startup_adboard_files()
         if load_team_database:
