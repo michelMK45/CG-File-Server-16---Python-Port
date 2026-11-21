@@ -75,13 +75,8 @@ class LocalizationMixin:
         if self.help_label is not None:
             self.help_label.configure(text=overlay_help_text(self.input_bindings, self.tr))
         if self.tabview is not None:
-            self.tabview.tab(self.dashboard_tab, text=self.tr("tab.dashboard"))
-            self.tabview.tab(self.kits_tab, text=self.tr("tab.kits"))
-            self.tabview.tab(self.audio_tab, text=self.tr("tab.chants"))
-            self.tabview.tab(self.camera_tab, text=self.tr("tab.camera"))
-            self.tabview.tab(self.gamepads_tab, text=self.tr("tab.gamepads"))
-            self.tabview.tab(self.settings_tab, text=self.tr("tab.settings"))
-            self.tabview.tab(self.logs_tab, text=self.tr("tab.logs"))
+            for attr, title_key in self._MAIN_TAB_ORDER:
+                self.tabview.tab(getattr(self, attr), text=self.tr(title_key))
         if self.logs_group is not None:
             self.logs_group.configure(text=self.tr("logs.group"))
         if self.log_follow_button is not None:
@@ -94,6 +89,7 @@ class LocalizationMixin:
         self._apply_setup_notice_localization()
         self._apply_settings_tab_localization()
         self._apply_gamepads_tab_localization()
+        self._apply_plugins_tab_localization()
 
     def _apply_gamepads_tab_localization(self) -> None:
         if getattr(self, "gamepad_driver_status_label", None) is None:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import ctypes
 import struct
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
 from ctypes import wintypes
 from pathlib import Path
 
@@ -104,26 +104,38 @@ class Memory:
                 return True
         return False
 
-    def _get_base_address(self, exe_path: str | None) -> int:
+    def _iter_modules(self) -> Iterator[tuple[str, str, int]]:
+        """(module name, full path, base address) of every module of ``self.process_id``.
+
+        A Toolhelp snapshot is an OS query: it reads no memory of the target process."""
+        if not self.process_id:
+            return
         snapshot = self.kernel32.CreateToolhelp32Snapshot(
             TH32CS_SNAPMODULE | TH32CS_SNAPMODULE32,
             self.process_id,
         )
-        if snapshot == INVALID_HANDLE_VALUE:
-            return 0
+        if snapshot == INVALID_HANDLE_VALUE or snapshot is None:
+            return
         try:
             entry = MODULEENTRY32W()
             entry.dwSize = ctypes.sizeof(MODULEENTRY32W)
             ok = self.kernel32.Module32FirstW(snapshot, ctypes.byref(entry))
-            target_name = Path(exe_path).name.lower() if exe_path else ""
             while ok:
-                module_name = entry.szModule.lower()
-                module_path = entry.szExePath.lower()
-                if not target_name or module_name == target_name or Path(module_path).name.lower() == target_name:
-                    return ctypes.addressof(entry.modBaseAddr.contents)
+                yield entry.szModule, entry.szExePath, ctypes.addressof(entry.modBaseAddr.contents)
                 ok = self.kernel32.Module32NextW(snapshot, ctypes.byref(entry))
         finally:
             self.kernel32.CloseHandle(snapshot)
+
+    def list_module_paths(self) -> list[str]:
+        """Full paths of the modules (exe + DLLs, incl. loader plugins ``*.asi``) loaded in the
+        attached process; ``[]`` when not attached or the snapshot fails. Used by the Plugins tab."""
+        return [path for _name, path, _base in self._iter_modules()]
+
+    def _get_base_address(self, exe_path: str | None) -> int:
+        target_name = Path(exe_path).name.lower() if exe_path else ""
+        for module_name, module_path, base in self._iter_modules():
+            if not target_name or module_name.lower() == target_name or Path(module_path).name.lower() == target_name:
+                return base
         return 0
 
     def is_open(self) -> bool:

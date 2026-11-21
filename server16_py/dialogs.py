@@ -22,6 +22,7 @@ from .file_tools import (
     stadium_country_counts,
     stadium_preview_fallback_path,
 )
+from . import plugin_ini
 from .stadium_runtime import StadiumRuntime
 from .video_preview import MoviePreviewPanel
 
@@ -1729,3 +1730,286 @@ class FifaLocationWarningDialog(BaseDialog):
         actions.pack(fill="x", side="bottom")
         ttk.Button(actions, text=self.tr("dialog.fifa_location.close"), command=lambda: self.close_ok(False)).pack(side="left", fill="x", expand=True, padx=(0, 6))
         ttk.Button(actions, text=self.tr("dialog.fifa_location.continue"), command=lambda: self.close_ok(True)).pack(side="right", fill="x", expand=True, padx=(6, 0))
+
+class PluginIniDialog(BaseDialog):
+    """⚙ editor of one loader plugin's ini (Plugins tab, app_plugins.py).
+
+    Two views over one ``plugin_ini.IniDocument``: a form (one entry per ``key = value`` line,
+    grouped by section, comments as help) and the raw Text, for what the form can't do (re-enable a
+    commented-out line, add keys). Switching tabs always rebuilds one view from the other, so there
+    is a single copy of the truth. Saving rewrites only what changed (see plugin_ini.save) and
+    refuses to silently overwrite a file another tool saved meanwhile."""
+
+    _MODES = ("form", "text")
+    # Above this many keys the dialog opens on the Text tab: building one entry per key blocks the
+    # Tk thread (which also runs poll_process) for seconds on inis with ~1000+ keys.
+    LARGE_FORM_FIELDS = 300
+
+    class _InvalidValue(ValueError):
+        def __init__(self, key: str) -> None:
+            super().__init__(key)
+            self.key = key
+
+    def __init__(self, master: tk.Misc, plugin_name: str, ini_path: Path) -> None:
+        super().__init__(master, "dialog.plugins.ini.title")
+        self.title(self.tr("dialog.plugins.ini.title", plugin=plugin_name, file=ini_path.name))
+        self._set_geometry(900, 680, 640, 460)
+        self.plugin_name = plugin_name
+        self.ini_path = Path(ini_path)
+        self.doc, self.raw = plugin_ini.load(self.ini_path)
+        self.entries: dict[int, tk.StringVar] = {}
+        self._form_values: dict[int, str] = {}   # what each entry held when last applied/built
+        self._form_keys: dict[int, str] = {}
+        self._form_built = False                 # the form shows the current self.doc
+        self._rendered_text: str | None = None   # what _fill_text put in the Text widget
+        self._active = "form"
+
+        self.notebook = ttk.Notebook(self, style="Server16.TNotebook")
+        self.notebook.pack(fill="both", expand=True, padx=12, pady=(12, 6))
+        self.form_tab = tk.Frame(self.notebook, bg=self.bg)
+        self.text_tab = tk.Frame(self.notebook, bg=self.bg)
+        self.notebook.add(self.form_tab, text=self.tr("dialog.plugins.ini.tab_form"))
+        self.notebook.add(self.text_tab, text=self.tr("dialog.plugins.ini.tab_text"))
+
+        self._form_canvas = tk.Canvas(self.form_tab, bg=self.bg, highlightthickness=0, bd=0)
+        form_scroll = ttk.Scrollbar(self.form_tab, orient="vertical", command=self._form_canvas.yview,
+                                    style="Server16.Vertical.TScrollbar")
+        self._form_canvas.configure(yscrollcommand=form_scroll.set)
+        form_scroll.pack(side="right", fill="y")
+        self._form_canvas.pack(side="left", fill="both", expand=True)
+        self._form_body = tk.Frame(self._form_canvas, bg=self.bg)
+        form_window = self._form_canvas.create_window((0, 0), window=self._form_body, anchor="nw")
+        self._form_body.bind(
+            "<Configure>", lambda _e: self._form_canvas.configure(scrollregion=self._form_canvas.bbox("all")))
+        self._form_canvas.bind("<Configure>", lambda e: self._form_canvas.itemconfig(form_window, width=e.width))
+
+        text_scroll = ttk.Scrollbar(self.text_tab, orient="vertical", style="Server16.Vertical.TScrollbar")
+        self.text = tk.Text(
+            self.text_tab, undo=True, wrap="none", font=("Consolas", 10), bg=self.panel, fg=self.fg,
+            insertbackground=self.fg, relief="flat", yscrollcommand=text_scroll.set,
+        )
+        text_scroll.configure(command=self.text.yview)
+        text_scroll.pack(side="right", fill="y")
+        self.text.pack(side="left", fill="both", expand=True)
+        self.text.tag_configure("section", foreground=self.accent)
+        self.text.tag_configure("comment", foreground=self.muted)
+        self.text.bind("<<Modified>>", self._on_text_modified)
+
+        actions = tk.Frame(self, bg=self.bg)
+        actions.pack(fill="x", padx=12, pady=(0, 12))
+        tk.Label(
+            actions, text=self.tr("dialog.plugins.ini.restart_note"), bg=self.bg, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w",
+        ).pack(side="left")
+        ttk.Button(actions, text=self.tr("dialog.plugins.ini.save"), command=self.save).pack(side="right")
+        ttk.Button(actions, text=self.tr("dialog.plugins.ini.cancel"), command=self.cancel).pack(
+            side="right", padx=(0, 6))
+
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
+        self.bind("<MouseWheel>", self._on_mousewheel)
+        self.protocol("WM_DELETE_WINDOW", self.cancel)
+        if len(self.doc.fields()) > self.LARGE_FORM_FIELDS:
+            self._active = "text"
+            self.notebook.select(self.text_tab)
+            self._fill_text()
+        else:
+            self._build_form()
+
+    # ---- views -----------------------------------------------------------------------------
+    def _build_form(self) -> None:
+        for child in self._form_body.winfo_children():
+            child.destroy()
+        self.entries = {}
+        self._form_values = {}
+        self._form_keys = {}
+        self._form_built = True
+        fields = self.doc.fields()
+        if not fields:
+            tk.Label(self._form_body, text=self.tr("dialog.plugins.ini.no_fields"), bg=self.bg,
+                     fg=self.muted, font=("Bahnschrift", 10)).pack(anchor="w", padx=6, pady=6)
+            return
+        group = None
+        current_section = None
+        row = 0
+        for field in fields:
+            if group is None or field.section != current_section:
+                current_section = field.section
+                title = field.section or self.tr("dialog.plugins.ini.no_section")
+                group = tk.LabelFrame(self._form_body, text=title, bg=self.card, fg=self.fg,
+                                      font=("Bahnschrift", 10, "bold"), bd=1, relief="solid")
+                group.pack(fill="x", padx=6, pady=(0, 8))
+                group.grid_columnconfigure(1, weight=1)
+                row = 0
+            tk.Label(group, text=field.key, bg=self.card, fg=self.fg, font=("Bahnschrift", 10),
+                     anchor="w").grid(row=row, column=0, sticky="w", padx=(8, 10), pady=(4, 0))
+            var = tk.StringVar(value=field.value)
+            tk.Entry(group, textvariable=var, bg=self.panel, fg=self.fg, insertbackground=self.fg,
+                     relief="flat", font=("Consolas", 10)).grid(row=row, column=1, sticky="ew",
+                                                               padx=(0, 8), pady=(4, 0))
+            self.entries[field.line_index] = var
+            self._form_values[field.line_index] = field.value
+            self._form_keys[field.line_index] = field.key
+            row += 1
+            if field.help:
+                tk.Label(group, text=field.help, bg=self.card, fg=self.muted, font=("Bahnschrift", 9),
+                         anchor="w", justify="left", wraplength=640).grid(
+                    row=row, column=0, columnspan=2, sticky="w", padx=8)
+                row += 1
+        self._form_canvas.yview_moveto(0)
+
+    def _fill_text(self) -> None:
+        self.text.delete("1.0", "end")
+        self._rendered_text = self.doc.text.replace("\r\n", "\n").replace("\r", "\n")
+        self.text.insert("1.0", self._rendered_text)
+        self.text.edit_reset()
+        self._colour_text()
+
+    def _colour_text(self) -> None:
+        self.text.tag_remove("section", "1.0", "end")
+        self.text.tag_remove("comment", "1.0", "end")
+        last_line = int(self.text.index("end-1c").split(".")[0])
+        for number in range(1, last_line + 1):
+            line = self.text.get(f"{number}.0", f"{number}.end").lstrip()
+            if line.startswith((";", "#", "//")):
+                self.text.tag_add("comment", f"{number}.0", f"{number}.end")
+            elif line.startswith("["):
+                self.text.tag_add("section", f"{number}.0", f"{number}.end")
+
+    def _on_text_modified(self, _event=None) -> None:
+        if self.text.edit_modified():
+            self._colour_text()
+            self.text.edit_modified(False)
+
+    def _apply_form(self) -> None:
+        """Write the entries the user changed since the last apply into the document. Raises
+        ``_InvalidValue`` (key name) for a value plugin_ini refuses; the others still apply."""
+        invalid = None
+        for line_index, var in self.entries.items():
+            value = var.get()
+            if value == self._form_values.get(line_index):
+                continue
+            try:
+                self.doc.set_value(line_index, value)
+            except ValueError:
+                invalid = invalid or self._form_keys.get(line_index, "?")
+                continue
+            self._form_values[line_index] = value
+        if invalid is not None:
+            raise self._InvalidValue(invalid)
+
+    def _apply_text(self) -> None:
+        current = self.text.get("1.0", "end-1c")
+        if current == self._rendered_text:
+            return   # untouched: keep the document (and its exact line endings) as it is
+        self.doc = plugin_ini.IniDocument.from_text(current, like=self.doc)
+        self._rendered_text = current
+        self._form_built = False
+
+    def _sync_active(self) -> None:
+        if self._active == "form":
+            self._apply_form()
+        else:
+            self._apply_text()
+
+    def _show_text(self) -> None:
+        if self._active != "text":
+            self._apply_form()
+            self._active = "text"
+        self._fill_text()
+
+    def _show_form(self) -> None:
+        if self._active != "form":
+            self._apply_text()
+            self._active = "form"
+        if not self._form_built:
+            self._build_form()
+
+    def _on_tab_changed(self, _event=None) -> None:
+        try:
+            selected = self.notebook.index(self.notebook.select())
+        except tk.TclError:
+            return
+        wanted = self._MODES[selected]
+        if wanted == self._active:
+            return
+        if wanted == "text":
+            try:
+                self._show_text()
+            except self._InvalidValue as exc:
+                self.notebook.select(self.form_tab)
+                self._show_error("dialog.plugins.ini.error_value", name=exc.key)
+        else:
+            self._show_form()
+
+    def _show_error(self, message_key: str, **kwargs) -> None:
+        messagebox.showerror(self.title(), self.tr(message_key, **kwargs), parent=self)
+
+    def _on_mousewheel(self, event) -> None:
+        if self._active == "form" and event.widget is not self.text:
+            self._form_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _reload(self) -> None:
+        self.doc, self.raw = plugin_ini.load(self.ini_path)
+        self._form_built = False
+        if self._active == "form":
+            self._build_form()
+        else:
+            self._fill_text()
+
+    # ---- actions ---------------------------------------------------------------------------
+    def _has_changes(self) -> bool:
+        self._sync_active()
+        return self.doc.to_bytes() != self.raw
+
+    def _confirm(self, message_key: str) -> bool:
+        return messagebox.askyesno(self.title(), self.tr(message_key), parent=self)
+
+    def _ask_changed_on_disk(self) -> str:
+        answer = messagebox.askyesnocancel(
+            self.title(), self.tr("dialog.plugins.ini.changed_on_disk", file=self.ini_path.name), parent=self)
+        if answer is None:
+            return "cancel"
+        return "reload" if answer else "overwrite"
+
+    def _log(self, message: str) -> None:
+        log = getattr(self.app, "log", None)
+        if callable(log):
+            log(message)
+
+    def save(self) -> bool:
+        """Write the active view to the ini and close; False (dialog stays open) when the user
+        chose to reload or cancel after an on-disk change, a value can't be stored as typed, or
+        the write failed."""
+        try:
+            self._sync_active()
+        except self._InvalidValue as exc:
+            self._show_error("dialog.plugins.ini.error_value", name=exc.key)
+            return False
+        try:
+            try:
+                written = plugin_ini.save(self.ini_path, self.doc, self.raw)
+            except plugin_ini.IniChangedOnDisk:
+                choice = self._ask_changed_on_disk()
+                if choice == "reload":
+                    self._reload()
+                    return False
+                if choice != "overwrite":
+                    return False
+                written = plugin_ini.save(self.ini_path, self.doc, self.ini_path.read_bytes())
+        except OSError as exc:
+            self._log(f"Plugins: could not save {self.ini_path}: {exc}")
+            messagebox.showerror(self.title(), self.tr("dialog.plugins.ini.error_save", error=exc), parent=self)
+            return False
+        if written:
+            self._log(f"Plugins: saved {self.ini_path}")
+        self.close_ok(True)
+        return True
+
+    def cancel(self) -> None:
+        try:
+            changed = self._has_changes()
+        except self._InvalidValue:
+            changed = True
+        if changed and not self._confirm("dialog.plugins.ini.discard"):
+            return
+        self.destroy()

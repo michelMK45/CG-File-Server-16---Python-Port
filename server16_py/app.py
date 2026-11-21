@@ -46,9 +46,10 @@ from .app_ui import UIMixin
 from .app_overlay import OverlayMixin
 from .app_game import GameMixin
 from .app_settings import SettingsMixin
+from .app_plugins import PluginsTabMixin
 
 
-class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin, SettingsMixin, tk.Tk):
+class Server16App(LocalizationMixin, LogMixin, UIMixin, PluginsTabMixin, OverlayMixin, GameMixin, SettingsMixin, tk.Tk):
     UPDATE_REPO_OWNER = "michelMK45"
     UPDATE_REPO_NAME = "CG-File-Server-16---Python-Port"
     # Official upstream repos for the two optional drivers the Gamepads tab
@@ -452,6 +453,14 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, OverlayMixin, GameMixin,
         self._l9_mode = False
         self._l9_game_running = False
         self._l9_save_message = ""
+        # Plugins tab (app_plugins.py): plugins switched while this FIFA session runs (no icon for
+        # them until FIFA restarts) and whether FIFA is running, as poll_process last saw it.
+        self._plugins_toggled: set[str] = set()
+        self._plugins_game_running = False
+        self._plugins_icons_ready = False   # set by the delayed check after FIFA starts
+        self._plugins_session = 0
+        self._plugins_rows_frame = None
+        self.plugins_tab = None
         self.exclude_competition_button = None
         self.log_status_label = None
         self.log_autofollow_checkbox = None

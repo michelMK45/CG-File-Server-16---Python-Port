@@ -269,6 +269,20 @@ class _ActivityDot(tk.Canvas):
 class UIMixin:
     """Window construction, theming, and all widget interaction — part of Server16App via multiple inheritance."""
 
+    # Main notebook: (tab frame attribute, title key), in display order. Also used to retitle the
+    # tabs on a language switch (app_localization.py).
+    _MAIN_TAB_ORDER = (
+        ("dashboard_tab", "tab.dashboard"),
+        ("kits_tab", "tab.kits"),
+        ("audio_tab", "tab.chants"),
+        ("camera_tab", "tab.camera"),
+        ("setup_tab", "tab.setup"),
+        ("plugins_tab", "tab.plugins"),
+        ("settings_tab", "tab.settings"),
+        ("gamepads_tab", "tab.gamepads"),
+        ("logs_tab", "tab.logs"),
+    )
+
     def _window(self) -> tk.Misc:
         return self.ui_root or self
 
@@ -623,14 +637,9 @@ class UIMixin:
         self.kits_tab = tk.Frame(self.tabview, bg=self.bg)
         self.gamepads_tab = tk.Frame(self.tabview, bg=self.bg)
         self.settings_tab = tk.Frame(self.tabview, bg=self.bg)
-        self.tabview.add(self.dashboard_tab, text=self.tr("tab.dashboard"))
-        self.tabview.add(self.kits_tab, text=self.tr("tab.kits"))
-        self.tabview.add(self.audio_tab, text=self.tr("tab.chants"))
-        self.tabview.add(self.camera_tab, text=self.tr("tab.camera"))
-        self.tabview.add(self.gamepads_tab, text=self.tr("tab.gamepads"))
-        self.tabview.add(self.setup_tab, text=self.tr("tab.setup"))
-        self.tabview.add(self.settings_tab, text=self.tr("tab.settings"))
-        self.tabview.add(self.logs_tab, text=self.tr("tab.logs"))
+        self.plugins_tab = tk.Frame(self.tabview, bg=self.bg)
+        for attr, title_key in self._MAIN_TAB_ORDER:
+            self.tabview.add(getattr(self, attr), text=self.tr(title_key))
         self.tabview.select(self.dashboard_tab)
         self.tabview.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -680,6 +689,7 @@ class UIMixin:
         self._build_camera_tab()
         self._build_gamepads_tab()
         self._build_setup_tab()
+        self._build_plugins_tab()
         self._build_kits_tab()
         self._build_settings_tab()
         self._build_logs_card()
@@ -5367,6 +5377,8 @@ class UIMixin:
             self.refresh_setup_tab()
         elif current is self.kits_tab:
             self._on_kits_subtab_changed()
+        elif current is self.plugins_tab:
+            self.refresh_plugins_tab()
         elif current is self.gamepads_tab:
             self._refresh_gamepad_driver_status()
             self._refresh_hidhide_driver_status()

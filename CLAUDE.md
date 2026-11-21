@@ -22,7 +22,8 @@ PyInstaller, plus native C++ overlay (`server16_py/d3d_overlay/`) and a bridge t
 One Tkinter process, `App` (`app.py`) composed of mixins. Full per-module table: `docs/module-map.md`.
 
 - **UI:** `app_ui.py` (main window/Setup/Kit Mixer UI), `dialogs.py`, `settings_editor.py`,
-  `asset_grid_*`, `video_preview.py`, `splash.py`.
+  `asset_grid_*`, `video_preview.py`, `splash.py`, `app_plugins.py` (Plugins tab: `plugin_loader.py`,
+  `plugin_ini.py`).
 - **Game loop:** `app_game.py` (`poll_process` 500ms, `stats_loop` 250ms, page-transition handling),
   `memory_access.py` (`Memory`: Read/WriteProcessMemory + pointer chains), `offsets.py` (live source
   of truth; `offsets.json` is NOT loaded).
@@ -105,6 +106,7 @@ chronology is in `docs/history/<same name>.md` — grep it for `**Part N` only w
 | older/misc fixes (RAR5, goal songs, Discord, context-read spam, practice arena, SkillGamePause) | `docs/bugs-misc.md` |
 | deps, build, native binaries | `docs/dependencies-build.md` |
 | in-game CGFS16 menu (FIFA's own UI), `ingame_*` modules, continuing its work (sibling `cgfs-ingame` project) | `docs/ingame-menu.md` (§0 first) |
+| Plugins tab, FIFA Plugin Loader (`winmm.dll`, `plugins\*.asi`), plugin inis | `docs/plugins-tab.md` |
 | roadmap, open items, `legacy/` map | `docs/roadmap-legacy.md` |
 
 Logs (`runtime/server16.log`, `.previous.log`, forum `Log*.txt`) can be tens of thousands of lines:

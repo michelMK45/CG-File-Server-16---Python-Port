@@ -85,6 +85,8 @@ class GameMixin:
             running = bool(self.MP) and any(Path((p.info.get("name") or "")).stem.lower() == self.MP.lower() for p in psutil.process_iter(["name"]))
             # dinput8 L9 reads its ini only at FIFA start: lock/unlock the dashboard fields.
             self.on_extender_game_running(running)
+            # Plugins tab: forget this session's toggles, check the loaded icons after start-up.
+            self.on_plugins_game_running(running)
             if running and self.memory.attack(self.MP):
                 if not self._attached_once:
                     self._attached_once = True
