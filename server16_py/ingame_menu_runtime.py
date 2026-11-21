@@ -62,6 +62,7 @@ from __future__ import annotations
 import datetime
 import re
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -73,6 +74,7 @@ if TYPE_CHECKING:
     from .app import Server16App
 
 MENU_PAGE = "game/screens/cgfs16/CGFS16Menu"
+SLOW_DATA_SECONDS = 0.25   # write_data runs on the Tk thread: slower than this is logged (match loading waits)
 MENU_MOVIE = Path("data/ui/game/screens/cgfs16/cgfs16menu.big")
 DATA_MOVIE = Path("data/ui/cgfs16/data.big")
 TEMPLATE = "ingame/data_template.big"
@@ -700,9 +702,19 @@ class InGameMenuRuntime:
 
     # --- app -> menu ---------------------------------------------------------------------------
     def write_data(self, reason: str, force: bool = False) -> bool:
-        """Writes data.big if the data changed (or force). True if written."""
+        """Writes data.big if the data changed (or force). True if written. Runs on the Tk thread on every
+        page transition, also while a match loads: a slow one is logged with its time."""
         if not self.installed():
             return False
+        started = time.perf_counter()
+        try:
+            return self._write_data(reason, force)
+        finally:
+            took = time.perf_counter() - started
+            if took >= SLOW_DATA_SECONDS:
+                self.app.log(f"In-game menu: building the data took {took:.2f} s ({reason})")
+
+    def _write_data(self, reason: str, force: bool) -> bool:
         values, selected = self.rows()
         extra: list[str] = [f"LANG={self.language()}",   # the app's guess, for the log / diagnosis only
                             "INFO=" + self.t("info", source="CG Server 16", stamp=STAMP_SLOT),

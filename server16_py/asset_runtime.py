@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -360,6 +361,7 @@ class AssetRuntime:
         if (src_dir / "game").is_dir():
             copy(src_dir / "game", app.Scoredata / "game")
         selection = {rel: src_dir / rel for rel in names if not self._is_scoreboard_game_file(rel)}
+        started = time.perf_counter()
         try:
             installed = install_tracked_selection(
                 selection, app.Scoredata, app.exedir / "FSW" / self._SCOREBOARD_UI_BACKUP
@@ -369,7 +371,9 @@ class AssetRuntime:
             installed = []
             app.log(f"Scoreboard runtime: some data/ui files outside game/ were not installed: {exc}")
         if installed:
-            app.log(f"Scoreboard runtime: {len(installed)} data/ui file(s) outside game/ installed (tracked)")
+            # the time: this runs on the Tk thread before Movie/Adboard (1.8.0 slow-loading report)
+            app.log(f"Scoreboard runtime: {len(installed)} data/ui file(s) outside game/ installed (tracked) "
+                    f"in {time.perf_counter() - started:.2f} s")
         self._apply_scoreboard_defaults(skip={rel.lower() for rel in selection})
 
     def _restore_scoreboard_ui(self, reason: str, *, apply_defaults: bool = True) -> None:

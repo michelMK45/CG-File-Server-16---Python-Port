@@ -149,6 +149,37 @@ class TrackedInstallTests(unittest.TestCase):
         self.assertEqual(restore_tracked_files(self.dst, self.backup), (1, []))
         self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
 
+    def test_the_manifest_is_written_once_before_any_overwrite(self) -> None:
+        """A crest pack has hundreds of files: one manifest write per file slowed 1.8.0's match loading."""
+        from server16_py import file_tools
+        for n in range(30):
+            self.write(self.dst / f"c{n}.dds", b"vanilla")
+            self.write(self.pack_a / f"c{n}.dds", b"custom")
+        real = file_tools._save_tracked_manifest
+        saves = []
+
+        def save(backup_dir, files):
+            # by then every original is backed up and none is overwritten yet
+            saves.append((len(files), [(self.dst / f"c{n}.dds").read_bytes() for n in range(30)]))
+            real(backup_dir, files)
+
+        with unittest.mock.patch.object(file_tools, "_save_tracked_manifest", side_effect=save):
+            install_tracked_files(self.pack_a, self.dst, self.backup)
+        self.assertEqual(saves, [(30, [b"vanilla"] * 30)])
+        self.assertEqual((self.dst / "c7.dds").read_bytes(), b"custom")
+        self.assertEqual(restore_tracked_files(self.dst, self.backup), (30, []))
+        self.assertEqual((self.dst / "c7.dds").read_bytes(), b"vanilla")
+        self.assertFalse(self.backup.exists())
+
+    def test_an_unsaved_manifest_overwrites_nothing_new(self) -> None:
+        from server16_py import file_tools
+        self.write(self.dst / "w.rx3", b"vanilla")
+        self.write(self.pack_a / "w.rx3", b"custom")
+        with unittest.mock.patch.object(file_tools, "_save_tracked_manifest", side_effect=OSError("disk full")):
+            with self.assertRaises(OSError):
+                install_tracked_files(self.pack_a, self.dst, self.backup)
+        self.assertEqual((self.dst / "w.rx3").read_bytes(), b"vanilla")
+
     def test_a_lost_backup_is_reported_and_dropped(self) -> None:
         self.write(self.dst / "w.rx3", b"vanilla")
         self.write(self.pack_a / "w.rx3", b"custom")

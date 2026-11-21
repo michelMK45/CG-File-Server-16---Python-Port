@@ -14,6 +14,7 @@ reads the team file when the match loads.
 """
 from __future__ import annotations
 
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Optional
 
@@ -39,6 +40,7 @@ class InGameKits:
         self.written: dict[str, tuple[int, list[str]]] = {}   # row -> (team, its labels as written)
         self._jobs: list[Sources] = []                         # the drawings the last data asked for
         self.pictures_busy = False
+        self._lock_busy = False   # the last data left a picture out because the art lock was busy (_png)
         self.applying = False   # a menu save is being applied: its own saves don't rewrite the data
         # team -> every list of combinations written since the menu last opened (_identity): the record only
         # says index + name and names can repeat, so a list that changed meanwhile is not trusted
@@ -55,6 +57,7 @@ class InGameKits:
         t = self.menu.t
         self.written = {}
         self._jobs = []
+        self._lock_busy = False
         teams = {row: _context(self.app, attr) for row, _side, attr, _title in ROWS}
         if not (teams[HOME_ROW] and teams[AWAY_ROW]):
             return [f"TITLE_{HOME_ROW}=" + t("tab_kits"), f"DESC_{HOME_ROW}=" + t("kits_desc")], \
@@ -119,10 +122,20 @@ class InGameKits:
         rel = ingame_images.asset_image_rel(IMAGE_KIND, png.name)
         return rel if (Path(self.app.exedir) / "data" / "ui" / rel).exists() else None
 
-    @staticmethod
-    def _png(runtime, sources: Sources) -> Optional[Path]:
-        with runtime.art_lock:
+    def _png(self, runtime, sources: Sources, wait: bool = False) -> Optional[Path]:
+        """The drawing's cache PNG name (it may not exist yet). Without `wait` (the Tk thread, writing the data)
+        the art lock is only taken when free: a worker drawing kits keeps it for ~0.3 s per drawing and
+        re-takes it first, so waiting stalled the Tk thread for the whole batch -- the match's assets and
+        the stadium copy's ORISTADIDBASE write with it (1.8.0 forum report, 2026-11-17). Busy -> None (the
+        value shows the placeholder) and the data is written again once the pictures are done."""
+        lock = runtime.art_lock
+        if not lock.acquire(blocking=wait):
+            self._lock_busy = True
+            return None
+        try:
             return runtime.art.drawing_path(*sources, size=ART_SIZE)
+        finally:
+            lock.release()
 
     def _placeholder_rel(self) -> str:
         return PLACEHOLDER_REL if (Path(self.app.exedir) / "data" / "ui" / PLACEHOLDER_REL).exists() else ""
@@ -210,7 +223,7 @@ class InGameKits:
             return made
         for sources in jobs:
             try:
-                png = self._png(runtime, sources)
+                png = self._png(runtime, sources, wait=True)
                 if png is None:
                     continue
                 target = ingame_images.asset_image_file(exedir, IMAGE_KIND, png.name)
@@ -218,6 +231,9 @@ class InGameKits:
                     continue
                 with runtime.art_lock:
                     png = runtime.art.render_path(*sources, size=ART_SIZE)
+                # Python's lock is not fair: without a pause this thread takes it back before anyone waiting
+                # for it (the Kits tab, the F7-F10 carousel) gets a turn
+                time.sleep(0.02)
                 if png is None:
                     continue
                 ingame_images.make_contained(png, target)
@@ -261,6 +277,9 @@ class InGameKits:
         if made:
             self.app.log(f"In-game menu: kit previews ready ({made} new)")
             self.menu.write_data("kit previews", force=True)
+        elif self._lock_busy:
+            # the last data skipped pictures that already existed (the lock was busy): written if it changes
+            self.menu.write_data("kit previews")
 
 
 def _identity(tc) -> str:

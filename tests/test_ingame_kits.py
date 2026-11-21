@@ -158,6 +158,26 @@ class InGameKitsPictureTests(KitsFixture):
         self.rt.write_data("again", force=True)
         self.assertEqual(self.started, [1])              # one is already running
 
+    def test_data_never_waits_for_a_busy_art_lock(self) -> None:
+        """The Tk thread writing the data must not block on a kit drawing in progress (1.8.0: assets loaded
+        10-20 s late): the busy lock gives the placeholder, then the worker's end writes the real pictures."""
+        import time
+        self.rt.kits.make_pictures(self.rt.kits.jobs())          # every picture exists already
+        self.started.clear()
+        self.runtime.art_lock.acquire()                          # a drawing in progress elsewhere
+        try:
+            started = time.perf_counter()
+            self.rt.write_data("busy", force=True)
+            self.assertLess(time.perf_counter() - started, 2.0)
+        finally:
+            self.runtime.art_lock.release()
+        images = read_data(self.app)["IMG_KITS"].split("|")
+        self.assertEqual(images, [ingame_kits.PLACEHOLDER_REL] * 3)
+        self.assertEqual(self.started, [1])                      # a worker to catch up
+        self.rt.kits.on_pictures_done(0, None)                   # it found nothing to draw...
+        images = read_data(self.app)["IMG_KITS"].split("|")      # ...but the data now names the pictures
+        self.assertNotIn(ingame_kits.PLACEHOLDER_REL, images)
+
     def test_worker_posts_its_result(self) -> None:
         ingame_kits.InGameKits.start_pictures(self.rt.kits)
         self.assertTrue(self.rt.kits.pictures_busy)

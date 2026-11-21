@@ -542,17 +542,34 @@ def install_tracked_selection(selection: Mapping[str, Path], dst_dir: Path, back
     manifest = _load_tracked_manifest(backup_dir)
     installed: list[str] = []
     errors: list[str] = []
+    # Every new original is backed up first and the manifest written ONCE, before any overwrite (the
+    # crash-safety rule above). Saving it once per file rewrote a growing JSON hundreds of times for a
+    # crest pack and slowed the match's asset loading in 1.8.0 (forum report 2026-11-17).
+    known = set(manifest)
+    pending: list[tuple[str, str, Path, Path]] = []   # (key, rel, source, destination)
     for key, (rel, item) in wanted.items():
         dst = dst_dir / rel
-        try:
-            if key not in manifest:
+        if key not in manifest:
+            try:
                 had_original = dst.is_file()
                 if had_original:
                     backup = backup_dir / _TRACKED_BACKUPS / key
                     backup.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(dst, backup)
-                manifest[key] = had_original
-                _save_tracked_manifest(backup_dir, manifest)
+            except OSError as exc:
+                errors.append(f"{rel}: {exc}")
+                continue
+            manifest[key] = had_original
+        pending.append((key, rel, item, dst))
+    if set(manifest) != known:
+        try:
+            _save_tracked_manifest(backup_dir, manifest)
+        except OSError as exc:
+            # untracked overwrites could never be undone: only what the manifest on disk knows goes in
+            errors += [f"{rel}: manifest not saved ({exc})" for key, rel, _i, _d in pending if key not in known]
+            pending = [entry for entry in pending if entry[0] in known]
+    for _key, rel, item, dst in pending:
+        try:
             copy_file_atomic(item, dst)
             installed.append(rel)
         except OSError as exc:
@@ -580,8 +597,7 @@ def restore_tracked_files(dst_dir: Path, backup_dir: Path, keep: Collection[str]
             if not manifest[rel]:
                 dst.unlink(missing_ok=True)
             elif backup.is_file():
-                copy_file_atomic(backup, dst)
-                backup.unlink()
+                _move_backup_back(backup, dst)
             else:
                 failed.append(rel)
                 del manifest[rel]
@@ -594,6 +610,20 @@ def restore_tracked_files(dst_dir: Path, backup_dir: Path, keep: Collection[str]
     if manifest or (backup_dir / _TRACKED_MANIFEST).exists():
         _save_tracked_manifest(backup_dir, manifest)
     return restored, failed
+
+
+def _move_backup_back(backup: Path, dst: Path) -> None:
+    """Puts a tracked backup back over dst and drops the backup. A rename when both are on one volume (the
+    usual case: FSW/ and data/ under the game folder) -- atomic like copy_file_atomic, without copying the
+    bytes back; otherwise (or with dst locked for a moment) the retried copy, then the unlink."""
+    try:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(backup, dst)
+        return
+    except OSError:
+        pass
+    copy_file_atomic(backup, dst)
+    backup.unlink()
 
 
 def copy_goalpost(src_dir: Path, dst_dir: Path, manifest_path: Path, fsw_goalnet_dir: Path | None = None) -> None:
