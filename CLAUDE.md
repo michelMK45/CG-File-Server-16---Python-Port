@@ -107,6 +107,7 @@ chronology is in `docs/history/<same name>.md` — grep it for `**Part N` only w
 | deps, build, native binaries | `docs/dependencies-build.md` |
 | in-game CGFS16 menu (FIFA's own UI), `ingame_*` modules, continuing its work (sibling `cgfs-ingame` project) | `docs/ingame-menu.md` (§0 first) |
 | Plugins tab, FIFA Plugin Loader (`winmm.dll`, `plugins\*.asi`), plugin inis | `docs/plugins-tab.md` |
+| goal-net ropes plugin (`server16_py/ropes_plugin/`, `SERVER16_Ropes.asi`) | `docs/ropes-plugin.md` |
 | roadmap, open items, `legacy/` map | `docs/roadmap-legacy.md` |
 
 Logs (`runtime/server16.log`, `.previous.log`, forum `Log*.txt`) can be tens of thousands of lines:

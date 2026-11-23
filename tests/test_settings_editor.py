@@ -1340,5 +1340,91 @@ class MatchAssetsTabTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
 
 
+@unittest.skipUnless(_TK_AVAILABLE, "requires a Tk display")
+class NetEditorRopesTests(unittest.TestCase):
+    """[stadiumnetname]/[stadiumnetid] carry the SERVER16_Ropes.asi rope level as 6th field
+    (net_ropes.py); level 0 keeps the classic 5-field value, later fields are kept."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        exedir = Path(self._tmp.name)
+        (exedir / "FSW").mkdir(parents=True)
+        self.ini_path = exedir / "FSW" / "settings.ini"
+        self.root = tk.Tk()
+        self.root.withdraw()
+        self.addCleanup(self.root.destroy)
+        self.app = FakeApp(exedir, SessionIniFile(self.ini_path))
+        self.app.STADID = "5"
+
+    def make_frame(self) -> SettingsSectionFrame:
+        spec = next(spec for spec in stadium_specs() if spec.section == "stadiumnetid")
+        return SettingsSectionFrame(self.root, self.app, spec)
+
+    def saved(self, key: str) -> str:
+        return SessionIniFile(self.ini_path).read(key, "stadiumnetid")
+
+    def save(self, frame: SettingsSectionFrame, key: str, level: int) -> None:
+        frame.key_var.set(key)
+        frame.ropes_var.set(f"dialog.editor.net_ropes.{level}")
+        frame.save_entry()
+
+    def test_default_level_saves_the_classic_five_fields(self) -> None:
+        frame = self.make_frame()
+        self.save(frame, "12", 0)
+        self.assertEqual(self.saved("12"), "1089199011,1087199011,2,0,0")
+
+    def test_rope_level_is_saved_as_sixth_field_and_loaded_back(self) -> None:
+        frame = self.make_frame()
+        self.save(frame, "12", 3)
+        self.assertEqual(self.saved("12"), "1089199011,1087199011,2,0,0,3")
+        fresh = self.make_frame()
+        fresh.load_entry("12")
+        self.assertEqual(fresh.ropes_var.get(), "dialog.editor.net_ropes.3")
+
+    def test_author_physics_field_survives_an_edit(self) -> None:
+        self.app.settings_ini.write("12", "1,2,4,0,0,2,3", "stadiumnetid")
+        self.app.settings_ini.save()
+        frame = self.make_frame()
+        frame.load_entry("12")
+        self.assertEqual(frame.ropes_var.get(), "dialog.editor.net_ropes.2")
+        self.save(frame, "12", 0)
+        self.assertEqual(self.saved("12"), "1,2,4,0,0,0,3")
+
+    def test_new_entry_resets_the_rope_level(self) -> None:
+        frame = self.make_frame()
+        self.save(frame, "12", 1)
+        frame.new_entry()
+        self.assertEqual(frame.ropes_var.get(), "dialog.editor.net_ropes.0")
+
+    def install_loader(self) -> Path:
+        game = Path(self.app.exedir)
+        (game / "winmm.dll").write_bytes(b"MZ" + "FIFA Plugin Loader".encode("utf-16-le"))
+        (game / "plugins").mkdir(exist_ok=True)
+        return game / "plugins"
+
+    def test_warning_tells_to_install_the_plugin_from_setup(self) -> None:
+        self.install_loader()
+        frame = self.make_frame()
+        self.assertEqual(frame._ropes_warning.cget("text"), "dialog.editor.net_ropes_warning.missing")
+        self.assertTrue(frame._ropes_warning.winfo_manager())
+
+    def test_warning_without_the_plugin_loader(self) -> None:
+        frame = self.make_frame()
+        self.assertEqual(frame._ropes_warning.cget("text"), "dialog.editor.net_ropes_warning.no_loader")
+
+    def test_no_warning_once_the_plugin_is_installed_and_refreshed_on_load(self) -> None:
+        plugins = self.install_loader()
+        frame = self.make_frame()
+        (plugins / "SERVER16_Ropes.asi").write_bytes(b"MZ ropes")
+        self.save(frame, "12", 2)
+        frame.load_entry("12")
+        self.assertEqual(frame._ropes_warning.cget("text"), "")
+        self.assertEqual(frame._ropes_warning.winfo_manager(), "")
+        (plugins / "SERVER16_Ropes.asi").rename(plugins / "SERVER16_Ropes.asi.disabled")
+        frame.new_entry()
+        self.assertEqual(frame._ropes_warning.cget("text"), "dialog.editor.net_ropes_warning.disabled")
+
+
 if __name__ == "__main__":
     unittest.main()

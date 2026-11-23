@@ -7,6 +7,7 @@ set "WORKPATH=build\pyinstaller"
 set "DISTPATH=dist"
 set "OVERLAY_DLL=bin\cgfs16_overlay.dll"
 set "INJECTOR_EXE=bin\cgfs16_inject.exe"
+set "ROPES_ASI=bin\SERVER16_Ropes.asi"
 set "FIFA_LIBRARY=bin\FifaLibrary16.dll"
 set "KIT_EXTRACTOR_EXE=bin\KitExtractorHost.exe"
 set "UN_CHUNLZMA_EXE=bin\un_chunlzma.exe"
@@ -166,6 +167,15 @@ if errorlevel 1 (
 )
 echo [OK] cgfs16_inject.exe
 echo.
+
+echo Compiling SERVER16_Ropes.asi (FIFA Plugin Loader plugin, goal-net ropes) ...
+call "server16_py\ropes_plugin\build.bat"
+if errorlevel 1 (
+  call :fail "SERVER16_Ropes.asi compilation failed."
+  exit /b 1
+)
+echo [OK] SERVER16_Ropes.asi
+echo.
 exit /b 0
 
 :skip_cpp_build
@@ -176,9 +186,10 @@ exit /b 0
 
 :use_prebuilt_helpers
 echo [WARN] %~1
-if exist "%OVERLAY_DLL%" if exist "%INJECTOR_EXE%" (
+if exist "%OVERLAY_DLL%" if exist "%INJECTOR_EXE%" if exist "%ROPES_ASI%" (
   echo [1/3] Using existing %OVERLAY_DLL%.
   echo [2/3] Using existing %INJECTOR_EXE%.
+  echo [INFO] Using existing %ROPES_ASI%.
   echo.
   exit /b 0
 )

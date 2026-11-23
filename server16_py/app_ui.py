@@ -5091,6 +5091,16 @@ class UIMixin:
             font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=340,
         ).pack(fill="x", pady=(4, 0))
 
+        # SERVER16_Ropes.asi (net_ropes.py): FIFA Plugin Loader plugin that hides the goal-net ropes per
+        # stadium (6th net value). Optional, so unchecked; Run Setup copies bin/ -> <game>/plugins/.
+        section(left_col, "setup.section.ropes_plugin")
+        source_row(left_col, "setup.item.ropes_plugin", "ropes_plugin")
+        self._setup_install_vars["ropes_plugin"].set(False)
+        tk.Label(
+            left_col, text=self.tr("setup.hint.ropes_plugin"), bg=self.card, fg=self.muted,
+            font=("Bahnschrift", 9), anchor="w", justify="left", wraplength=340,
+        ).pack(fill="x", pady=(4, 0))
+
         section(right_col, "setup.section.user_folders")
         status_row(right_col, "setup.item.gbd_stadium", "gbd_stadium")
         status_row(right_col, "setup.item.gbd_tvlogo", "gbd_tvlogo")
@@ -5581,6 +5591,7 @@ class UIMixin:
             _set(key, exists, ok_text if exists else missing)
 
         self._refresh_ingame_menu_status(_set)
+        self._refresh_ropes_plugin_status(_set)
 
         # Destination folders
         for key, path in (
@@ -5684,6 +5695,7 @@ class UIMixin:
         do_netmesh     = install_vars.get("fsw_netmesh",    tk.BooleanVar(value=False)).get()
         do_custom_kit_numbers = install_vars.get("custom_kit_numbers", tk.BooleanVar(value=False)).get()
         do_ingame_menu = install_vars.get("ingame_menu", tk.BooleanVar(value=False)).get()
+        do_ropes_plugin = install_vars.get("ropes_plugin", tk.BooleanVar(value=False)).get()
 
         btn = getattr(self, "_run_setup_btn", None)
         if btn:
@@ -5739,6 +5751,9 @@ class UIMixin:
                     self.after(0, self._set_setup_progress, self.tr("progress.setup.ingame_menu"))
                     self._install_ingame_menu_blocking()
 
+                if do_ropes_plugin:
+                    self._install_ropes_plugin_blocking()
+
                 _set_pb(10)
                 self.after(0, self._set_setup_progress, self.tr("progress.setup.extracting"))
                 self.log("Extracting FSW sources from game archives...")
@@ -5793,6 +5808,47 @@ class UIMixin:
                 )
 
         threading.Thread(target=_work, daemon=True).start()
+
+    # --- SERVER16_Ropes.asi, goal-net ropes plugin (net_ropes.py) ------------------------------------
+    def _refresh_ropes_plugin_status(self, set_status) -> None:
+        from . import net_ropes
+
+        if not hasattr(self, "fifaEXE") or self.fifaEXE == "default":
+            set_status("ropes_plugin", None, self.tr("setup.status.not_applicable"))
+            return
+        bundled = net_ropes.bundled_plugin(self.resource_dir)
+        state = net_ropes.plugin_state(self.exedir, bundled)
+        if state == net_ropes.STATE_INSTALLED:
+            set_status("ropes_plugin", True, self.tr("setup.status.ropes_installed"))
+        elif bundled is None and state == net_ropes.STATE_MISSING:
+            set_status("ropes_plugin", None, self.tr("setup.status.ropes_not_bundled"))
+        else:
+            set_status("ropes_plugin", None, self.tr(f"setup.status.ropes_{state}"))
+
+    def _ropes_plugin_fifa_running(self) -> None:
+        from tkinter import messagebox
+
+        messagebox.showwarning(self.tr("message.fifa16"), self.tr("message.ropes_plugin.fifa_running"))
+
+    def _install_ropes_plugin_blocking(self) -> bool:
+        """Installs or updates plugins/SERVER16_Ropes.asi (worker thread of Run Setup). Never raises."""
+        from . import net_ropes
+
+        bundled = net_ropes.bundled_plugin(self.resource_dir)
+        if bundled is None:
+            self.log(f"Ropes plugin: {net_ropes.PLUGIN_FILE} is not bundled with this build, not installed")
+            return False
+        try:
+            target = net_ropes.install_plugin(self.exedir, bundled)
+        except PermissionError:
+            self.log("Ropes plugin: not installed, FIFA 16 has it loaded (close FIFA and run Setup again)")
+            self.after(0, self._ropes_plugin_fifa_running)
+            return False
+        except OSError as exc:
+            self.log(f"Ropes plugin: install failed ({exc})")
+            return False
+        self.log(f"Ropes plugin: installed {target}")
+        return True
 
     # --- CGFS16 menu inside FIFA 16's UI (ingame_menu_install.py) ---------------------------------
     def _refresh_ingame_menu_status(self, set_status) -> None:

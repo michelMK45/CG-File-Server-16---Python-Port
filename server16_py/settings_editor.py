@@ -31,6 +31,14 @@ from .file_tools import (
     stadium_preview_fallback_path,
 )
 from .net_mesh import resolve_net_mesh_preview_path
+from .net_ropes import (
+    ROPE_LEVELS,
+    STATE_INSTALLED,
+    bundled_plugin,
+    compose_net_value,
+    plugin_state,
+    split_net_value,
+)
 from .rx3_texture_preview import Rx3TexturePreview
 from .stadium_picker_dialog import StadiumPickerDialog
 from .stadium_runtime import StadiumRuntime
@@ -1281,6 +1289,53 @@ class SettingsSectionFrame(tk.Frame):
         shape_combo = self._add_combo_row(self.body, 3, "Shape", self.shape_var, self.SHAPE_CHOICES)
         shape_combo.configure(state="readonly")  # only square(0)/triangle(1) are valid in-engine
         self._add_combo_row(self.body, 4, "Tension", self.tension_var, ["0", "1", "2"])
+        # 6th field: goal-net rope level for the SERVER16_Ropes.asi plugin (net_ropes.py). Fields the
+        # value carries after it (the forum author's 7th "physics" field) are kept on save.
+        self._rope_labels = [self.tr(f"dialog.editor.net_ropes.{level}") for level in ROPE_LEVELS]
+        self.ropes_var = tk.StringVar(value=self._rope_labels[0])
+        self._net_extra_fields: list[str] = []
+        ropes_combo = self._add_combo_row(self.body, 5, self.tr("dialog.editor.field.net_ropes"), self.ropes_var, self._rope_labels)
+        ropes_combo.configure(state="readonly")
+        tk.Label(
+            self.body,
+            text=self.tr("dialog.editor.net_ropes_hint"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 8),
+            anchor="w",
+            wraplength=420,
+            justify="left",
+        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        # Shown only while the plugin cannot act in this game install (missing, switched off,
+        # older than the bundled one, or no Plugin Loader): tells the user where to fix it.
+        self._ropes_warning = tk.Label(
+            self.body,
+            text="",
+            bg=self.app.card,
+            fg=getattr(self.app, "gold", self.app.fg),
+            font=("Bahnschrift", 9),
+            anchor="w",
+            wraplength=420,
+            justify="left",
+        )
+        self._ropes_warning.grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        self._refresh_ropes_plugin_warning()
+
+    def _ropes_plugin_warning_key(self) -> str | None:
+        """Locale key of the warning for the current game install, or None when the plugin is usable."""
+        state = plugin_state(Path(self.app.exedir), bundled_plugin(getattr(self.app, "resource_dir", None)))
+        return None if state == STATE_INSTALLED else f"dialog.editor.net_ropes_warning.{state}"
+
+    def _refresh_ropes_plugin_warning(self) -> None:
+        label = getattr(self, "_ropes_warning", None)
+        if label is None:
+            return
+        key = self._ropes_plugin_warning_key()
+        label.configure(text=self.tr(key) if key else "")
+        if key:
+            label.grid()
+        else:
+            label.grid_remove()
 
     def _build_scoreboard_name_editor(self) -> None:
         self.display_name_var = tk.StringVar()
@@ -1973,6 +2028,9 @@ class SettingsSectionFrame(tk.Frame):
             self.rig_var.set(self.NET_DEFAULTS["rig"])
             self.shape_var.set(self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]])
             self.tension_var.set(self.NET_DEFAULTS["tension"])
+            self.ropes_var.set(self._rope_labels[0])
+            self._net_extra_fields = []
+            self._refresh_ropes_plugin_warning()
         elif self.spec.kind == "scoreboardstdname":
             self.display_name_var.set("")
         elif self.spec.kind == "chants":
@@ -2068,6 +2126,9 @@ class SettingsSectionFrame(tk.Frame):
         shape_raw = (parts[3] or self.NET_DEFAULTS["shape"]).strip()
         self.shape_var.set(self.SHAPE_VALUE_TO_LABEL.get(shape_raw, self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]]))
         self.tension_var.set(parts[4] or self.NET_DEFAULTS["tension"])
+        rope_level, self._net_extra_fields = split_net_value(value)
+        self.ropes_var.set(self._rope_labels[rope_level])
+        self._refresh_ropes_plugin_warning()
 
     def _load_scoreboard_name_value(self, key: str, value: str) -> None:
         # Format: DisplayName  (comma-separated values are supported, we take first part)
@@ -2149,14 +2210,18 @@ class SettingsSectionFrame(tk.Frame):
                 fields.extend([name, police, pitch, net])
             return ",".join(fields)
         if self.spec.kind == "net":
-            return ",".join(
+            label = self.ropes_var.get()
+            rope_level = self._rope_labels.index(label) if label in self._rope_labels else 0
+            return compose_net_value(
                 [
                     self.down_var.get().strip(),
                     self.high_var.get().strip(),
                     self.rig_var.get().strip(),
                     self.SHAPE_LABEL_TO_VALUE.get(self.shape_var.get().strip(), self.NET_DEFAULTS["shape"]),
                     self.tension_var.get().strip(),
-                ]
+                ],
+                rope_level,
+                self._net_extra_fields,
             )
         if self.spec.kind == "scoreboardstdname":
             return self.display_name_var.get().strip() or self.key_var.get().strip()

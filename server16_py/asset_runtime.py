@@ -18,6 +18,7 @@ from .file_tools import (
 )
 from .kit_mixer import run_fifalibrary_worker
 from .match_asset_ids import engine_id, plan_pack_remap, read_lua_id_maps
+from .net_ropes import RopesBridge, rope_level
 
 if TYPE_CHECKING:
     from .app import Server16App
@@ -35,6 +36,7 @@ class AssetRuntime:
         # render packs on their own threads and can ask for the same .rx3 at once.
         self._rx3_render_locks: dict[str, threading.Lock] = {}
         self._rx3_render_locks_guard = threading.Lock()
+        self._ropes_bridge: RopesBridge | None = None
 
     def match_asset_preview_dir(self) -> Path:
         return self.app.base_dir / "runtime" / "match_asset_previews"
@@ -817,11 +819,31 @@ class AssetRuntime:
         if not app.module_enabled("StadiumNet"):
             if has_net_values:
                 self._show_warning_toast(app.tr("notify.warn.stadiumnet_off"), app.tr("notify.warn.assets_skipped"))
+            self._apply_net_ropes(None, source_section)
             return
         if not has_net_values:
+            self._apply_net_ropes(None, source_section)
             return
-        values = app.settings_ini.read(source_section, source_key).split(",")
+        net_value = app.settings_ini.read(source_section, source_key)
+        values = net_value.split(",")
         for offset_group, value in zip([app.offsets.NTDP, app.offsets.NTCP, app.offsets.NTRI, app.offsets.NTTR, app.offsets.NTTT], values):
             app.memory.write_int(app.offsets.ORINETDEPTHBASE, offset_group, value)
         app._set_display("audio_last_action", app.display_value("net_profile_prefix", fallback="Net profile {name}", name=source_section))
         app.log(f"Applied stadium net values from [{source_key}] {source_section}: {values}")
+        self._apply_net_ropes(net_value, source_section)
+
+    def _apply_net_ropes(self, net_value: str | None, source_section: str) -> None:
+        """Hands the stadium's rope level (6th net-value field) to SERVER16_Ropes.asi through its
+        shared memory; None or a value without the field = no level (the plugin's ini Level
+        applies). Only our own named shared memory is written here, never FIFA's memory."""
+        app = self.app
+        level = rope_level(net_value) if net_value is not None else None
+        if self._ropes_bridge is None:
+            self._ropes_bridge = RopesBridge(app.log)
+        if not self._ropes_bridge.set_level(level):
+            return
+        if level is None:
+            app.log(f"Net ropes: no rope level for {source_section} (SERVER16_Ropes.ini Level applies)")
+            return
+        hint = "" if self._ropes_bridge.plugin_active() else " (SERVER16_Ropes.asi is not active in FIFA's plugins folder)"
+        app.log(f"Net ropes: level {level} for {source_section}{hint}")

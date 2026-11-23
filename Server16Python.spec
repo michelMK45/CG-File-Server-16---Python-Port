@@ -52,6 +52,7 @@ a = Analysis(
     binaries=[
         ('bin\\cgfs16_overlay.dll',   'bin'),
         ('bin\\cgfs16_inject.exe',    'bin'),
+        ('bin\\SERVER16_Ropes.asi',     'bin'),   # FIFA Plugin Loader plugin, installed by Set Up (net_ropes.py)
         ('bin\\FifaLibrary16.dll',    'bin'),
         ('bin\\KitExtractorHost.exe', 'bin'),
         ('bin\\un_chunlzma.exe',      'bin'),

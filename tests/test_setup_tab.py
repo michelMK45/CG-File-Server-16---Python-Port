@@ -38,6 +38,7 @@ class FakeSetupApp(UIMixin):
         self._setup_install_vars: dict = {}
         self.exedir = exedir
         self.fifaEXE = str(exedir / "fifa16.exe")
+        self.resource_dir = exedir / "resources"  # no bin/SERVER16_Ropes.asi: "not bundled"
         fsw = exedir / "FSW"
         self.Psource, self.Nsource, self.PitchMowsource = fsw / "Police", fsw / "Nets", fsw / "PitchMowPattern"
         self.Pdest = self.Ndest = self.PitchMowdest = exedir / "data"
@@ -115,7 +116,7 @@ class SetupGeneralTabTests(unittest.TestCase):
 
         self.assertEqual(section_titles(left), [
             "setup.section.prerequisites", "setup.section.fsw_sources", "setup.section.ingame_menu",
-            "setup.section.extra_assets", "setup.section.extra_revmod",
+            "setup.section.ropes_plugin", "setup.section.extra_assets", "setup.section.extra_revmod",
         ])
         self.assertEqual(section_titles(right), ["setup.section.user_folders", "setup.section.dest_folders"])
         self.assertIn("dest_lua", self.app._setup_status_vars)
@@ -157,6 +158,27 @@ class SetupGeneralTabTests(unittest.TestCase):
         self.assertEqual(status.cget("text"), "setup.status.ingame_update")
         self.assertEqual(str(self.app._uninstall_ingame_menu_btn.cget("state")), "normal")
 
+    def test_ropes_plugin_row_is_optional_and_shows_its_install_state(self) -> None:
+        self.assertFalse(self.app._setup_install_vars["ropes_plugin"].get())
+        _dot, status = self.app._setup_status_vars["ropes_plugin"]
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ropes_no_loader")
+        (self.exedir / "winmm.dll").write_bytes(b"MZ" + "FIFA Plugin Loader".encode("utf-16-le"))
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ropes_not_bundled")
+        bundled = self.app.resource_dir / "bin" / "SERVER16_Ropes.asi"
+        bundled.parent.mkdir(parents=True)
+        bundled.write_bytes(b"MZ v2")
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ropes_missing")
+        (self.exedir / "plugins").mkdir()
+        (self.exedir / "plugins" / "SERVER16_Ropes.asi").write_bytes(b"MZ v1")
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ropes_outdated")
+        (self.exedir / "plugins" / "SERVER16_Ropes.asi").write_bytes(b"MZ v2")
+        self.app.refresh_setup_tab()
+        self.assertEqual(status.cget("text"), "setup.status.ropes_installed")
+
 
 class SetupLocaleTests(unittest.TestCase):
     def test_new_setup_strings_exist_in_every_language(self) -> None:
@@ -167,7 +189,17 @@ class SetupLocaleTests(unittest.TestCase):
                         "setup.status.ingame_installed", "setup.status.ingame_update",
                         "setup.status.ingame_not_installed", "setup.status.ingame_no_package",
                         "setup.status.ingame_no_r3", "progress.setup.ingame_menu",
-                        "message.ingame_menu.fifa_running", "message.ingame_menu.confirm_uninstall"):
+                        "message.ingame_menu.fifa_running", "message.ingame_menu.confirm_uninstall",
+                        "setup.section.ropes_plugin", "setup.item.ropes_plugin", "setup.hint.ropes_plugin",
+                        "setup.status.ropes_installed", "setup.status.ropes_outdated",
+                        "setup.status.ropes_disabled", "setup.status.ropes_missing",
+                        "setup.status.ropes_no_loader", "setup.status.ropes_not_bundled",
+                        "message.ropes_plugin.fifa_running",
+                        "dialog.editor.net_ropes_warning.missing", "dialog.editor.net_ropes_warning.disabled",
+                        "dialog.editor.net_ropes_warning.outdated", "dialog.editor.net_ropes_warning.no_loader",
+                        "dialog.editor.field.net_ropes", "dialog.editor.net_ropes_hint",
+                        "dialog.editor.net_ropes.0", "dialog.editor.net_ropes.1",
+                        "dialog.editor.net_ropes.2", "dialog.editor.net_ropes.3"):
                 self.assertTrue(catalog.get(key), f"{lang}: {key}")
 
 

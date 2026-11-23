@@ -130,10 +130,16 @@ class StadiumNetOffToastTests(unittest.TestCase):
         app.log = lambda *_a, **_k: None
         return app
 
-    def run_bumper(self, app: FakeApp) -> None:
+    def run_bumper(self, app: FakeApp) -> unittest.mock.MagicMock:
+        """Runs the page with a stand-in for the ropes shared memory (never the real mapping,
+        which a running FIFA's SERVER16_Ropes.asi would share). Returns that stand-in."""
         runtime = AssetRuntime(app)
-        with unittest.mock.patch.object(AssetRuntime, "reapply_active_ball_runtime"):
+        with unittest.mock.patch.object(AssetRuntime, "reapply_active_ball_runtime"), \
+                unittest.mock.patch("server16_py.asset_runtime.RopesBridge") as bridge_cls:
+            bridge_cls.return_value.set_level.return_value = True
+            bridge_cls.return_value.plugin_active.return_value = True
             runtime.tv_bumper_page()
+        return bridge_cls.return_value
 
     WARNING = ("notify.warn.stadiumnet_off", "notify.warn.assets_skipped", 1, "")
 
@@ -163,6 +169,39 @@ class StadiumNetOffToastTests(unittest.TestCase):
         self.run_bumper(app)
         self.assertEqual(app.toast_calls, [])
         self.assertEqual(app.memory.write_int.call_count, 5)
+
+
+class NetRopesLevelTests(unittest.TestCase):
+    """The 6th net-value field goes to SERVER16_Ropes.asi (shared memory), never into FIFA's
+    memory; every other case hands over "no level" so the plugin's ini Level applies."""
+
+    make_app = StadiumNetOffToastTests.make_app
+    run_bumper = StadiumNetOffToastTests.run_bumper
+
+    def test_sixth_field_is_handed_to_the_plugin_and_only_five_values_hit_memory(self) -> None:
+        app = self.make_app({"stadiumnetname": {"Anfield": "1,2,3,4,5,3"}}, module_on=True)
+        bridge = self.run_bumper(app)
+        bridge.set_level.assert_called_once_with(3)
+        self.assertEqual(app.memory.write_int.call_count, 5)
+
+    def test_by_stadium_id_too(self) -> None:
+        app = self.make_app({"stadiumnetid": {"12": "1,2,3,4,5,1"}}, module_on=True, curstad="")
+        self.run_bumper(app).set_level.assert_called_once_with(1)
+
+    def test_five_field_value_hands_over_no_level(self) -> None:
+        app = self.make_app({"stadiumnetname": {"Anfield": "1,2,3,4,5"}}, module_on=True)
+        self.run_bumper(app).set_level.assert_called_once_with(None)
+
+    def test_no_net_values_module_off_or_excluded_round_hand_over_no_level(self) -> None:
+        cases = {
+            "no values": ({}, True),
+            "module off": ({"stadiumnetname": {"Anfield": "1,2,3,4,5,3"}}, False),
+            "excluded": ({"stadiumnetname": {"Anfield": "1,2,3,4,5,3"}, "exclude": {"R1": "1"}}, True),
+        }
+        for name, (ini, module_on) in cases.items():
+            with self.subTest(name):
+                app = self.make_app(ini, module_on=module_on)
+                self.run_bumper(app).set_level.assert_called_once_with(None)
 
 
 
