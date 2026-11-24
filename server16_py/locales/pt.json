@@ -77,6 +77,7 @@
   "status.plugins.loader_missing": "O FIFA Plugin Loader não está instalado na pasta do FIFA: os plugins não serão carregados até você instalá-lo.",
   "status.plugins.no_game_dir": "Primeiro configure a pasta do FIFA em Set Up.",
   "status.plugins.empty": "Nenhum plugin encontrado em {path}",
+  "warning.plugins.second_loader": "Possível conflito: {path} está na pasta do FIFA junto com o Plugin Loader (winmm.dll). Mods que trazem um segundo carregador de ASI como d3d11.dll fazem o FIFA travar ou fechar toda vez que inicia. Apague ou renomeie o d3d11.dll: os plugins do mod na pasta plugins continuam sendo carregados pelo winmm.dll.",
   "label.plugins.persistent_note": "Desativar um plugin não desfaz o que ele instalou (tabelas do banco de dados, assets): só impede que ele seja carregado. As mudanças valem na próxima vez que o FIFA iniciar.",
   "tooltip.plugins.settings": "Editar o ini deste plugin",
   "tooltip.plugins.conflict": "{name}.asi e {name}.asi.disabled existem ao mesmo tempo: apague um deles primeiro.",

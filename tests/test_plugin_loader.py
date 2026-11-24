@@ -12,6 +12,7 @@ from server16_py.plugin_loader import (
     loaded_states,
     plugins_dir,
     scan,
+    second_loader_conflict,
     set_enabled,
 )
 
@@ -109,6 +110,25 @@ def test_is_loader_installed(tmp_path):
     assert is_loader_installed(tmp_path) is False
     _touch(tmp_path / "winmm.dll", b"MZ\x00\x00" + "FIFA Plugin Loader".encode("utf-16-le") + b"\x00\x00")
     assert is_loader_installed(tmp_path) is True
+
+
+def test_second_loader_conflict_needs_both_dlls(tmp_path):
+    assert second_loader_conflict(tmp_path) is None
+    d3d11 = _touch(tmp_path / "D3D11.dll")  # case-insensitive on Windows
+    assert second_loader_conflict(tmp_path) is None  # no Plugin Loader -> nothing to clash with
+    _touch(tmp_path / "winmm.dll", b"MZ some other winmm proxy")
+    assert second_loader_conflict(tmp_path) is None
+    _touch(tmp_path / "winmm.dll", b"MZ" + "FIFA Plugin Loader".encode("utf-16-le"))
+    found = second_loader_conflict(tmp_path)
+    assert found is not None and found.name.lower() == "d3d11.dll"
+    d3d11.rename(tmp_path / "d3d11.dll.disabled")
+    assert second_loader_conflict(tmp_path) is None
+
+
+def test_second_loader_conflict_ignores_a_d3d11_folder(tmp_path):
+    _touch(tmp_path / "winmm.dll", b"MZ" + "FIFA Plugin Loader".encode("utf-16-le"))
+    (tmp_path / "d3d11.dll").mkdir()
+    assert second_loader_conflict(tmp_path) is None
 
 
 def test_empty_module_list_means_unknown(tmp_path):

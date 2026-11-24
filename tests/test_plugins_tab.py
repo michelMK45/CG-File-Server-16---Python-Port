@@ -126,6 +126,28 @@ def test_loader_missing_flag(tmp_path):
     assert FakeApp(_game(tmp_path, loader=False))._plugins_view_model().loader_installed is False
 
 
+def test_second_loader_warning_in_view_model(tmp_path):
+    game = _game(tmp_path)
+    assert FakeApp(game)._plugins_view_model().second_loader is None
+    (game / "d3d11.dll").write_bytes(b"MZ")
+    assert FakeApp(game)._plugins_view_model().second_loader == game / "d3d11.dll"
+
+
+def test_no_second_loader_warning_without_plugin_loader(tmp_path):
+    game = _game(tmp_path, loader=False)
+    (game / "d3d11.dll").write_bytes(b"MZ")
+    assert FakeApp(game)._plugins_view_model().second_loader is None
+
+
+def test_second_loader_warning_key_in_all_locales():
+    import json
+
+    locales = Path(__file__).resolve().parents[1] / "server16_py" / "locales"
+    for lang in ("en", "es", "pt"):
+        text = json.loads((locales / f"{lang}.json").read_text(encoding="utf-8"))["warning.plugins.second_loader"]
+        assert "{path}" in text and "d3d11.dll" in text and "winmm.dll" in text
+
+
 def test_toggle_renames_logs_and_refreshes(tmp_path):
     app = FakeApp(_game(tmp_path))
     app._toggle_plugin("B")

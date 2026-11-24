@@ -47,6 +47,21 @@ def is_loader_installed(game_dir: Path) -> bool:
         return False
 
 
+# Graphics mods ship Ultimate ASI Loader renamed to d3d11.dll in the game root. Next to winmm.dll it is
+# a second ASI loader in the process and FIFA crashes/hangs at every start (confirmed live 2026-11-21:
+# 0-byte crash.dmp, process alive with no window; renaming d3d11.dll fixed it and the mod's .asi
+# plugins kept loading through winmm.dll). FIFA itself ships no d3d11.dll in its folder.
+SECOND_LOADER_DLL_NAME = "d3d11.dll"
+
+
+def second_loader_conflict(game_dir: Path) -> Path | None:
+    """The game-root d3d11.dll when the Plugin Loader is installed too (likely startup crash), else None."""
+    path = Path(game_dir) / SECOND_LOADER_DLL_NAME
+    if path.is_file() and is_loader_installed(game_dir):
+        return path
+    return None
+
+
 def _split_plugin_name(file_name: str) -> tuple[str, bool] | None:
     """(display name, enabled) for an .asi / .asi.disabled file name, else None."""
     lower = file_name.lower()

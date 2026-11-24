@@ -42,6 +42,7 @@ class PluginsView:
     loader_installed: bool
     folder: Path | None
     rows: list[PluginRow] = field(default_factory=list)
+    second_loader: Path | None = None   # d3d11.dll next to winmm.dll -> FIFA crashes at startup
 
 
 class PluginsTabMixin:
@@ -82,6 +83,7 @@ class PluginsTabMixin:
             loader_installed=plugin_loader.is_loader_installed(game_dir),
             folder=plugin_loader.plugins_dir(game_dir),
             rows=rows,
+            second_loader=plugin_loader.second_loader_conflict(game_dir),
         )
 
     def on_plugins_game_running(self, running: bool) -> None:
@@ -183,7 +185,10 @@ class PluginsTabMixin:
 
         self._plugins_status_label = tk.Label(outer, text="", bg=self.bg, fg=self.gold, font=("Bahnschrift", 10, "bold"),
                                               anchor="w", justify="left", wraplength=760)
-        self._plugins_note_label = tk.Label(outer, text=self.tr("label.plugins.persistent_note"), bg=self.bg,
+        self._plugins_warning_label = tk.Label(outer, text="", bg=self.bg, fg=self.error,
+                                               font=("Bahnschrift", 10, "bold"), anchor="w", justify="left",
+                                               wraplength=760)
+        self._plugins_note_label =tk.Label(outer, text=self.tr("label.plugins.persistent_note"), bg=self.bg,
                                             fg=self.muted, font=("Bahnschrift", 9), anchor="w", justify="left",
                                             wraplength=760)
         self._plugins_note_label.pack(fill="x", pady=(0, 10))
@@ -263,7 +268,13 @@ class PluginsTabMixin:
             self._plugins_status_label.pack(fill="x", pady=(0, 6), before=self._plugins_note_label)
         else:
             self._plugins_status_label.pack_forget()
-        accent = view.state == "ok" and not view.loader_installed
+        if view.second_loader is not None:
+            self._plugins_warning_label.configure(
+                text=self.tr("warning.plugins.second_loader", path=view.second_loader))
+            self._plugins_warning_label.pack(fill="x", pady=(0, 6), before=self._plugins_note_label)
+        else:
+            self._plugins_warning_label.pack_forget()
+        accent =view.state == "ok" and not view.loader_installed
         self._plugins_download_button.configure(style="Server16.PluginAccent.TButton" if accent else "TButton")
         self._plugins_folder_button.state(["disabled"] if view.state == "no_game_dir" else ["!disabled"])
 
