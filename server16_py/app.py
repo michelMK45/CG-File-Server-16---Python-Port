@@ -913,6 +913,11 @@ class Server16App(LocalizationMixin, LogMixin, UIMixin, PluginsTabMixin, Overlay
             if self.stadium_runtime.has_assignment():
                 self.assets_runtime._show_warning_toast(self.tr("notify.warn.stadium_off"), self.tr("notify.warn.assets_skipped"), icon="stadium")
         try:
+            # Before the match loads (net_physics.py): the engine builds the net from the attribdb records then.
+            self.assets_runtime.apply_net_physics_early()
+        except Exception as exc:
+            self.log("Net physics (early) error", exc, exc_info=sys.exc_info())
+        try:
             self.apply_scoreboard_runtime()
         except Exception as exc:
             self.log("Scoreboard runtime error", exc, exc_info=sys.exc_info())

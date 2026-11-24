@@ -31,6 +31,7 @@ from .file_tools import (
     stadium_preview_fallback_path,
 )
 from .net_mesh import resolve_net_mesh_preview_path
+from .net_physics import AUTHOR_NET_LINE, add_author_line, author_line_active, physics_level
 from .net_ropes import (
     ROPE_LEVELS,
     STATE_INSTALLED,
@@ -1288,7 +1289,8 @@ class SettingsSectionFrame(tk.Frame):
         self._add_combo_row(self.body, 2, "Rig", self.rig_var, [str(i) for i in range(0, 11)])
         shape_combo = self._add_combo_row(self.body, 3, "Shape", self.shape_var, self.SHAPE_CHOICES)
         shape_combo.configure(state="readonly")  # only square(0)/triangle(1) are valid in-engine
-        self._add_combo_row(self.body, 4, "Tension", self.tension_var, ["0", "1", "2"])
+        # 5th field: the original CGFS tension selector (NTTT write, "Tri deep" nets only).
+        self._add_combo_row(self.body, 4, self.tr("dialog.editor.field.net_tension_classic"), self.tension_var, ["0", "1", "2"])
         # 6th field: goal-net rope level for the SERVER16_Ropes.asi plugin (net_ropes.py). Fields the
         # value carries after it (the forum author's 7th "physics" field) are kept on save.
         self._rope_labels = [self.tr(f"dialog.editor.net_ropes.{level}") for level in ROPE_LEVELS]
@@ -1296,6 +1298,11 @@ class SettingsSectionFrame(tk.Frame):
         self._net_extra_fields: list[str] = []
         ropes_combo = self._add_combo_row(self.body, 5, self.tr("dialog.editor.field.net_ropes"), self.ropes_var, self._rope_labels)
         ropes_combo.configure(state="readonly")
+        # 7th field: net physics preset written into FIFA's attribdb records before the match (net_physics.py).
+        self._physics_labels = [self.tr(f"dialog.editor.net_physics.{level}") for level in range(4)]
+        self.physics_var = tk.StringVar(value=self._physics_labels[0])
+        physics_combo = self._add_combo_row(self.body, 6, self.tr("dialog.editor.field.net_physics"), self.physics_var, self._physics_labels)
+        physics_combo.configure(state="readonly")
         tk.Label(
             self.body,
             text=self.tr("dialog.editor.net_ropes_hint"),
@@ -1305,7 +1312,7 @@ class SettingsSectionFrame(tk.Frame):
             anchor="w",
             wraplength=420,
             justify="left",
-        ).grid(row=6, column=0, columnspan=3, sticky="w", pady=(6, 4))
+        ).grid(row=7, column=0, columnspan=3, sticky="w", pady=(6, 4))
         # Shown only while the plugin cannot act in this game install (missing, switched off,
         # older than the bundled one, or no Plugin Loader): tells the user where to fix it.
         self._ropes_warning = tk.Label(
@@ -1318,8 +1325,67 @@ class SettingsSectionFrame(tk.Frame):
             wraplength=420,
             justify="left",
         )
-        self._ropes_warning.grid(row=7, column=0, columnspan=3, sticky="w", pady=(0, 4))
+        self._ropes_warning.grid(row=8, column=0, columnspan=3, sticky="w", pady=(0, 4))
         self._refresh_ropes_plugin_warning()
+        tk.Label(
+            self.body,
+            text=self.tr("dialog.editor.net_physics_hint"),
+            bg=self.app.card,
+            fg=self.app.muted,
+            font=("Bahnschrift", 8),
+            anchor="w",
+            wraplength=420,
+            justify="left",
+        ).grid(row=9, column=0, columnspan=3, sticky="w", pady=(2, 4))
+        # Shown only while cl.ini / rna.ini lack SOCCERNET_BOX_NORMAL_NORMAL_4_SUPPORTS=1 (needed by
+        # the net tension presets): one click appends it to cl.ini.
+        self._net_line_row = tk.Frame(self.body, bg=self.app.card)
+        self._net_line_row.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(0, 4))
+        self._net_line_row.columnconfigure(0, weight=1)
+        self._net_line_label = tk.Label(
+            self._net_line_row,
+            text="",
+            bg=self.app.card,
+            fg=getattr(self.app, "gold", self.app.fg),
+            font=("Bahnschrift", 9),
+            anchor="w",
+            wraplength=320,
+            justify="left",
+        )
+        self._net_line_label.grid(row=0, column=0, sticky="w")
+        self._net_line_button = ttk.Button(
+            self._net_line_row, text=self.tr("dialog.editor.net_line_button"), command=self._add_net_line
+        )
+        self._net_line_button.grid(row=0, column=1, sticky="e", padx=(6, 0))
+        self._refresh_net_line_row()
+
+    def _refresh_net_line_row(self, message_key: str | None = None) -> None:
+        row = getattr(self, "_net_line_row", None)
+        if row is None:
+            return
+        exedir = getattr(self.app, "exedir", None)
+        missing = bool(exedir) and not author_line_active(Path(exedir))
+        if missing:
+            self._net_line_label.configure(text=self.tr("dialog.editor.net_line_missing", line=AUTHOR_NET_LINE))
+            self._net_line_button.grid()
+            row.grid()
+        elif message_key:
+            self._net_line_label.configure(text=self.tr(message_key))
+            self._net_line_button.grid_remove()
+            row.grid()
+        else:
+            row.grid_remove()
+
+    def _add_net_line(self) -> None:
+        exedir = getattr(self.app, "exedir", None)
+        if not exedir:
+            return
+        try:
+            add_author_line(Path(exedir))
+        except OSError as exc:
+            messagebox.showerror(self.tr("dialog.editor.net_line_button"), self.tr("dialog.editor.net_line_failed", error=exc))
+            return
+        self._refresh_net_line_row("dialog.editor.net_line_added")
 
     def _ropes_plugin_warning_key(self) -> str | None:
         """Locale key of the warning for the current game install, or None when the plugin is usable."""
@@ -2030,6 +2096,7 @@ class SettingsSectionFrame(tk.Frame):
             self.tension_var.set(self.NET_DEFAULTS["tension"])
             self.ropes_var.set(self._rope_labels[0])
             self._net_extra_fields = []
+            self.physics_var.set(self._physics_labels[0])
             self._refresh_ropes_plugin_warning()
         elif self.spec.kind == "scoreboardstdname":
             self.display_name_var.set("")
@@ -2127,6 +2194,7 @@ class SettingsSectionFrame(tk.Frame):
         self.shape_var.set(self.SHAPE_VALUE_TO_LABEL.get(shape_raw, self.SHAPE_VALUE_TO_LABEL[self.NET_DEFAULTS["shape"]]))
         self.tension_var.set(parts[4] or self.NET_DEFAULTS["tension"])
         rope_level, self._net_extra_fields = split_net_value(value)
+        self.physics_var.set(self._physics_labels[physics_level(value)])
         self.ropes_var.set(self._rope_labels[rope_level])
         self._refresh_ropes_plugin_warning()
 
@@ -2212,6 +2280,15 @@ class SettingsSectionFrame(tk.Frame):
         if self.spec.kind == "net":
             label = self.ropes_var.get()
             rope_level = self._rope_labels.index(label) if label in self._rope_labels else 0
+            physics_label = self.physics_var.get()
+            physics = self._physics_labels.index(physics_label) if physics_label in self._physics_labels else 0
+            extra = list(self._net_extra_fields)  # extra[0] is the physics field, later ones are kept
+            if extra:
+                extra[0] = str(physics)
+            elif physics:
+                extra = [str(physics)]
+            if extra == ["0"]:
+                extra = []
             return compose_net_value(
                 [
                     self.down_var.get().strip(),
@@ -2221,7 +2298,7 @@ class SettingsSectionFrame(tk.Frame):
                     self.tension_var.get().strip(),
                 ],
                 rope_level,
-                self._net_extra_fields,
+                extra,
             )
         if self.spec.kind == "scoreboardstdname":
             return self.display_name_var.get().strip() or self.key_var.get().strip()

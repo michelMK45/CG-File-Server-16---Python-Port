@@ -18,6 +18,7 @@ from .file_tools import (
 )
 from .kit_mixer import run_fifalibrary_worker
 from .match_asset_ids import engine_id, plan_pack_remap, read_lua_id_maps
+from .net_physics import NetPhysicsRuntime
 from .net_ropes import RopesBridge, rope_level
 
 if TYPE_CHECKING:
@@ -37,6 +38,7 @@ class AssetRuntime:
         self._rx3_render_locks: dict[str, threading.Lock] = {}
         self._rx3_render_locks_guard = threading.Lock()
         self._ropes_bridge: RopesBridge | None = None
+        self._net_physics: NetPhysicsRuntime | None = None
 
     def match_asset_preview_dir(self) -> Path:
         return self.app.base_dir / "runtime" / "match_asset_previews"
@@ -810,9 +812,32 @@ class AssetRuntime:
             # Skipped while the manual stadium picker awaits a choice (inside _show_asset_toast).
             self._show_asset_toast(app.tr("notify.adboard_loaded"), source_label, icon="adboard")
 
+    def _net_physics_runtime(self) -> NetPhysicsRuntime:
+        if self._net_physics is None:
+            app = self.app
+            self._net_physics = NetPhysicsRuntime(app.memory, lambda: getattr(app, "exedir", None), app.log)
+        return self._net_physics
+
+    def apply_net_physics_early(self) -> None:
+        """Match preparation: the stadium's net physics level (7th net-value field) is written into
+        FIFA's attribdb soccernet records before the match loads (net_physics.py, the forum author's
+        method). Called after the stadium runtime and again once the stadium task has resolved the name."""
+        app = self.app
+        if not app.module_enabled("StadiumNet") or not app.memory.is_open():
+            return
+        if getattr(app, "_stadium_task_running", False):
+            return  # the stadium name is still being resolved; the task calls this again when done
+        source_key = "stadiumnetid" if not app.curstad else "stadiumnetname"
+        source_section = app.STADID if not app.curstad else app.StadName
+        has_net_values = not app.settings_ini.key_exists(app.TOURROUNDID, "exclude") and app.settings_ini.key_exists(source_section, source_key)
+        net_value = app.settings_ini.read(source_section, source_key) if has_net_values else ""
+        self._net_physics_runtime().request(net_value, f"[{source_key}] {source_section}")
+
     def tv_bumper_page(self) -> None:
         app = self.app
         self.reapply_active_ball_runtime(reason="TV bumper")
+        if self._net_physics is not None:
+            self._net_physics.tv_bumper()
         source_key = "stadiumnetid" if not app.curstad else "stadiumnetname"
         source_section = app.STADID if not app.curstad else app.StadName
         has_net_values = not app.settings_ini.key_exists(app.TOURROUNDID, "exclude") and app.settings_ini.key_exists(source_section, source_key)

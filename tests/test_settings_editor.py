@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gc
 import tempfile
 import tkinter as tk
 import unittest
@@ -1356,6 +1357,10 @@ class NetEditorRopesTests(unittest.TestCase):
         self.addCleanup(self.root.destroy)
         self.app = FakeApp(exedir, SessionIniFile(self.ini_path))
         self.app.STADID = "5"
+        # Runs before root.destroy (cleanups are LIFO): frees this test's Tk objects on the main
+        # thread. Left to a later GC pass they can be freed on another test's worker thread, and
+        # Tcl aborts the process (0x80000003 in tests/test_stadium_name_fast_watch.py, 2026-11-24).
+        self.addCleanup(gc.collect)
 
     def make_frame(self) -> SettingsSectionFrame:
         spec = next(spec for spec in stadium_specs() if spec.section == "stadiumnetid")
@@ -1390,6 +1395,33 @@ class NetEditorRopesTests(unittest.TestCase):
         self.assertEqual(frame.ropes_var.get(), "dialog.editor.net_ropes.2")
         self.save(frame, "12", 0)
         self.assertEqual(self.saved("12"), "1,2,4,0,0,0,3")
+
+    def test_cl_ini_button_only_while_the_author_line_is_missing(self) -> None:
+        cl_ini = self.app.exedir / "cl.ini"
+        cl_ini.write_bytes(b"SIMPLECLOTH=7")
+        frame = self.make_frame()
+        frame.update_idletasks()
+        self.assertTrue(frame._net_line_row.winfo_manager())
+        self.assertTrue(frame._net_line_button.winfo_manager())
+        frame._net_line_button.invoke()
+        self.assertEqual(cl_ini.read_bytes(), b"SIMPLECLOTH=7\r\nSOCCERNET_BOX_NORMAL_NORMAL_4_SUPPORTS=1\r\n")
+        self.assertEqual(frame._net_line_label.cget("text"), "dialog.editor.net_line_added")
+        self.assertFalse(frame._net_line_button.winfo_manager())
+        fresh = self.make_frame()  # line present: the whole row stays hidden
+        self.assertFalse(fresh._net_line_row.winfo_manager())
+
+    def test_physics_level_is_the_seventh_field(self) -> None:
+        frame = self.make_frame()
+        frame.key_var.set("12")
+        frame.physics_var.set("dialog.editor.net_physics.3")
+        frame.save_entry()
+        self.assertEqual(self.saved("12"), "1089199011,1087199011,2,0,0,0,3")
+        fresh = self.make_frame()
+        fresh.load_entry("12")
+        self.assertEqual(fresh.physics_var.get(), "dialog.editor.net_physics.3")
+        fresh.physics_var.set("dialog.editor.net_physics.0")
+        fresh.save_entry()
+        self.assertEqual(self.saved("12"), "1089199011,1087199011,2,0,0")
 
     def test_new_entry_resets_the_rope_level(self) -> None:
         frame = self.make_frame()

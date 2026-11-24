@@ -1173,6 +1173,11 @@ class StadiumRuntime:
             app._stadium_task_signature = None
             app._stadium_task_request_key = None
             app._hide_stadium_loading_modal(delay_ms=1200)
+        # The stadium name is known now and the match has not loaded yet: net physics preset (net_physics.py).
+        try:
+            app.assets_runtime.apply_net_physics_early()
+        except Exception as exc:
+            app.log("Net physics (stadium applied) error", exc)
 
     def stadium_offsets(self, stadium_type: str) -> list[int]:
         app = self.app
